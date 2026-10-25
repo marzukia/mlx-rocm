@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# pre-commit: run from the repo root. Install with: ln -s "$(git rev-parse --show-toplevel)/hooks/pre-commit" "$(git rev-parse --git-dir)/hooks/pre-commit"
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+uv run ruff check .
+uv run ruff format --check .
+uv run pytest -m "not gpu" -q
+uv run python scripts/size_ratchet.py --base HEAD || { echo "size gate failed"; exit 1; }

@@ -1,0 +1,18 @@
+{
+  "note": "Pinned vendor source for the ROCm backend. primary = adopted base; fallback = the the upstream base head if primary does not build clean on ROCm 7.7 (docs/plan.md, open question 1).",
+  "primary": {
+    "fork": "https://github.com/a maintainer of the ROCm backend/mlx",
+    "ref": "the vendor ref",
+    "comment": "Newer forward-merge: GatedDeltaNet + mxfp8 + gfx1200 fixes. CI tested on ROCm 10; must be validated on 7.7 (Phase 0 exit criteria)."
+  },
+  "fallback": {
+    "fork": "https://github.com/the ROCm backend fork",
+    "ref": "the vendor ref",
+    "comment": "Head of upstream a community MLX ROCm backend PR [Experiment] ROCm backend. TheRock 7.13-tested."
+  },
+  "build": {
+    "hip_architectures": "gfx1201",
+    "cmake_args": "-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=OpenBLAS",
+    "comment": "RX 9070 XT is gfx1201 (RDNA4), NOT gfx110x. ROCm 7.7 system install provides hip/rocblas/rocprim/hiprand/hiprtc/hipblaslt/rocwmma."
+  }
+}

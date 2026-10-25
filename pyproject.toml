@@ -1,0 +1,26 @@
+[project]
+name = "mlx-rocm"
+version = "0.0.1"
+description = "ROCm backend for MLX on marzuki-neon (RX 9070 XT / gfx1201, ROCm 7.7): adopt the ROCm port, build the wheel, validate, serve qMLX."
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "pytest>=8",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "gpu: needs the ROCm GPU (runs on marzuki-neon only; skipped in CI and off-GPU)",
+    "hermetic: no GPU needed, runs anywhere",
+]
