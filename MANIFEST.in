@@ -1,0 +1,10 @@
+graft src
+prune src/python/mlx_rocm/__pycache__
+graft examples
+include README.md
+include LICENSE
+include pyproject.toml
+include CMakeLists.txt
+include MANIFEST.in
+include scripts/smoke.sh
+graft vendor

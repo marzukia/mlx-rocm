@@ -3,7 +3,8 @@
   "primary": {
     "fork": "https://github.com/a maintainer of the ROCm backend/mlx",
     "ref": "the vendor ref",
-    "comment": "Newer forward-merge: GatedDeltaNet + mxfp8 + gfx1200 fixes. CI tested on ROCm 10; must be validated on 7.7 (Phase 0 exit criteria)."
+    "sha": "the pinned base sha",
+    "comment": "ADOPTED (MVP, 2026-10-25): vendored at vendor/mlx-rocm-upstream/ (byte-verified vs this sha). Newer forward-merge: GatedDeltaUpdate fallback + mxfp8 prefill GEMM + gfx1200/RDNA4 fixes. Validated on neon gfx1201 userland ROCm 6.4: bf16 GEMM PASS (0.0078), fp8 probe PASS (0.0057, e4m3 reference fixed in the MVP)."
   },
   "fallback": {
     "fork": "https://github.com/the ROCm backend fork",
