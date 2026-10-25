@@ -4,6 +4,12 @@ __pycache__/
 .pytest_cache/
 dist/
 build/
+build-*/
 *.whl
-vendor/
+*.so
+*.o
+scripts/smoke-results/
 .DS_Store
+
+# vendor/ is NOT ignored: the vendored upstream tree is committed
+# (vendor/mlx-rocm-upstream/, provenance in vendor/mlx-rocm-upstream/README.md).
