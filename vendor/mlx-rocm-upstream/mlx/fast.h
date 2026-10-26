@@ -24,7 +24,9 @@ MLX_API array layer_norm(
     float eps,
     StreamOrDevice s = {});
 
-/** K2: fused residual add + RMSNorm: w * rmsnorm(x + residual). */
+/** K2: fused residual add + RMSNorm: w * rmsnorm(x + residual).
+ *
+ * Output dtype is result_type(x, weight); the residual is astype'd to it. */
 MLX_API array rms_norm_residual(
     const array& x,
     const array& residual,
@@ -34,7 +36,8 @@ MLX_API array rms_norm_residual(
 
 /** K2: batched in-place KV append: writes keys and values into the
  * pre-allocated cache buffers at `offset` in one kernel. Returns the
- * updated (in-place) cache arrays. */
+ * updated (in-place on the GPU fast path) cache arrays; the fallback path
+ * (CPU stream, non-row-contiguous inputs) returns fresh buffers. */
 MLX_API std::vector<array> kv_append(
     const array& keys,
     const array& values,

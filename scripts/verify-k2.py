@@ -115,11 +115,13 @@ except Exception as e:  # noqa: BLE001
 print("== negative: kv_append non-contiguous view (MAJOR-5) ==")
 # A non-standard-layout [B,H,1,D] view (strides[0] != H*strides[1]) must route
 # to the slice_update fallback (correct), not the fast kernel (misaddress).
-B, H, D = 1, 2, 8
+# B=2 so the permuted view is genuinely not row-contiguous (a B=1 view is
+# correctly addressed by the fast kernel regardless of strides[0]).
+B, H, D = 2, 2, 8
 mx.random.seed(3)
 base = mx.random.normal((H, B, D))
-keys = mx.transpose(base, (1, 0, 2))[:, :, None, :]  # [B,H,1,D], non-contig
-assert not keys.flags.contiguous, "test setup: keys must be non-contiguous"
+keys = mx.transpose(base, (1, 0, 2))[:, :, None, :]  # [B,H,1,D], non-row-contig
+assert not keys.flags.row_contiguous, "test setup: keys must be non-row-contiguous"
 values = mx.random.normal((B, H, 1, D))
 ck = mx.random.normal((B, H, 8, D))
 cv = mx.random.normal((B, H, 8, D))
@@ -140,8 +142,8 @@ B, D = 2, 8
 mx.random.seed(4)
 x = mx.random.normal((B, D))
 base_r = mx.random.normal((D, B))
-r = mx.transpose(base_r, (1, 0))  # [B,D], non-contiguous
-assert not r.flags.contiguous, "test setup: residual must be non-contiguous"
+r = mx.transpose(base_r, (1, 0))  # [B,D], non-row-contiguous
+assert not r.flags.row_contiguous, "test setup: residual must be non-row-contiguous"
 w = mx.random.normal((D,))
 ref = mx.fast.rms_norm(x + r, w, 1e-5)
 got = mx.rocm.rms_norm_residual(x, r, w, 1e-5)

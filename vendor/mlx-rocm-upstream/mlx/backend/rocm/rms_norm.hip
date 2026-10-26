@@ -208,50 +208,6 @@ __global__ void rms_norm_residual_kernel(
       w, out, eps, axis_size, w_stride);
 }
 
-// K2: warp-per-row fast path for the decode case (few rows, modest axis size).
-// One warp handles one row: no shared memory, no block sync.
-template <typename T>
-__global__ void rms_norm_warp_kernel(
-    const T* x,
-    const T* w,
-    T* out,
-    float eps,
-    uint32_t axis_size,
-    int64_t w_stride,
-    int32_t n_rows) {
-  int32_t warp = (int32_t)(blockIdx.x * blockDim.x + threadIdx.x) / WARP_SIZE;
-  if (warp >= n_rows) {
-    return;
-  }
-  int32_t lane = threadIdx.x % WARP_SIZE;
-  x += (int64_t)warp * axis_size;
-  out += (int64_t)warp * axis_size;
-
-  constexpr int N_READS = 4;
-  float normalizer = 0;
-  for (int i = lane * N_READS; i < axis_size; i += WARP_SIZE * N_READS) {
-    #pragma unroll
-    for (int j = 0; j < N_READS && i + j < axis_size; ++j) {
-      float t = static_cast<float>(x[i + j]);
-      normalizer += t * t;
-    }
-  }
-  for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
-    normalizer += __shfl_xor(normalizer, offset);
-  }
-  normalizer = 1.0f / sqrtf(normalizer / axis_size + eps);
-
-  for (int i = lane * N_READS; i < axis_size; i += WARP_SIZE * N_READS) {
-    #pragma unroll
-    for (int j = 0; j < N_READS && i + j < axis_size; ++j) {
-      int idx = i + j;
-      float t = static_cast<float>(x[idx]);
-      T wi = (w_stride == 0) ? w[0] : w[idx * w_stride];
-      out[idx] = wi * static_cast<T>(t * normalizer);
-    }
-  }
-}
-
 // Packed input: rows tightly packed at row * axis_size.
 template <typename T, int BLOCK_DIM, int N_READS = 4>
 __global__ void rms_norm_kernel(
@@ -490,15 +446,18 @@ void RMSNormResidual::eval_gpu(
   const array& w = inputs[2];
   int32_t axis_size = xin.shape().back();
 
-  // K2 review MAJOR-2: the packed fast path reads both x and residual rows at
-  // `row * axis_size`, so BOTH operands must be packed. The packed decision is
-  // taken from xin AND rin (previously xin only, which silently misread a
-  // non-row-contiguous residual such as a transposed/sliced one).
+  // K2 review MAJOR-2 (re-review MINOR-1): the packed fast path reads both x
+  // and residual rows at `row * axis_size`, so BOTH operands must be packed.
+  // The packed decision is taken from xin AND rin (previously xin only, which
+  // silently misread a non-row-contiguous residual such as a transposed/
+  // sliced one). row_contiguous (not the no-gaps `contiguous` flag) is
+  // required: for ndim >= 4 a leading-dim permuted view is gap-free but
+  // misaddressed by the packed kernel (same weak-flag class as MAJOR-A).
   auto packed_check = [&](const array& a) {
     int n = a.ndim();
     int32_t axis = a.shape().back();
     bool last_contig = n >= 1 && a.strides()[n - 1] == 1;
-    bool packed = a.flags().contiguous && last_contig;
+    bool packed = a.flags().row_contiguous && last_contig;
     if (packed && n > 1) {
       auto s2 = a.strides()[n - 2];
       packed &= (s2 == 0 || s2 == (int64_t)axis);

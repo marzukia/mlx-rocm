@@ -245,14 +245,18 @@ std::vector<array> kv_append(
     return std::vector<array>{ok, ov};
   };
 
-  // K2 review MAJOR-5: the fast GPU kernel addresses the [B*H, D] rows via
-  // strides[1] and assumes strides[0] == H * strides[1] (standard layout) for
-  // keys, values AND the caches. Non-contiguous views (transpose, batch slice)
-  // would be silently misaddressed, so require standard layout and route
-  // non-contiguous inputs to the slice_update fallback (arbitrary strides).
+  // K2 review MAJOR-5 (re-review MAJOR-A): the fast GPU kernel addresses the
+  // [B*H, D] rows via strides[1] and assumes strides[0] == H * strides[1] (or
+  // B==1) and strides[3] == 1 (or D==1) for keys, values AND the caches. The
+  // `contiguous` flag only means "no gaps" and admits gap-free permuted views
+  // (e.g. [B,H,D,D] with the last two axes transposed) that the kernel
+  // misaddresses, so require row_contiguous (already maintained on the flag
+  // set; it implies the kernel's stride requirements, modulo the degenerate
+  // D==1 allowance, which merely routes to the fallback) and route
+  // non-row-contiguous inputs to the slice_update fallback (arbitrary strides).
   bool standard_layout =
-      keys.flags().contiguous && values.flags().contiguous &&
-      cache_keys.flags().contiguous && cache_values.flags().contiguous;
+      keys.flags().row_contiguous && values.flags().row_contiguous &&
+      cache_keys.flags().row_contiguous && cache_values.flags().row_contiguous;
 
   if (!KVAppend::use_fallback(s) && standard_layout) {
     return array::make_arrays(
