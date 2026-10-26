@@ -4,7 +4,9 @@ ROCm backend for [MLX](https://github.com/ml-explore/mlx) — **MVP skeleton** (
 
 End use: run the fleet's qMLX inference stack (qmlx-serve, Qwen3.x, MTP spec
 decode, prefix/disk KV) on **marzuki-neon** — AMD RX 9070 XT (RDNA4,
-**gfx1201** — *not* gfx110x), ROCm 6.4 userland (HIP 6.4.43484).
+**gfx1201** — *not* gfx110x), ROCm 10.1 userland (the verified guest toolchain;
+core at `/opt/rocm/core-10.1`. 6.4 was the early probe validation and 7.7 the
+original target — neither is the verified version).
 
 ## What this is
 
@@ -54,17 +56,18 @@ cmake -S . -B build && cmake --build build
 ./build/gemm_smoke host
 ```
 
-With ROCm (gfx1201 box, e.g. neon):
+With ROCm (gfx1201 box, e.g. the neon guest — see `docs/quickstart.md`):
 
 ```
-cmake -S . -B build -DMLX_ROCM_WITH_HIP=ON && cmake --build build
+cmake -S . -B build -DMLX_ROCM_WITH_HIP=ON -DCMAKE_PREFIX_PATH=/opt/rocm/core-10.1 \
+  && cmake --build build
 ./build/gemm_smoke hip        # bf16 512^3 + fp8 e4m3 probe
 ```
 
 Full `mlx` wheel from the vendored tree (next phase):
 
 ```
-CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=OpenBLAS" \
+CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=OpenBLAS -DCMAKE_PREFIX_PATH=/opt/rocm/core-10.1" \
   python setup.py bdist_wheel   # from vendor/mlx-rocm-upstream layout
 ```
 

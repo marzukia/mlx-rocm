@@ -6,7 +6,13 @@ the host, so this is source-reading + web.
 
 **End use:** run the fleet's qMLX inference stack (qmlx-serve, Qwen3.x serving, MTP spec
 decode, prefix/disk KV cache, mlx-lm) on **marzuki-neon** — AMD RX 9070 XT + Ryzen 9700X,
-ROCm 7.7.
+ROCm 10.1 (verified guest toolchain; 7.7 was the original target).
+
+**ROCm version note (2026-10-26, supersedes the 6.4/7.7 references below):** the verified
+guest toolchain on marzuki-neon is **ROCm 10.1** (core at `/opt/rocm/core-10.1`,
+`CMAKE_PREFIX_PATH=/opt/rocm/core-10.1`, `amdrocm-*-dev10.1` packages; see
+docs/quickstart.md). Nothing else is verified: 6.4 was the early probe validation and
+7.7 the original target. Where this report says "on ROCm 7.7" for the box, read 10.1.
 
 **Method:** read `ml-explore/mlx` (main @ `56c2bf9`, v0.32.5), the two named prior-art repos,
 plus two additional MLX-ROCm forks discovered during the investigation (the single most
@@ -250,7 +256,7 @@ file-for-file CUDA mirror with per-arch tuning already in place.
 **Bottom line on prior art:** three independent groups have converged on the same base
 (`the vendor ref`) and all three run it on RDNA. The risk is not "can MLX run on
 ROCm" (demonstrated) — it is "does it run *well* on gfx1201 specifically, under the qMLX
-workload, on ROCm 7.7."
+workload, on ROCm 10.1 (the verified guest toolchain)."
 
 ---
 
@@ -279,11 +285,11 @@ gfx1200, gfx1201"). **marzuki-neon's target arch is `gfx1201`.** (If the box's
 `rocm_agent_enumerator`/`rocminfo` reports something else, trust the tool — but expect
 gfx1201.)
 
-### 4.2 ROCm 7.7 coverage for gfx1201
+### 4.2 ROCm coverage for gfx1201 (verified: 10.1)
 
 - **RDNA4 (gfx1200/gfx1201) support landed in ROCm 6.4.0** (release notes: "Support for
-  gfx1201"). It is carried through 7.x and 10.x. **ROCm 7.7 (on marzuki-neon) supports
-  gfx1201.**
+  gfx1201"). It is carried through 7.x and 10.x. **ROCm 10.1 (the verified guest
+  toolchain on marzuki-neon) supports gfx1201.**
 - The fork's `CMakeLists.txt` arch list explicitly targets "ROCm 6.4.0 – 7.2.0 compatibility
   matrix" and includes gfx1200/gfx1201; the fork's CI runs TheRock 7.13 and the Ollama fork
   runs ROCm 10 — so gfx1201 is a first-class target across the 7.x line.
@@ -328,13 +334,13 @@ holds the PyPI slot). No renaming needed.
 ## 6. Minimum `mlx-rocm` definition (phased plan + effort)
 
 "Minimum" = **qmlx-serve runs a 9B-class dense Qwen3 on marzuki-neon (RX 9070 XT / gfx1201,
-ROCm 7.7), correctly, at usable decode speed.** MTP, disk KV, and 27B+/122B-hybrid are
+ROCm 10.1), correctly, at usable decode speed.** MTP, disk KV, and 27B+/122B-hybrid are
 deferred to Phase 2.
 
 ### Phase 0 — Adopt + build + smoke (0.5–1 person-week)
 
 1. Base on `the vendor ref` (or `the vendor ref` — newer, adds
-   GatedDeltaNet + mxfp8 + gfx1200 fixes; prefer it if it builds clean on 7.7).
+   GatedDeltaNet + mxfp8 + gfx1200 fixes; prefer it if it builds clean on 10.1).
 2. Build the `mlx` wheel:
    `CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=OpenBLAS"`.
    (No `setup.py` change needed — the fork builds the standard `mlx` wheel; the ROCm system
@@ -385,7 +391,7 @@ deferred to Phase 2.
 
 | Scope | Effort | Risk |
 |---|---|---|
-| **Minimum: 9B dense Qwen3 on gfx1201 (Phase 0+1)** | **2.5–5 person-weeks** | Low-medium. The backend exists; the risk is gfx1201-specific validation (fp8 GEMM, allocator, SDPA path) on ROCm 7.7. |
+| **Minimum: 9B dense Qwen3 on gfx1201 (Phase 0+1)** | **2.5–5 person-weeks** | Low-medium. The backend exists; the risk is gfx1201-specific validation (fp8 GEMM, allocator, SDPA path) on ROCm 10.1. |
 | Full qMLX 122B hybrid + MTP + disk KV (Phase 2) | +2–4 person-weeks | Medium. GatedDelta prefill perf + the M3 stream-TLS fix are the real work. |
 | (For contrast) Porting the CUDA backend from scratch | ~15–25 person-weeks | What we are *not* doing. |
 
@@ -393,11 +399,11 @@ deferred to Phase 2.
 
 1. **Base choice:** `the vendor ref` (the the upstream base head, TheRock 7.13-tested)
    vs `the vendor ref` (newer, ROCm 10 + gfx1200 fixes, GatedDeltaNet). Need to
-   confirm which builds clean on **ROCm 7.7** specifically (the fork's CI is 7.13, Ollama is
+   confirm which builds clean on **ROCm 10.1** specifically (the fork's CI is 7.13, Ollama is
    10).
 2. **Wheel vs source:** ship a real `mlx-rocm` PyPI wheel (needs a `setup.py` `[rocm]` extra
    + a CI matrix), or build-from-source on the box (simpler, what the fork does today)?
-3. **fp8 default:** is gfx1201 fp8 prefill clean on ROCm 7.7's driver, or do we ship
+3. **fp8 default:** is gfx1201 fp8 prefill clean on ROCm 10.1's driver, or do we ship
    `MLX_ROCM_GEMM_BF16=1` by default?
 4. **MTP:** is MTP in the minimum, or strictly Phase 2? (It is blocked on the M3 stream-TLS
    fix either way.)

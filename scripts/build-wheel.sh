@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the mlx wheel with the ROCm backend for gfx1201 (RX 9070 XT).
-# Runs ON marzuki-neon (ROCm 7.7). Clones the pinned vendor (vendor.json) if not present.
+# Runs ON marzuki-neon (ROCm 10.1 guest userland; add -DCMAKE_PREFIX_PATH=/opt/rocm/core-10.1 — see docs/quickstart.md). Clones the pinned vendor (vendor.json) if not present.
 set -euo pipefail
 
 VENDOR_DIR="${MLX_VENDOR_DIR:-$HOME/vendor/mlx}"
