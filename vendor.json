@@ -1,10 +1,10 @@
 {
-  "note": "Pinned vendor source for the ROCm backend. primary = adopted base; fallback = the the upstream base head if primary does not build clean on ROCm 7.7 (docs/plan.md, open question 1).",
+  "note": "Pinned vendor source for the ROCm backend. primary = adopted base; fallback = the the upstream base head if primary does not build clean on ROCm 10.1 (docs/plan.md, open question 1). ROCm 10.1 is the only verified toolchain (guest userland, core at /opt/rocm/core-10.1); 6.4 (early probe) and 7.7 (original target) are historical.",
   "primary": {
     "fork": "https://github.com/a maintainer of the ROCm backend/mlx",
     "ref": "the vendor ref",
     "sha": "the pinned base sha",
-    "comment": "ADOPTED (MVP, 2026-10-25): vendored at vendor/mlx-rocm-upstream/ (byte-verified vs this sha). Newer forward-merge: GatedDeltaUpdate fallback + mxfp8 prefill GEMM + gfx1200/RDNA4 fixes. Validated on neon gfx1201 userland ROCm 6.4: bf16 GEMM PASS (0.0078), fp8 probe PASS (0.0057, e4m3 reference fixed in the MVP)."
+    "comment": "ADOPTED (MVP, 2026-10-25): vendored at vendor/mlx-rocm-upstream/ (byte-verified vs this sha). Newer forward-merge: GatedDeltaUpdate fallback + mxfp8 prefill GEMM + gfx1200/RDNA4 fixes. Validated on the neon gfx1201 guest (ROCm 10.1 userland — the only verified toolchain; the 6.4 probe and 7.7 target are historical): bf16 GEMM PASS (0.0078), fp8 probe PASS (0.0057, e4m3 reference fixed in the MVP)."
   },
   "fallback": {
     "fork": "https://github.com/the ROCm backend fork",
@@ -14,6 +14,6 @@
   "build": {
     "hip_architectures": "gfx1201",
     "cmake_args": "-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=OpenBLAS",
-    "comment": "RX 9070 XT is gfx1201 (RDNA4), NOT gfx110x. ROCm 7.7 system install provides hip/rocblas/rocprim/hiprand/hiprtc/hipblaslt/rocwmma."
+    "comment": "RX 9070 XT is gfx1201 (RDNA4), NOT gfx110x. ROCm 10.1 userland (amdrocm-*-dev10.1, core at /opt/rocm/core-10.1) provides hip/rocblas/rocprim/hiprand/hiprtc/hipblaslt/rocwmma; pass -DCMAKE_PREFIX_PATH=/opt/rocm/core-10.1 (see docs/quickstart.md)."
   }
 }

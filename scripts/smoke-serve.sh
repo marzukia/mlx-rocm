@@ -6,7 +6,7 @@ set -euo pipefail
 : "${QMLX_SERVE_BIN:?path to the qmlx-serve entrypoint on neon}"
 : "${QMLX_SERVE_MODEL:?model ref/name for a 9B-class dense Qwen3 (4bit qmm expected on gfx1201)}"
 : "${QMLX_SERVE_PORT:-8080}"
-# Safe default until the gfx1201 fp8 prefill is proven clean on ROCm 7.7 (docs/plan.md)
+# Safe default until the gfx1201 fp8 prefill is proven clean on ROCm 10.1 (docs/plan.md)
 export MLX_ROCM_GEMM_BF16="${MLX_ROCM_GEMM_BF16:-1}"
 
 "$QMLX_SERVE_BIN" --model "$QMLX_SERVE_MODEL" --port "$QMLX_SERVE_PORT" &

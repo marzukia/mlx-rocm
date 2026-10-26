@@ -9,7 +9,7 @@
 | **Commit** | `the pinned base sha` (2026-09-28) |
 | **Last commit subject** | "rocm: mxfp8 prefill GEMM, cooperative softmax, device_info keys" |
 | **Lineage** | Forward-merge of the open upstream PR `ml-explore/mlx` **a community MLX ROCm backend PR** ROCm backend (head `the vendor ref`, commit `the PR head commit`, 2026-07-19) onto the MLX base the Ollama fork pins. Adds GatedDeltaUpdate fallback, mxfp8 prefill GEMM, gfx1200/RDNA4 fixes, hipRTC custom-kernel routing. |
-| **License** | Apache-2.0 (see `LICENSE.upstream`, also `../LICENSE`) |
+| **License** | MIT (see `LICENSE.upstream`, also `../LICENSE`) |
 
 ## What was vendored
 

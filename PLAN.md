@@ -4,16 +4,22 @@ Living plan. Full research report: [docs/plan.md](docs/plan.md) (t386, 2026-10-2
 
 ## Definition of minimum
 
-qmlx-serve runs a 9B-class dense Qwen3 on marzuki-neon (RX 9070 XT / gfx1201, ROCm 7.7),
+qmlx-serve runs a 9B-class dense Qwen3 on marzuki-neon (RX 9070 XT / gfx1201, ROCm 10.1),
 correctly, at usable decode speed. MTP, disk KV, 27B+/122B-hybrid = Phase 2.
+
+**ROCm version (single source of truth, 2026-10-26):** the verified guest toolchain on
+marzuki-neon is **ROCm 10.1** (core at `/opt/rocm/core-10.1`,
+`CMAKE_PREFIX_PATH=/opt/rocm/core-10.1`, `amdrocm-*-dev10.1` packages; see
+docs/quickstart.md). Nothing else is verified: 6.4 was the early probe validation and
+7.7 the original target — both are historical, not the verified toolchain.
 
 ## Current state (2026-10-25)
 
 - Research done (t386): the backend is ~90% done in upstream PR an open community MLX ROCm backend PR
   (head the vendor ref); newer forward-merge the vendor ref.
   Effort: 2.5-5 person-weeks for the minimum (Phase 0+1).
-- neon is UP (RX 9070 XT, ROCm 7.7). monky is building the MVP on neon (smoke unblocked,
-  relayed to monky).
+- neon is UP (RX 9070 XT; guest userland ROCm 10.1 — the only verified toolchain).
+  monky is building the MVP on the neon guest VM (smoke unblocked, relayed to monky).
 - Repo bootstrapped: hermetic CI (lint/format/pytest/size gate), vendor pin, build +
   smoke scripts. GPU validation still to be done on neon.
 
@@ -25,7 +31,7 @@ correctly, at usable decode speed. MTP, disk KV, 27B+/122B-hybrid = Phase 2.
 2. On neon: `mx.rocm.is_available()` true, matmul/softmax correct, Qwen3-0.6B (bf16 + 8bit)
    generates sane text. (`scripts/smoke.py`)
 - **Exit criteria:** is_available()==True; numerics correct; 0.6B sane.
-- **Gate:** if primary (the vendor ref) does not build clean on ROCm 7.7, fall back to
+- **Gate:** if primary (the vendor ref) does not build clean on ROCm 10.1, fall back to
   the vendor ref and record why (docs/plan.md open question 1).
 
 ### Phase 1 — Validate gfx1201 + qmlx-serve minimum (1-2 person-weeks)
@@ -48,5 +54,5 @@ stream-TLS fix), disk KV cache validation. Details in docs/plan.md §Phase 2.
 1. Base: the vendor ref (preferred) vs the vendor ref (fallback) — resolved by Phase 0 build.
 2. Wheel vs source: source-on-neon for now; PyPI wheel (`mlx-rocm` name slot already held
    by us) is a Phase 2+ concern.
-3. fp8 default: `MLX_ROCM_GEMM_BF16=1` until the gfx1201 fp8 prefill is proven clean on 7.7.
+3. fp8 default: `MLX_ROCM_GEMM_BF16=1` until the gfx1201 fp8 prefill is proven clean on 10.1.
 4. MTP: Phase 2, strictly (M3 stream-TLS fix blocks it either way).
