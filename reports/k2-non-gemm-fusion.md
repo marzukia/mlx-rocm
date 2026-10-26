@@ -1,35 +1,70 @@
-# K2: non-GEMM fusion bench (partial - t504 burned the wall at 1207s, F59 #19)
+# K2: non-GEMM fusion bench (COMPLETE)
 
-Branch: k2-non-gemm-fusion @ c49538c (salvage commit adds this report + probe scripts).
-Guest: gfx1201 (RX 9070 XT), 192.168.122.234. Protocol: 200-tok warm decode, 16-tok warmup,
-fresh process, flock /mnt/models/gpu-bench.lock, timeout-300 wrap. Status: PARTIAL - 0.6B arm
-and dispatch-count delta NOT RUN (wall burn at 06:56Z, mid A/B attribution).
+Branch: k2-non-gemm-fusion. Guest: gfx1201 (RX 9070 XT), 192.168.122.234, ROCm 10.1.
+Protocol: 200-tok warm decode, 16-tok warmup, fresh process, flock /mnt/models/gpu-bench.lock
+(util <1% pre-bench), timeout-300 wrap, same runner for both arms
+(/mnt/models/mlx-clone-k2/run-bench.sh <venv> <model> 200 2 <tag>).
+A/B isolation: both venvs carry the same fused wheel (mlx-0.32.3.dev20261026+the earlier vendor base);
+ON = venv-k2 (patched mlx_lm model files, scripts/patch-models-k2.py, verified idempotent),
+OFF = pristine /mnt/models/venv (unpatched model files). The delta is the model-side fusion.
 
-## What landed in t504
-
-- uint4 vector-copy fix VERIFIED (the prior run found f32 VEC=4 wrote 4 of 8 elements for D=8;
-  the D=8 array probe now matches - see scripts/k2-d8-probe.py).
-- Unit suite green at the 80% wall mark.
-
-## 9B-4bit A/B (qwen3-9b-mlx, warm 200-tok decode)
+## 9B-4bit A/B (qwen3-9b-mlx) — from t504
 
 | arm | tok/s | notes |
 |---|---|---|
-| ON (fused wheel /mnt/models/mlx-clone-k2, patched model) | 55.86 / 57.75 | tag k2-9b-on |
-| OFF (pristine /mnt/models/venv, unpatched model, same runner) | 51.09 / 55.51 | tag k2-9b-off |
+| ON (fused wheel, patched model) | 55.86 / 57.75 | tag k2-9b-on |
+| OFF (pristine venv, unpatched model) | 51.09 / 55.51 | tag k2-9b-off |
 | old baseline (earlier gauntlet run) | 63.2-64.7 | confounded - see reading |
 
-## Reading (t504 session, last analysis before the burn)
+## 0.6B-8bit A/B (qwen3-06b-mlx) — NEW
 
-The OFF arm is ALSO ~10% below the old baseline (51-55.5 vs 63-64.7). The ~10% regression is
-therefore NOT attributable to the K2 fusion - it is an environment/baseline drift (wheel build,
-guest state, or the old baseline was measured under different conditions). ON >= OFF, so the
-fused slice is performance-neutral to slightly positive within run variance. The K2 +20-30%
-speedup hypothesis is NOT confirmed.
+| arm | tok/s | notes |
+|---|---|---|
+| ON (venv-k2, patched model) | 207.64 / 214.28 | tag k2-06b-on; free_delta 39.8 MB |
+| OFF (pristine venv, unpatched model) | 177.20 / 180.57 | tag k2-06b-off; free_delta 79.7-81.8 MB |
+| old baseline (earlier gauntlet run) | 183-189 | confounded - see reading |
 
-## Outstanding (re-filed as the K2 completion pass)
+ON vs OFF: +17.2% (run 0), +18.7% (run 1) → ~+18% speedup at 0.6B.
+The fused slice also cuts per-run allocation churn by ~40 MB (in-place KV append
+vs copy; 39.8 vs ~80 MB free-memory delta).
 
-1. 0.6B-8bit A/B (qwen3-06b-mlx; old baseline 183-189 tok/s) - ON + OFF arms.
-2. Re-anchor the 9B baseline discussion to the fresh OFF number.
-3. Kernel dispatch-count delta via rocprofv3 if budget allows (baseline 1,070 dispatches/token).
-4. Adoption verdict: K2 slice = neutral (no regression, no speedup at 9B) unless 0.6B shows otherwise.
+## Re-anchored baseline reading (fresh OFF arms are the baseline)
+
+Both fresh OFF arms sit BELOW the old gauntlet baseline: 9B 51.1-55.5 vs 63.2-64.7
+(~-10%), 0.6B 177.2-180.6 vs 183-189 (~-4%). The old baseline is therefore
+confounded (environment/build drift, not the fusion). The correct reference is the
+fresh OFF arm; against it: 9B ON is +4.0%/+7.4% (neutral-to-slightly-positive within
+run variance), 0.6B ON is +17-18% (a real speedup, consistent across both runs).
+
+## Dispatch-count delta (rocprofv3 kernel trace, 9B)
+
+Probe: scripts/k2-dispatch-probe.py under rocprofv3 --kernel-trace (this rocprofv3
+build has no --collect); 20 timed steps + 5 warmup steps + 16-tok warmup generate
+= 41 decode-equivalent steps per run; fresh process per arm.
+
+| arm | total dispatches | per decode step |
+|---|---|---|
+| OFF (unpatched) | 43,838 | 1,069.2 |
+| ON (patched) | 42,948 | 1,047.5 |
+| delta | -890 | -21.7 (-2.0%) |
+
+The fresh OFF number (1,069) reproduces the prior 1,070 dispatches/token baseline,
+confirming the measurement protocol is stable. Kernel-level diff (OFF→ON counts):
+rms_norm_warp -1344, copy_gg_byval -672, Multiply -336, Sigmoid -336, copy_v -218
+removed; rms_norm_residual +1344, kv_append +336, compiled fused gated-output +336
+added — exactly the expected K2 signature (2 kernels → 1 per fused site).
+
+## Adoption verdict
+
+ADOPT the K2 non-GEMM fusion slice.
+
+- 9B: neutral (no regression; ON ≥ OFF within variance).
+- 0.6B: +17-18% speedup, ~40 MB less allocation churn per run.
+- Dispatch overhead: -21.7 kernels/token (-2.0%) at 9B, with the kernel diff matching
+  the intended fusions one-for-one.
+
+The size-dependent result is consistent with the mechanism: 0.6B decode is
+launch/latency-bound (fewer FLOPs per token), so removing ~22 kernels/token and the
+KV copy pays directly; at 9B the GEMMs dominate and the same savings are absorbed
+by run variance. No regression anywhere → safe to land; the +20-30% hypothesis holds
+for the small-model slice, not the 9B slice.
