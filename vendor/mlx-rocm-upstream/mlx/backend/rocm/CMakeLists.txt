@@ -161,6 +161,9 @@ set(HIP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/rope.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/scaled_dot_product_attention.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/flash_attention.hip
+    ${CMAKE_CURRENT_SOURCE_DIR}/r4d_gdn_kkt_solve_k128_c64_bf16.hip
+    ${CMAKE_CURRENT_SOURCE_DIR}/r4d_gdn_chunk_scan_k128_v128_c64_bf16.hip
+    ${CMAKE_CURRENT_SOURCE_DIR}/r4d_gdn_recurrent_update_k128_v128_bf16_fp32state.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/scan.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/softmax.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/sort.hip
@@ -254,6 +257,7 @@ target_sources(
           ${CMAKE_CURRENT_SOURCE_DIR}/primitives.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/quantized/quantized.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/rocm.cpp
+          ${CMAKE_CURRENT_SOURCE_DIR}/gated_delta_update.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/scaled_dot_product_attention.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/slicing.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/utils.cpp

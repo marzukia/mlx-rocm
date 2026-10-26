@@ -54,23 +54,9 @@ NO_GPU_MULTI(Eigh)
 
 namespace fast {
 
-// No fused ROCm gated-delta kernel yet: always take the graph fallback
-// path in fast.cpp (which is backend-agnostic and works fine on ROCm).
-bool GatedDeltaUpdate::use_fallback(
-    const int,
-    const int,
-    const int,
-    const int,
-    const bool,
-    Stream) {
-  return true;
-}
-
-void GatedDeltaUpdate::eval_gpu(
-    const std::vector<array>& inputs,
-    std::vector<array>& outputs) {
-  throw std::runtime_error("GatedDeltaUpdate has no ROCm implementation.");
-}
+// Note: GatedDeltaUpdate is now implemented in gated_delta_update.cpp
+// (fused R4D kernels; see reports/k3-gdn-port.md). The stub that used to
+// live here always returned use_fallback == true and threw in eval_gpu.
 
 } // namespace fast
 
