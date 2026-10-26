@@ -17,9 +17,8 @@ Deterministic: fixed seeds, no GPU nondeterminism (single-kernel ops).
 
 import hashlib
 
-import numpy as np
-
 import mlx.core as mx
+import numpy as np
 
 # (shape, note): decode = old fast path eligible; block = always block kernel
 CASES = [
@@ -44,10 +43,7 @@ for dt in (mx.bfloat16, mx.float16, mx.float32):
         h = hashlib.sha256(np.asarray(got.astype(mx.float32)).tobytes()).hexdigest()[:16]
         # f32-accumulation reference (correctness, not the identity check)
         xf = x.astype(mx.float32)
-        ref = (
-            xf * mx.rsqrt(mx.mean(xf * xf, -1, keepdims=True) + eps)
-            * w.astype(mx.float32)
-        ).astype(dt)
+        ref = (xf * mx.rsqrt(mx.mean(xf * xf, -1, keepdims=True) + eps) * w.astype(mx.float32)).astype(dt)
         ok = bool(mx.allclose(got, ref, rtol=1e-2, atol=1e-3))
         print(f"{dt} {shape} [{note}] sha256={h} refclose={ok}")
 print("IDENTITY-PROBE-DONE")
