@@ -1,0 +1,79 @@
+[mlx-rocm] bound HIP device 0: gfx1201 (AMD Radeon RX 9070 XT) cus=32 warp=32 lds=64KB
+== unit: plain rms_norm (MAJOR-1 env-gate identity) ==
+[PASS] plain rms_norm (1, 4096) mlx.core.bfloat16 (block kernel only)
+[PASS] plain rms_norm (32, 128) mlx.core.bfloat16 (block kernel only)
+[PASS] plain rms_norm (1, 128) mlx.core.bfloat16 (block kernel only)
+[PASS] plain rms_norm (8, 4096) mlx.core.bfloat16 (block kernel only)
+[PASS] plain rms_norm (1, 4096) mlx.core.float16 (block kernel only)
+[PASS] plain rms_norm (32, 128) mlx.core.float16 (block kernel only)
+[PASS] plain rms_norm (1, 128) mlx.core.float16 (block kernel only)
+[PASS] plain rms_norm (8, 4096) mlx.core.float16 (block kernel only)
+[PASS] plain rms_norm (1, 4096) mlx.core.float32 (block kernel only)
+[PASS] plain rms_norm (32, 128) mlx.core.float32 (block kernel only)
+[PASS] plain rms_norm (1, 128) mlx.core.float32 (block kernel only)
+[PASS] plain rms_norm (8, 4096) mlx.core.float32 (block kernel only)
+== unit: rms_norm_residual vs add + rms_norm ==
+[PASS] rms_norm_residual (1, 4096) mlx.core.bfloat16
+[PASS] rms_norm_residual (1, 128) mlx.core.bfloat16
+[PASS] rms_norm_residual (8, 4096) mlx.core.bfloat16
+[PASS] rms_norm_residual (1, 256) mlx.core.bfloat16
+[PASS] rms_norm_residual (1, 4096) mlx.core.float16
+[PASS] rms_norm_residual (1, 128) mlx.core.float16
+[PASS] rms_norm_residual (8, 4096) mlx.core.float16
+[PASS] rms_norm_residual (1, 256) mlx.core.float16
+[PASS] rms_norm_residual (1, 4096) mlx.core.float32
+[PASS] rms_norm_residual (1, 128) mlx.core.float32
+[PASS] rms_norm_residual (8, 4096) mlx.core.float32
+[PASS] rms_norm_residual (1, 256) mlx.core.float32
+== unit: kv_append vs slice-assign ==
+[PASS] kv_append 1x8x1x256 off=0 mlx.core.bfloat16
+[PASS] kv_append 1x8x1x256 off=1 mlx.core.bfloat16
+[PASS] kv_append 1x8x1x256 off=5 mlx.core.bfloat16
+[PASS] kv_append 1x2x1x128 off=0 mlx.core.bfloat16
+[PASS] kv_append 1x2x1x128 off=1 mlx.core.bfloat16
+[PASS] kv_append 1x2x1x128 off=5 mlx.core.bfloat16
+[PASS] kv_append 1x8x1x96 off=0 mlx.core.bfloat16
+[PASS] kv_append 1x8x1x96 off=1 mlx.core.bfloat16
+[PASS] kv_append 1x8x1x96 off=5 mlx.core.bfloat16
+[PASS] kv_append 1x2x1x120 off=0 mlx.core.bfloat16
+[PASS] kv_append 1x2x1x120 off=1 mlx.core.bfloat16
+[PASS] kv_append 1x2x1x120 off=5 mlx.core.bfloat16
+[PASS] kv_append 1x8x1x256 off=0 mlx.core.float16
+[PASS] kv_append 1x8x1x256 off=1 mlx.core.float16
+[PASS] kv_append 1x8x1x256 off=5 mlx.core.float16
+[PASS] kv_append 1x2x1x128 off=0 mlx.core.float16
+[PASS] kv_append 1x2x1x128 off=1 mlx.core.float16
+[PASS] kv_append 1x2x1x128 off=5 mlx.core.float16
+[PASS] kv_append 1x8x1x96 off=0 mlx.core.float16
+[PASS] kv_append 1x8x1x96 off=1 mlx.core.float16
+[PASS] kv_append 1x8x1x96 off=5 mlx.core.float16
+[PASS] kv_append 1x2x1x120 off=0 mlx.core.float16
+[PASS] kv_append 1x2x1x120 off=1 mlx.core.float16
+[PASS] kv_append 1x2x1x120 off=5 mlx.core.float16
+[PASS] kv_append 1x8x1x256 off=0 mlx.core.float32
+[PASS] kv_append 1x8x1x256 off=1 mlx.core.float32
+[PASS] kv_append 1x8x1x256 off=5 mlx.core.float32
+[PASS] kv_append 1x2x1x128 off=0 mlx.core.float32
+[PASS] kv_append 1x2x1x128 off=1 mlx.core.float32
+[PASS] kv_append 1x2x1x128 off=5 mlx.core.float32
+[PASS] kv_append 1x8x1x96 off=0 mlx.core.float32
+[PASS] kv_append 1x8x1x96 off=1 mlx.core.float32
+[PASS] kv_append 1x8x1x96 off=5 mlx.core.float32
+[PASS] kv_append 1x2x1x120 off=0 mlx.core.float32
+[PASS] kv_append 1x2x1x120 off=1 mlx.core.float32
+[PASS] kv_append 1x2x1x120 off=5 mlx.core.float32
+[PASS] kv_append in-place writes cache
+[PASS] kv_append in-place writes values
+== unit: kv_append CPU fallback (MAJOR-3) ==
+[PASS] kv_append CPU fallback 1x2x1x8 off=0
+[PASS] kv_append CPU fallback 1x2x1x8 off=1
+[PASS] kv_append CPU fallback 2x3x1x16 off=0
+[PASS] kv_append CPU fallback 2x3x1x16 off=1
+== negative: kv_append dtype mismatch (MAJOR-4) ==
+[PASS] kv_append f32->bf16 raises clean error
+== negative: kv_append non-contiguous view (MAJOR-5) ==
+[PASS] kv_append non-contig keys -> fallback (correct)
+== unit: rms_norm_residual non-contiguous residual (MAJOR-2) ==
+[PASS] rms_norm_residual non-contig residual
+
+all unit checks passed

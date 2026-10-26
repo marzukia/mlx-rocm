@@ -207,6 +207,14 @@ std::vector<array> kv_append(
     throw std::invalid_argument(
         "[kv_append] cache shapes must match keys/values on B, H, D.");
   }
+  // K2 review MAJOR-3 (round 4): the fast kernel writes cv at
+  // offset * cache_values strides[2] with no bounds check, so a smaller-T
+  // cache_values would be written out of bounds. Validate up front.
+  if (cache_keys.shape(2) != cache_values.shape(2)) {
+    throw std::invalid_argument(
+        "[kv_append] cache_keys and cache_values must have the same "
+        "T (shape(2)).");
+  }
   if (keys.shape(2) != 1) {
     throw std::invalid_argument(
         "[kv_append] only supports T=1 (decode); use slice_update for prefill.");
@@ -226,6 +234,15 @@ std::vector<array> kv_append(
   if (values.dtype() != cache_values.dtype()) {
     throw std::invalid_argument(
         "[kv_append] values dtype must match cache_values dtype.");
+  }
+  // K2 review MAJOR-2 (round 4): the fast kernel is single-dtype (one T
+  // for all four pointers, dispatch on keys dtype only), so a mixed
+  // keys/values dtype pair (each matching its own cache) would be read
+  // with the wrong element size — silent corruption. Validate up front.
+  if (keys.dtype() != values.dtype()) {
+    throw std::invalid_argument(
+        "[kv_append] keys and values must have the same dtype (the fast "
+        "kernel is single-dtype).");
   }
 
   auto s = to_stream(s_);
@@ -259,10 +276,22 @@ std::vector<array> kv_append(
   // [1,2,8] buffer has strides (8,16,1,1), is row_contiguous, but the
   // kernel reads row b at b*16 instead of b*8). Check the kernel's
   // requirements directly and route everything else to the slice_update
-  // fallback (arbitrary strides). This also matches the verify harness's
-  // _row_contiguous numpy-bridge check on the [2,2,1,8] strides
-  // (8,16,1,1) case: both reject the view.
+  // fallback (arbitrary strides).
+  //
+  // Layout metadata is only trustworthy once the array is materialized:
+  // an unscheduled graph node carries the C-default strides from
+  // ArrayDesc::init() (and all-true default flags), not the true view
+  // strides, while the kernel reads the input's strides at eval time
+  // (after materialization). Checking the stale metadata would dispatch
+  // the fast kernel for a transposed view (e.g. [2,2,1,8] strides
+  // (8,16,1,1) of a transposed [1,2,8] buffer) and misaddress the B
+  // rows. This matches the verify harness's _row_contiguous numpy-bridge
+  // check, which materializes before reading strides: both reject the
+  // view.
   auto kernel_layout_ok = [](const array& a) {
+    if (a.status() == array::Status::unscheduled) {
+      return false;
+    }
     const auto& sh = a.shape();
     const auto& st = a.strides();
     int64_t B = sh[0], H = sh[1], D = sh[3];

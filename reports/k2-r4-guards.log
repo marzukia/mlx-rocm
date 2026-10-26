@@ -1,0 +1,17 @@
+[mlx-rocm] bound HIP device 0: gfx1201 (AMD Radeon RX 9070 XT) cus=32 warp=32 lds=64KB
+== case 1: materialized standard layout -> FAST (in-place) ==
+ck buffer modified at offset row: True | cv: True | rest untouched: True
+VERDICT: FAST KERNEL (in-place, correct)
+== case 2: materialized non-contig view -> FALLBACK (correct) ==
+keys mismatched=0/256 | values mismatched=0/256
+VERDICT: FALLBACK (correct)
+== case 3: unscheduled non-contig view (suite case) -> FALLBACK (correct) ==
+keys mismatched=0/256 | values mismatched=0/256
+VERDICT: FALLBACK (correct)
+== case 4: mixed k/v dtype -> throw (MAJOR-2) ==
+RAISED ValueError: [kv_append] keys and values must have the same dtype (the fast kernel is single-dtype).
+VERDICT: THROWS (guard fires)
+== case 5: cache T mismatch -> throw (MAJOR-3) ==
+RAISED ValueError: [kv_append] cache_keys and cache_values must have the same T (shape(2)).
+VERDICT: THROWS (guard fires)
+PROBE-DONE

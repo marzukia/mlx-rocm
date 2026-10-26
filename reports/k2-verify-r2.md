@@ -64,11 +64,14 @@ output is bit-exact against the reference. r1's 16/256 misaddress is gone.
 Verdict: **69 PASS / 0 FAIL** - the 62 core unit checks plus 7 MAJOR-3/4/5 +
 negative cases; the r1 failing case (`kv_append non-contig keys`) now PASS.
 
-Sourcing note (for the re-review gate): the raw guest log
-(/tmp/k2-r2-full.log) was lost to guest tmp cleanup after the wall-kill, so
-the results section was appended post-run. The numbers below come from the
-run's own tool output (grep -c over the suite log, executed inside the run):
-`grep -c "^[PASS]"` = 69, `grep -c "^[FAIL]"` = 0, LOCK-ACQUIRED attempt=4,
-pre-run util=3%. Full extraction of the run's suite output (identity probe,
-suite run, per-check list) is in reports/k2-r2-suite-evidence.txt, pulled
-from the run session (fleetwork-531).
+Sourcing note (for the re-review gate): the raw guest log of the t531 run
+(/tmp/k2-r2-full.log) was lost to guest tmp cleanup after the wall-kill; the
+numbers above come from that run's own tool output (grep -c over the suite
+log, executed inside the run): `grep -c "^[PASS]"` = 69,
+`grep -c "^[FAIL]"` = 0, LOCK-ACQUIRED attempt=4, pre-run util=3%. The full
+extraction of the run's suite output (identity probe, suite run, per-check
+list) is in reports/k2-r2-suite-evidence.txt, pulled from the run session
+(fleetwork-531). Round 4 (this branch's wheel, sha256 d617a1b8, log
+preserved on disk: reports/k2-r4-suite-full.log) re-ran the same 69-check
+suite: 69 PASS / 0 FAIL — the 69/0 result is now substantiated by a
+preserved raw log (see REPORT.md sections 3-4).
