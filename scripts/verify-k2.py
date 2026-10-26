@@ -3,9 +3,25 @@
 import sys
 
 import mlx.core as mx
+import numpy as np
 
 torch_free = True  # noqa
 failures = []
+
+
+def _row_contiguous(a):
+    # Python stand-in for C++ flags().row_contiguous (this mlx build does
+    # not expose array.flags): C-order strides, size-1 dims free to have
+    # any stride (mirrors detail::update_flags in mlx/array via
+    # backend/common/common.cpp). f32 cast for the PEP3118 numpy bridge
+    # (bf16/f16 not PEP3118-compatible); astype preserves strides.
+    arr = np.asarray(a.astype(mx.float32))
+    b_stride = 1
+    for i in range(arr.ndim - 1, -1, -1):
+        if arr.shape[i] != 1 and arr.strides[i] // arr.itemsize != b_stride:
+            return False
+        b_stride *= arr.shape[i]
+    return True
 
 
 def check(name, cond):
@@ -121,7 +137,7 @@ B, H, D = 2, 2, 8
 mx.random.seed(3)
 base = mx.random.normal((H, B, D))
 keys = mx.transpose(base, (1, 0, 2))[:, :, None, :]  # [B,H,1,D], non-row-contig
-assert not keys.flags.row_contiguous, "test setup: keys must be non-row-contiguous"
+assert not _row_contiguous(keys), "test setup: keys must be non-row-contiguous"
 values = mx.random.normal((B, H, 1, D))
 ck = mx.random.normal((B, H, 8, D))
 cv = mx.random.normal((B, H, 8, D))
@@ -143,7 +159,7 @@ mx.random.seed(4)
 x = mx.random.normal((B, D))
 base_r = mx.random.normal((D, B))
 r = mx.transpose(base_r, (1, 0))  # [B,D], non-row-contiguous
-assert not r.flags.row_contiguous, "test setup: residual must be non-row-contiguous"
+assert not _row_contiguous(r), "test setup: residual must be non-row-contiguous"
 w = mx.random.normal((D,))
 ref = mx.fast.rms_norm(x + r, w, 1e-5)
 got = mx.rocm.rms_norm_residual(x, r, w, 1e-5)
