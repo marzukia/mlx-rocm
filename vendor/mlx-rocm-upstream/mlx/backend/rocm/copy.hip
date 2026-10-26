@@ -231,15 +231,10 @@ __global__ void kv_append_kernel(
   int64_t col = (j % (d / VEC)) * VEC;
   const T* src = is_v ? (v + row * v_row_stride + col) : (k + row * k_row_stride + col);
   T* dst = is_v ? (dv + row * dv_row_stride + col) : (dk + row * dk_row_stride + col);
-  if constexpr (VEC == 8) {
-    // 8 x 16-bit = 16 bytes
-    uint4 val = *reinterpret_cast<const uint4*>(src);
-    *reinterpret_cast<uint4*>(dst) = val;
-  } else {
-    // 4 x 32-bit = 16 bytes
-    uint4 val = *reinterpret_cast<const uint4*>(src);
-    *reinterpret_cast<uint4*>(dst) = val;
-  }
+  // K2 review NIT-9: both VEC==8 (8 x 16-bit) and VEC==4 (4 x 32-bit) are
+  // 16-byte uint4 copies; VEC only affects addressing, so a single block.
+  uint4 val = *reinterpret_cast<const uint4*>(src);
+  *reinterpret_cast<uint4*>(dst) = val;
 }
 
 // Scalar fallback for head dims not divisible by the vector width.

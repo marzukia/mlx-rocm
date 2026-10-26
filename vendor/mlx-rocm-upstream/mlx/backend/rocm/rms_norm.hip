@@ -458,16 +458,11 @@ void RMSNorm::eval_gpu(
           dim3(n_rows), dim3(BLOCK_DIM), 0,
           gpu_ptr<DT>(xk), gpu_ptr<DT>(w), gpu_ptr<DT>(out),
           eps_, axis_size, w_stride, n_row_dims, row_shape, row_strides);
-    } else if (n_rows <= 64 && axis_size <= 8192) {
-      // K2: decode fast path — one warp per row (no block reduction).
-      constexpr int WARP_BLOCK = 256;
-      int32_t n_blocks = (n_rows * WARP_SIZE + WARP_BLOCK - 1) / WARP_BLOCK;
-      encoder.add_kernel_node(
-          &rocm::rms_norm_warp_kernel<DT>,
-          dim3(n_blocks), dim3(WARP_BLOCK), 0,
-          gpu_ptr<DT>(xk), gpu_ptr<DT>(w), gpu_ptr<DT>(out),
-          eps_, axis_size, w_stride, n_rows);
     } else {
+      // K2 review MAJOR-1: the pre-existing rms_norm op keeps the block
+      // kernel only. The one-warp-per-row decode fast path lives in the new
+      // RMSNormResidual op, so with the K2 env unset (unpatched model) the
+      // default rms_norm path is bit-identical to the base.
       encoder.add_kernel_node(
           &rocm::rms_norm_kernel<DT, BLOCK_DIM, N_READS>,
           dim3(n_rows), dim3(BLOCK_DIM), 0,
@@ -493,15 +488,24 @@ void RMSNormResidual::eval_gpu(
   const array& xin = inputs[0];
   const array& rin = inputs[1];
   const array& w = inputs[2];
-  int ndim = xin.ndim();
   int32_t axis_size = xin.shape().back();
 
-  bool last_contig = ndim >= 1 && xin.strides()[ndim - 1] == 1;
-  bool packed = xin.flags().contiguous && last_contig;
-  if (packed && ndim > 1) {
-    auto s2 = xin.strides()[ndim - 2];
-    packed &= (s2 == 0 || s2 == (int64_t)axis_size);
-  }
+  // K2 review MAJOR-2: the packed fast path reads both x and residual rows at
+  // `row * axis_size`, so BOTH operands must be packed. The packed decision is
+  // taken from xin AND rin (previously xin only, which silently misread a
+  // non-row-contiguous residual such as a transposed/sliced one).
+  auto packed_check = [&](const array& a) {
+    int n = a.ndim();
+    int32_t axis = a.shape().back();
+    bool last_contig = n >= 1 && a.strides()[n - 1] == 1;
+    bool packed = a.flags().contiguous && last_contig;
+    if (packed && n > 1) {
+      auto s2 = a.strides()[n - 2];
+      packed &= (s2 == 0 || s2 == (int64_t)axis);
+    }
+    return packed;
+  };
+  bool packed = packed_check(xin) && packed_check(rin);
 
   array x = xin;
   array r = rin;

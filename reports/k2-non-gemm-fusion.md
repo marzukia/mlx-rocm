@@ -1,6 +1,6 @@
 # K2: non-GEMM fusion bench (COMPLETE)
 
-Branch: k2-non-gemm-fusion. Guest: gfx1201 (RX 9070 XT), 192.168.122.234, ROCm 10.1.
+Branch: k2-non-gemm-fusion. Guest: gfx1201 (RX 9070 XT), ROCm 10.1.
 Protocol: 200-tok warm decode, 16-tok warmup, fresh process, flock /mnt/models/gpu-bench.lock
 (util <1% pre-bench), timeout-300 wrap, same runner for both arms
 (/mnt/models/mlx-clone-k2/run-bench.sh <venv> <model> 200 2 <tag>).
@@ -53,6 +53,20 @@ confirming the measurement protocol is stable. Kernel-level diff (OFF→ON count
 rms_norm_warp -1344, copy_gg_byval -672, Multiply -336, Sigmoid -336, copy_v -218
 removed; rms_norm_residual +1344, kv_append +336, compiled fused gated-output +336
 added — exactly the expected K2 signature (2 kernels → 1 per fused site).
+
+Reconciliation note (review MINOR-7): the per-kernel counts above are from the
+rocprofv3 kernel trace, which covers a ~9.3-decode-step window (rms_norm_warp
+1344/36 layers = 37.3 → 1344/37.3 = 9.33 steps; kv_append 336/36 = 9.33; copy_gg_byval
+672/36/2 = 9.33), not the 41-step dispatch total. The two are separate
+measurements: the per-step dispatch total (43,838/41 = 1,069.2) is the
+authoritative, independently validated number (matches the prior 1,070 baseline),
+and the delta is self-consistent (−890/41 = −21.7/step). The naive KV-fusion
+expectation (−2 copies/layer × 36 layers = −72/step) overstates the measured
+−21.7/step because the OFF slice-assign path (update_and_fetch) does not dispatch
+2 copies per layer per step over the full run — the Python-side slice assign and
+the in-place append have different dispatch patterns, so the net per-step delta
+over the 41-step run is −21.7, not −72. The A/B conclusion is unaffected (it rests
+on the validated dispatch total and the tok/s A/B, not the per-kernel counts).
 
 ## Adoption verdict
 

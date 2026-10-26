@@ -3,7 +3,7 @@
 **Scope:** read-only analysis of the vendored ROCm backend (`vendor/mlx-rocm-upstream` @
 the pinned base sha = upstream `the vendor ref`), the built guest wheel
 (`mlx-0.32.3.dev20261026+the earlier vendor base`, built 04:11 from `/mnt/models/mlx-clone`), and
-kernel-level timing on marzuki-neon (RX 9070 XT, gfx1201, ROCm 10.1, **32-CU vGPU
+kernel-level timing on the guest (RX 9070 XT, gfx1201, ROCm 10.1, **32-CU vGPU
 partition** — `cus=32` in the boot log; full card is 54 CU).
 
 Headline: 9B-4bit decode is **63 tok/s** on the current wheel (the brief's 31 tok/s

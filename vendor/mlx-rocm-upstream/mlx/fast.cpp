@@ -215,18 +215,46 @@ std::vector<array> kv_append(
     throw std::invalid_argument(
         "[kv_append] offset out of range for the cache.");
   }
+  // K2 review MAJOR-4: the GPU kernel is templated on keys/values dtype and
+  // writes into the cache buffers, so a dtype mismatch (e.g. f32 keys into a
+  // bf16 cache) would write the wrong element size — silent memory
+  // corruption. Validate up front and error cleanly.
+  if (keys.dtype() != cache_keys.dtype()) {
+    throw std::invalid_argument(
+        "[kv_append] keys dtype must match cache_keys dtype.");
+  }
+  if (values.dtype() != cache_values.dtype()) {
+    throw std::invalid_argument(
+        "[kv_append] values dtype must match cache_values dtype.");
+  }
 
   auto s = to_stream(s_);
   auto fallback = [offset, s](const std::vector<array>& inputs) {
+    // K2 review MAJOR-3: start/stop of 0,0 for B/H/D normalized to empty
+    // (size-0) slices, so the [B,H,1,D] update always threw. Use the full dim
+    // sizes for B/H/D and [offset, offset+T) for T.
     auto start = Shape{(int)0, (int)0, (int)offset, (int)0};
-    auto stop = Shape{(int)0, (int)0, (int)(offset + inputs[0].shape(2)), (int)0};
+    auto stop = Shape{
+        (int)inputs[2].shape(0),
+        (int)inputs[2].shape(1),
+        (int)(offset + inputs[0].shape(2)),
+        (int)inputs[2].shape(3)};
     auto strides = Shape{(int)1, (int)1, (int)1, (int)1};
     auto ok = slice_update(inputs[2], inputs[0], start, stop, strides, s);
     auto ov = slice_update(inputs[3], inputs[1], start, stop, strides, s);
     return std::vector<array>{ok, ov};
   };
 
-  if (!KVAppend::use_fallback(s)) {
+  // K2 review MAJOR-5: the fast GPU kernel addresses the [B*H, D] rows via
+  // strides[1] and assumes strides[0] == H * strides[1] (standard layout) for
+  // keys, values AND the caches. Non-contiguous views (transpose, batch slice)
+  // would be silently misaddressed, so require standard layout and route
+  // non-contiguous inputs to the slice_update fallback (arbitrary strides).
+  bool standard_layout =
+      keys.flags().contiguous && values.flags().contiguous &&
+      cache_keys.flags().contiguous && cache_values.flags().contiguous;
+
+  if (!KVAppend::use_fallback(s) && standard_layout) {
     return array::make_arrays(
         {cache_keys.shape(), cache_values.shape()},
         {cache_keys.dtype(), cache_values.dtype()},
