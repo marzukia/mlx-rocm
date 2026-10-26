@@ -1,0 +1,227 @@
+--- session event 43 (toolResult) ---
+total 108
+drwxrw-r--  2 neonvm neonvm  4096 Oct 26 09:28 .
+drwxrwxrwt 45 root   root   20480 Oct 26 11:42 ..
+-rw-rw-r--  1 neonvm neonvm 45208 Oct 26 09:28 fast.cpp
+-rw-rw-r--  1 neonvm neonvm  4775 Oct 26 09:28 fast.h
+-rw-rw-r--  1 neonvm neonvm 21312 Oct 26 09:28 rms_norm.hip
+START 10:23:21
+LOCK-ACQUIRED 10:23:21
+=== IDENTITY PROBE (venv-k2) ===
+[mlx-rocm] bound HIP device 0: gfx1201 (AMD Radeon RX 9070 XT) cus=32 warp=32 lds=64KB
+mlx.core.bfloat16 (1, 4096) [decode] sha256=aa4adfbc59592b88 refclose=True
+mlx.core.bfloat16 (32, 128) [decode] sha256=7d32065e6ba3afa0 refclose=True
+mlx.core.bfloat16 (1, 128) [decode] sha256=c6022bab8b81d3d5 refclose=True
+mlx.core.bfloat16 (8, 4096) [decode] sha256=b8f5e971fde49fa6 refclose=True
+mlx.core.bfloat16 (65, 128) [block] sha256=c60bf36614241b49 refclose=True
+mlx.core.bfloat16 (1, 16384) [block] sha256=236d03486709e008 refclose=True
+mlx.core.bfloat16 (128, 512) [block] sha256=3d1d2301bbd457ed refclose=True
+mlx.core.bfloat16 (4, 8193) [block] sha256=3689da4ebe24a7b9 refclose=True
+mlx.core.float16 (1, 4096) [decode] sha256=1f5e0e7a4033c82f refclose=True
+mlx.core.float16 (32, 128) [decode] sha256=ac63ec4e25e2f67f refclose=True
+mlx.core.float16 (1, 128) [decode] sha256=f04c9a822fd6a1ab refclose=True
+mlx.core.float16 (8, 4096) [decode] sha256=443678f0a9b218ee refclose=True
+mlx.core.float16 (65, 128) [block] sha256=a22bfbaf3e43511e refclose=True
+mlx.core.float16 (1, 16384) [block] sha256=c6178d91bd8cdbea refclose=True
+mlx.core.float16 (128, 512) [block] sha256=7207814ed714b3b1 refclose=True
+mlx.core.float16 (4, 8193) [block] sha256=adba7511efee3e2d refclose=True
+mlx.core.float32 (1, 4096) [decode] sha256=e64a36aa8a3291f7 refclose=True
+mlx.core.float32 (32, 128) [decode] sha256=4367311b3dfad08a refclose=True
+mlx.core.float32 (1, 128) [decode] sha256=e8dfd138f3198237 refclose=True
+mlx.core.float32 (8, 4096) [decode] sha256=034ec938c71be20b refclose=True
+mlx.core.float32 (65, 128) [block] sha256=d6eab278c1d59fd1 refclose=True
+mlx.core.float32 (1, 16384) [block] sha256=8dcf0af33fd016cd refclose=True
+mlx.core.float32 (128, 512) [block] sha256=fa2e15227682de6d refclose=True
+mlx.core.float32 (4, 8193) [block] sha256=58123e9b445ca4a7 refclose=True
+IDENTITY-PROBE-DONE
+PROBE_EXIT=124
+=== VERIFY SUITE (venv-k2) ===
+[mlx-rocm] bound HIP device 0: gfx1201 (AMD Radeon RX 9070 XT) cus=32 warp=32 lds=64KB
+== unit: plain rms_norm (MAJOR-1 env-gate identity) ==
+[PASS] plain rms_norm (1, 4096) mlx.core.bfloat16 (block kernel only)
+[PASS] plain rms_norm (32, 128) mlx.core.bfloat16 (block kernel only)
+[PASS] plain rms_norm (1, 128) mlx.core.bfloat16 (block kernel only)
+[PASS] plain rms_norm (8, 4096) mlx.core.bfloat16 (block kernel only)
+[PASS] plain rms_norm (1, 4096) mlx.core.float16 (block kernel only)
+[PASS] plain rms_norm (32, 128) mlx.core.float16 (block kernel only)
+[PASS] plain rms_norm (1, 128) mlx.core.float16 (block kernel only)
+[PASS] plain rms_norm (8, 4096) mlx.core.float16 (block kernel only)
+[PASS] plain rms_norm (1, 4096) mlx.core.float32 (block kernel only)
+[PASS] plain rms_norm (32, 128) mlx.core.float32 (block kernel only)
+[PASS] plain rms_norm (1, 128) mlx.core.float32 (block kernel only)
+[PASS] plain rms_norm (8, 4096) mlx.core.float32 (block kernel only)
+== unit: rms_norm_residual vs add + rms_norm ==
+[PASS] rms_norm_residual (1, 4096) mlx.core.bfloat16
+[PASS] rms_norm_residual (1, 128) mlx.core.bfloat16
+[PASS] rms_norm_residual (8, 4096) mlx.core.bfloat16
+[PASS] rms_norm_residual (1, 256) mlx.core.bfloat16
+[PASS] rms_norm_residual (1, 4096) mlx.core.float16
+[PASS] rms_norm_residual (1, 128) mlx.core.float16
+[PASS] rms_norm_residual (8, 4096) mlx.core.float16
+[PASS] rms_norm_residual (1, 256) mlx.core.float16
+[PASS] rms_norm_residual (1, 4096) mlx.core.float32
+[PASS] rms_norm_residual (1, 128) mlx.core.float32
+[PASS] rms_norm_residual (8, 4096) mlx.core.float32
+[PASS] rms_norm_residual (1, 256) mlx.core.float32
+== unit: kv_append vs slice-assign ==
+[PASS] kv_append 1x8x1x256 off=0 mlx.core.bfloat16
+
+
+--- session event 45 (toolResult) ---
+[PASS] kv_append 1x8x1x256 off=0 mlx.core.bfloat16
+[PASS] kv_append 1x8x1x256 off=1 mlx.core.bfloat16
+[PASS] kv_append 1x8x1x256 off=5 mlx.core.bfloat16
+[PASS] kv_append 1x2x1x128 off=0 mlx.core.bfloat16
+[PASS] kv_append 1x2x1x128 off=1 mlx.core.bfloat16
+[PASS] kv_append 1x2x1x128 off=5 mlx.core.bfloat16
+[PASS] kv_append 1x8x1x96 off=0 mlx.core.bfloat16
+[PASS] kv_append 1x8x1x96 off=1 mlx.core.bfloat16
+[PASS] kv_append 1x8x1x96 off=5 mlx.core.bfloat16
+[PASS] kv_append 1x2x1x120 off=0 mlx.core.bfloat16
+[PASS] kv_append 1x2x1x120 off=1 mlx.core.bfloat16
+[PASS] kv_append 1x2x1x120 off=5 mlx.core.bfloat16
+[PASS] kv_append 1x8x1x256 off=0 mlx.core.float16
+[PASS] kv_append 1x8x1x256 off=1 mlx.core.float16
+[PASS] kv_append 1x8x1x256 off=5 mlx.core.float16
+[PASS] kv_append 1x2x1x128 off=0 mlx.core.float16
+[PASS] kv_append 1x2x1x128 off=1 mlx.core.float16
+[PASS] kv_append 1x2x1x128 off=5 mlx.core.float16
+[PASS] kv_append 1x8x1x96 off=0 mlx.core.float16
+[PASS] kv_append 1x8x1x96 off=1 mlx.core.float16
+[PASS] kv_append 1x8x1x96 off=5 mlx.core.float16
+[PASS] kv_append 1x2x1x120 off=0 mlx.core.float16
+[PASS] kv_append 1x2x1x120 off=1 mlx.core.float16
+[PASS] kv_append 1x2x1x120 off=5 mlx.core.float16
+[PASS] kv_append 1x8x1x256 off=0 mlx.core.float32
+[PASS] kv_append 1x8x1x256 off=1 mlx.core.float32
+[PASS] kv_append 1x8x1x256 off=5 mlx.core.float32
+[PASS] kv_append 1x2x1x128 off=0 mlx.core.float32
+[PASS] kv_append 1x2x1x128 off=1 mlx.core.float32
+[PASS] kv_append 1x2x1x128 off=5 mlx.core.float32
+[PASS] kv_append 1x8x1x96 off=0 mlx.core.float32
+[PASS] kv_append 1x8x1x96 off=1 mlx.core.float32
+[PASS] kv_append 1x8x1x96 off=5 mlx.core.float32
+[PASS] kv_append 1x2x1x120 off=0 mlx.core.float32
+[PASS] kv_append 1x2x1x120 off=1 mlx.core.float32
+[PASS] kv_append 1x2x1x120 off=5 mlx.core.float32
+[PASS] kv_append in-place writes cache
+[PASS] kv_append in-place writes values
+== unit: kv_append CPU fallback (MAJOR-3) ==
+[PASS] kv_append CPU fallback 1x2x1x8 off=0
+[PASS] kv_append CPU fallback 1x2x1x8 off=1
+[PASS] kv_append CPU fallback 2x3x1x16 off=0
+[PASS] kv_append CPU fallback 2x3x1x16 off=1
+== negative: kv_append dtype mismatch (MAJOR-4) ==
+[PASS] kv_append f32->bf16 raises clean error
+== negative: kv_append non-contiguous view (MAJOR-5) ==
+[FAIL] kv_append non-contig keys -> fallback (correct)
+== unit: rms_norm_residual non-contiguous residual (MAJOR-2) ==
+[PASS] rms_norm_residual non-contig residual
+
+1 FAILURES: ['kv_append non-contig keys -> fallback (correct)']
+SUITE_EXIT=124
+END 10:31:21
+
+
+--- session event 101 (toolResult) ---
+[PASS] kv_append CPU fallback 1x2x1x8 off=0
+[PASS] kv_append CPU fallback 1x2x1x8 off=1
+[PASS] kv_append CPU fallback 2x3x1x16 off=0
+[PASS] kv_append CPU fallback 2x3x1x16 off=1
+== negative: kv_append dtype mismatch (MAJOR-4) ==
+[PASS] kv_append f32->bf16 raises clean error
+== negative: kv_append non-contiguous view (MAJOR-5) ==
+[PASS] kv_append non-contig keys -> fallback (correct)
+== unit: rms_norm_residual non-contiguous residual (MAJOR-2) ==
+[PASS] rms_norm_residual non-contig residual
+
+all unit checks passed
+
+
+--- session event 107 (toolResult) ---
+6:===== VERIFY SUITE (venv-k2, r2 full) =====
+8:== unit: plain rms_norm (MAJOR-1 env-gate identity) ==
+9:[PASS] plain rms_norm (1, 4096) mlx.core.bfloat16 (block kernel only)
+10:[PASS] plain rms_norm (32, 128) mlx.core.bfloat16 (block kernel only)
+11:[PASS] plain rms_norm (1, 128) mlx.core.bfloat16 (block kernel only)
+12:[PASS] plain rms_norm (8, 4096) mlx.core.bfloat16 (block kernel only)
+13:[PASS] plain rms_norm (1, 4096) mlx.core.float16 (block kernel only)
+14:[PASS] plain rms_norm (32, 128) mlx.core.float16 (block kernel only)
+15:[PASS] plain rms_norm (1, 128) mlx.core.float16 (block kernel only)
+16:[PASS] plain rms_norm (8, 4096) mlx.core.float16 (block kernel only)
+17:[PASS] plain rms_norm (1, 4096) mlx.core.float32 (block kernel only)
+18:[PASS] plain rms_norm (32, 128) mlx.core.float32 (block kernel only)
+19:[PASS] plain rms_norm (1, 128) mlx.core.float32 (block kernel only)
+20:[PASS] plain rms_norm (8, 4096) mlx.core.float32 (block kernel only)
+21:== unit: rms_norm_residual vs add + rms_norm ==
+22:[PASS] rms_norm_residual (1, 4096) mlx.core.bfloat16
+23:[PASS] rms_norm_residual (1, 128) mlx.core.bfloat16
+24:[PASS] rms_norm_residual (8, 4096) mlx.core.bfloat16
+25:[PASS] rms_norm_residual (1, 256) mlx.core.bfloat16
+26:[PASS] rms_norm_residual (1, 4096) mlx.core.float16
+27:[PASS] rms_norm_residual (1, 128) mlx.core.float16
+28:[PASS] rms_norm_residual (8, 4096) mlx.core.float16
+29:[PASS] rms_norm_residual (1, 256) mlx.core.float16
+30:[PASS] rms_norm_residual (1, 4096) mlx.core.float32
+31:[PASS] rms_norm_residual (1, 128) mlx.core.float32
+32:[PASS] rms_norm_residual (8, 4096) mlx.core.float32
+33:[PASS] rms_norm_residual (1, 256) mlx.core.float32
+34:== unit: kv_append vs slice-assign ==
+35:[PASS] kv_append 1x8x1x256 off=0 mlx.core.bfloat16
+36:[PASS] kv_append 1x8x1x256 off=1 mlx.core.bfloat16
+37:[PASS] kv_append 1x8x1x256 off=5 mlx.core.bfloat16
+38:[PASS] kv_append 1x2x1x128 off=0 mlx.core.bfloat16
+39:[PASS] kv_append 1x2x1x128 off=1 mlx.core.bfloat16
+40:[PASS] kv_append 1x2x1x128 off=5 mlx.core.bfloat16
+41:[PASS] kv_append 1x8x1x96 off=0 mlx.core.bfloat16
+42:[PASS] kv_append 1x8x1x96 off=1 mlx.core.bfloat16
+43:[PASS] kv_append 1x8x1x96 off=5 mlx.core.bfloat16
+44:[PASS] kv_append 1x2x1x120 off=0 mlx.core.bfloat16
+45:[PASS] kv_append 1x2x1x120 off=1 mlx.core.bfloat16
+46:[PASS] kv_append 1x2x1x120 off=5 mlx.core.bfloat16
+47:[PASS] kv_append 1x8x1x256 off=0 mlx.core.float16
+48:[PASS] kv_append 1x8x1x256 off=1 mlx.core.float16
+49:[PASS] kv_append 1x8x1x256 off=5 mlx.core.float16
+50:[PASS] kv_append 1x2x1x128 off=0 mlx.core.float16
+51:[PASS] kv_append 1x2x1x128 off=1 mlx.core.float16
+52:[PASS] kv_append 1x2x1x128 off=5 mlx.core.float16
+53:[PASS] kv_append 1x8x1x96 off=0 mlx.core.float16
+54:[PASS] kv_append 1x8x1x96 off=1 mlx.core.float16
+55:[PASS] kv_append 1x8x1x96 off=5 mlx.core.float16
+56:[PASS] kv_append 1x2x1x120 off=0 mlx.core.float16
+57:[PASS] kv_append 1x2x1x120 off=1 mlx.core.float16
+58:[PASS] kv_append 1x2x1x120 off=5 mlx.core.float16
+59:[PASS] kv_append 1x8x1x256 off=0 mlx.core.float32
+60:[PASS] kv_append 1x8x1x256 off=1 mlx.core.float32
+61:[PASS] kv_append 1x8x1x256 off=5 mlx.core.float32
+62:[PASS] kv_append 1x2x1x128 off=0 mlx.core.float32
+63:[PASS] kv_append 1x2x1x128 off=1 mlx.core.float32
+64:[PASS] kv_append 1x2x1x128 off=5 mlx.core.float32
+65:[PASS] kv_append 1x8x1x96 off=0 mlx.core.float32
+66:[PASS] kv_append 1x8x1x96 off=1 mlx.core.float32
+67:[PASS] kv_append 1x8x1x96 off=5 mlx.core.float32
+68:[PASS] kv_append 1x2x1x120 off=0 mlx.core.float32
+69:[PASS] kv_append 1x2x1x120 off=1 mlx.core.float32
+70:[PASS] kv_append 1x2x1x120 off=5 mlx.core.float32
+71:[PASS] kv_append in-place writes cache
+72:[PASS] kv_append in-place writes values
+73:== unit: kv_append CPU fallback (MAJOR-3) ==
+74:[PASS] kv_append CPU fallback 1x2x1x8 off=0
+75:[PASS] kv_append CPU fallback 1x2x1x8 off=1
+76:[PASS] kv_append CPU fallback 2x3x1x16 off=0
+77:[PASS] kv_append CPU fallback 2x3x1x16 off=1
+78:== negative: kv_append dtype mismatch (MAJOR-4) ==
+79:[PASS] kv_append f32->bf16 raises clean error
+80:== negative: kv_append non-contiguous view (MAJOR-5) ==
+81:[PASS] kv_append non-contig keys -> fallback (correct)
+82:== unit: rms_norm_residual non-contiguous residual (MAJOR-2) ==
+83:[PASS] rms_norm_residual non-contig residual
+85:all unit checks passed
+
+
+--- session event 109 (toolResult) ---
+[PASS] rms_norm_residual non-contig residual
+
+all unit checks passed
+    PID STAT     ELAPSED CMD
+ 208046 Sl         04:18 /mnt/models/venv-k2/bin/python /mnt/models/mlx-clone-k2/verify-k2.py
