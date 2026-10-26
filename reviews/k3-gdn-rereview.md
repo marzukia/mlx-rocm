@@ -188,6 +188,15 @@ Numerics ran B=1, Hk=4/Hv=8 (ratio 2), Dk=Dv=128, T∈{1,3} only:
   (consecutive tids, width 32 — always intra-wave).
 - No BLOCKER found. No silent-miscompute path found outside M1 (which
   throws loudly).
+- Git-history corroboration of the report's root cause: bd061d6 (t460)
+  has `hipStreamDestroy(stream)` at line 920 inside
+  `chunked_copy_stream_separated` (the segfaulting design); 85b521e
+  (the re-land) has zero chunked-copy references (the masking re-land);
+  the fix commit re-adds chunking without the destroy. The crash-mode
+  table (load-gated 16/16 concurrent → 0/16 on the fix) is consistent
+  with a stream-lifecycle race, not a deterministic code bug.
+- M1 re-verified by grep: kkt_solve switch = {1,2,3,4,6,8} (lines
+  348–353), gate = `Hv / Hk > 8` (gated_delta_update.cpp:120).
 
 ## Findings
 
