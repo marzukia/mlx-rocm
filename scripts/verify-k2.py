@@ -1,4 +1,5 @@
 """K2 numerical verification: fused ops vs decompositions + model A/B logits."""
+
 import sys
 
 import mlx.core as mx
@@ -30,7 +31,7 @@ for dt in (mx.bfloat16, mx.float16, mx.float32):
 
 print("== unit: kv_append vs slice-assign ==")
 for dt in (mx.bfloat16, mx.float16, mx.float32):
-    for (B, H, T, D) in ((1, 8, 1, 256), (1, 2, 1, 128), (1, 8, 1, 96), (1, 2, 1, 120)):
+    for B, H, T, D in ((1, 8, 1, 256), (1, 2, 1, 128), (1, 8, 1, 96), (1, 2, 1, 120)):
         mx.random.seed(1)
         keys = mx.random.normal((B, H, T, D))
         values = mx.random.normal((B, H, T, D))
