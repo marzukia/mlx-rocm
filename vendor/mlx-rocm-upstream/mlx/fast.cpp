@@ -245,18 +245,32 @@ std::vector<array> kv_append(
     return std::vector<array>{ok, ov};
   };
 
-  // K2 review MAJOR-5 (re-review MAJOR-A): the fast GPU kernel addresses the
-  // [B*H, D] rows via strides[1] and assumes strides[0] == H * strides[1] (or
-  // B==1) and strides[3] == 1 (or D==1) for keys, values AND the caches. The
-  // `contiguous` flag only means "no gaps" and admits gap-free permuted views
-  // (e.g. [B,H,D,D] with the last two axes transposed) that the kernel
-  // misaddresses, so require row_contiguous (already maintained on the flag
-  // set; it implies the kernel's stride requirements, modulo the degenerate
-  // D==1 allowance, which merely routes to the fallback) and route
-  // non-row-contiguous inputs to the slice_update fallback (arbitrary strides).
+  // K2 review MAJOR-5 (re-review MAJOR-A, fix round 3): the fast GPU kernel
+  // treats [B,H,1,D] as 2D [B*H, D] rows addressed via strides[1] and
+  // advances the dst base by offset * cache strides[2]. Its exact stride
+  // requirements, per array, are:
+  //   - strides[3] == 1 (or D == 1): unit-stride rows
+  //   - strides[0] == H * strides[1] (or B == 1): the B*H row flattening
+  // The T stride is never used (T == 1, only t == 0 is read), so a
+  // non-row-contiguous T view is fine for the kernel. The row_contiguous
+  // flag alone is insufficient: its size-1 allowance skips the H-stride
+  // check when H == 1, leaving strides[1] unconstrained while the kernel
+  // uses it as the B-row stride (e.g. a [2,1,1,8] view of a transposed
+  // [1,2,8] buffer has strides (8,16,1,1), is row_contiguous, but the
+  // kernel reads row b at b*16 instead of b*8). Check the kernel's
+  // requirements directly and route everything else to the slice_update
+  // fallback (arbitrary strides). This also matches the verify harness's
+  // _row_contiguous numpy-bridge check on the [2,2,1,8] strides
+  // (8,16,1,1) case: both reject the view.
+  auto kernel_layout_ok = [](const array& a) {
+    const auto& sh = a.shape();
+    const auto& st = a.strides();
+    int64_t B = sh[0], H = sh[1], D = sh[3];
+    return (st[3] == 1 || D == 1) && (st[0] == H * st[1] || B == 1);
+  };
   bool standard_layout =
-      keys.flags().row_contiguous && values.flags().row_contiguous &&
-      cache_keys.flags().row_contiguous && cache_values.flags().row_contiguous;
+      kernel_layout_ok(keys) && kernel_layout_ok(values) &&
+      kernel_layout_ok(cache_keys) && kernel_layout_ok(cache_values);
 
   if (!KVAppend::use_fallback(s) && standard_layout) {
     return array::make_arrays(
