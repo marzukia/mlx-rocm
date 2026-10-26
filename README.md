@@ -88,7 +88,7 @@ wheel + qmlx-serve 9B validation).
 
 ## License
 
-Apache-2.0 (MLX upstream license; see `LICENSE`).
+MIT (MLX upstream license; see `LICENSE`).
 
 ## Repo layout (scaffold)
 

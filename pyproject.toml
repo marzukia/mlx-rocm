@@ -13,7 +13,7 @@ authors = [{ name = "monkytheluffy", email = "monky@ag.mrzk.io" }]
 keywords = ["mlx", "rocm", "hip", "amd", "rdna4", "gfx1201"]
 classifiers = [
   "Development Status :: 1 - Planning",
-  "License :: OSI Approved :: Apache Software License",
+  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -46,5 +46,5 @@ markers = [
 
 # License note: the `license = { text = ... }` table is intentionally absent -
 # uv 0.10.9 rejects the table form and setuptools 84 rejects the list form, so
-# no single form satisfies both. Apache-2.0 is declared via the classifier
+# no single form satisfies both. MIT is declared via the classifier
 # above + the LICENSE file (included in the sdist).
