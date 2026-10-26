@@ -81,6 +81,49 @@ Local: build + small host GEMM. Neon: `ssh` reachability + `rocm-smi`
 check, tar transfer, ROCm build, GPU GEMM + fp8 probe. Results land in
 `scripts/smoke-results/` (gitignored).
 
+## Supported models (gfx1201, ROCm 10.1 guest)
+
+| Model | Quant | Status on gfx1201 |
+|---|---|---|
+| Qwen3-0.6B | 8-bit (affine) | validated — benched 207.6–214.3 tok/s (`k2-non-gemm-fusion`) |
+| Qwen3-0.6B | bf16 | Phase 0 smoke target (`scripts/smoke.py` ladder) |
+| 9B-class dense Qwen3 | 4-bit (affine qmm) | validated — benched 55.9–57.8 tok/s A/B (`k2-non-gemm-fusion`), 63.8 tok/s with a 16-token warmup (`opt-gauntlet-areaA`) |
+| 27B+ / 122B-hybrid / MoE | — | not supported (Phase 2; a 27B load was in flight on the guest, unvalidated) |
+| MTP spec decode | — | not supported (blocked on the M3 stream-TLS fix) |
+| non-gfx1201 archs | — | not validated (only gfx1201 is validated in this repo) |
+
+Details, in-flight items, and caveats: `docs/limitations.md`.
+
+## Converting a model
+
+`mlx_lm` (≥ 0.32) converts a HuggingFace ref to the safetensors layout the
+loader expects:
+
+```
+# bf16
+mlx_lm.convert --model Qwen/Qwen3-0.6B
+# 4-bit affine qmm (validated on gfx1201)
+mlx_lm.convert --model Qwen/Qwen3-8B --quantize --bits 4 --group-size 64
+# 8-bit (AWQ-style)
+mlx_lm.convert --model Qwen/Qwen3-8B --quantize --bits 8 --q-mode awq
+```
+
+Or use a pre-converted `mlx-community/*` ref (e.g.
+`mlx-community/Qwen3-0.6B-8bit`). **mxfp4 is the in-flight target (K4)**:
+prefill runs via the opt-in dequant→bf16 GEMM path today; there is no native
+mxfp4 kernel yet.
+
+## Status — in-flight lanes
+
+| Lane | What | Branch |
+|---|---|---|
+| K1 (QMV/GEMV bandwidth) | int8-activation QMV fix (N=12288); no bench yet | `k1-qmv-gemv-bandwidth` |
+| K2 (non-GEMM fusion) | bench complete, verdict ADOPT; PR #2 open | `k2-non-gemm-fusion` |
+| K3 (GDN port) | segfault fix + numerics PASS; PR #3 open | `k3-gdn-port` |
+| K4 (MXFP4) | opt-in dequant→bf16 GEMM only; no native kernel, no dedicated branch yet | — |
+| G1 (graph decode) | pilot wiring + ROCm 10.1 `hipStreamIsCapturing` fix; symbol export / engine wiring pending | `g1-graph-decode` |
+| alpha (docs/housekeeping) | alpha-state checklist + this docs wave | `alpha-checklist` / `alpha-docs` |
+
 ## Python package
 
 `pip install`-able skeleton (`pyproject.toml`, `src/python/mlx_rocm/`):
@@ -97,6 +140,8 @@ MIT (MLX upstream license; see `LICENSE`).
 
 - `docs/plan.md` — the research report + phased plan (architecture, CUDA→ROCm map,
   prior art, gfx1201 findings, effort).
+- `docs/limitations.md` — what works / in flight / not supported / caveats.
+- `docs/quickstart.md` — the verified build + smoke path on a gfx1201 box.
 - `PLAN.md` — living plan (phases, current state, open questions).
 - `vendor.json` — the pinned vendor fork + ref (primary/fallback) and the build flags.
 - `scripts/build-wheel.sh` — build the `mlx` wheel with `-DMLX_BUILD_ROCM=ON` for gfx1201 (runs on neon).
