@@ -94,6 +94,164 @@ __device__ void rms_norm_row(
   }
 }
 
+// K2: fused residual-add + RMSNorm row body. s = x + residual (in float),
+// normalizer over s^2, out = w * (s * normalizer).
+template <typename T, int BLOCK_DIM, int N_READS = 4>
+__device__ void rms_norm_residual_row(
+    const T* x,
+    const T* r,
+    const T* w,
+    T* out,
+    float eps,
+    uint32_t axis_size,
+    int64_t w_stride) {
+  float normalizer = 0;
+  for (int i = threadIdx.x * N_READS; i < axis_size; i += BLOCK_DIM * N_READS) {
+    #pragma unroll
+    for (int j = 0; j < N_READS && i + j < axis_size; ++j) {
+      float t = static_cast<float>(x[i + j]) + static_cast<float>(r[i + j]);
+      normalizer += t * t;
+    }
+  }
+
+  __shared__ float shared_sum[BLOCK_DIM / WARP_SIZE + 1];
+
+  float warp_sum = warp_reduce_sum_rms(normalizer);
+  int lane = threadIdx.x % WARP_SIZE;
+  int warp_id = threadIdx.x / WARP_SIZE;
+
+  if (lane == 0) {
+    shared_sum[warp_id] = warp_sum;
+  }
+  __syncthreads();
+
+  if (warp_id == 0) {
+    normalizer = (lane < (BLOCK_DIM + WARP_SIZE - 1) / WARP_SIZE) ? shared_sum[lane] : 0;
+    normalizer = warp_reduce_sum_rms(normalizer);
+  }
+  __syncthreads();
+
+  if (threadIdx.x == 0) {
+    shared_sum[0] = normalizer;
+  }
+  __syncthreads();
+  normalizer = 1.0f / sqrtf(shared_sum[0] / axis_size + eps);
+
+  for (int i = threadIdx.x * N_READS; i < axis_size; i += BLOCK_DIM * N_READS) {
+    #pragma unroll
+    for (int j = 0; j < N_READS && i + j < axis_size; ++j) {
+      int idx = i + j;
+      float t = static_cast<float>(x[idx]) + static_cast<float>(r[idx]);
+      T wi = (w_stride == 0) ? w[0] : w[idx * w_stride];
+      out[idx] = wi * static_cast<T>(t * normalizer);
+    }
+  }
+}
+
+template <typename T>
+__global__ void rms_norm_residual_warp_kernel(
+    const T* x,
+    const T* r,
+    const T* w,
+    T* out,
+    float eps,
+    uint32_t axis_size,
+    int64_t w_stride,
+    int32_t n_rows) {
+  int32_t warp = (int32_t)(blockIdx.x * blockDim.x + threadIdx.x) / WARP_SIZE;
+  if (warp >= n_rows) {
+    return;
+  }
+  int32_t lane = threadIdx.x % WARP_SIZE;
+  x += (int64_t)warp * axis_size;
+  r += (int64_t)warp * axis_size;
+  out += (int64_t)warp * axis_size;
+
+  constexpr int N_READS = 4;
+  float normalizer = 0;
+  for (int i = lane * N_READS; i < axis_size; i += WARP_SIZE * N_READS) {
+    #pragma unroll
+    for (int j = 0; j < N_READS && i + j < axis_size; ++j) {
+      float t = static_cast<float>(x[i + j]) + static_cast<float>(r[i + j]);
+      normalizer += t * t;
+    }
+  }
+  for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
+    normalizer += __shfl_xor(normalizer, offset);
+  }
+  normalizer = 1.0f / sqrtf(normalizer / axis_size + eps);
+
+  for (int i = lane * N_READS; i < axis_size; i += WARP_SIZE * N_READS) {
+    #pragma unroll
+    for (int j = 0; j < N_READS && i + j < axis_size; ++j) {
+      int idx = i + j;
+      float t = static_cast<float>(x[idx]) + static_cast<float>(r[idx]);
+      T wi = (w_stride == 0) ? w[0] : w[idx * w_stride];
+      out[idx] = wi * static_cast<T>(t * normalizer);
+    }
+  }
+}
+
+template <typename T, int BLOCK_DIM, int N_READS = 4>
+__global__ void rms_norm_residual_kernel(
+    const T* x,
+    const T* r,
+    const T* w,
+    T* out,
+    float eps,
+    uint32_t axis_size,
+    int64_t w_stride) {
+  size_t row = blockIdx.x;
+  rms_norm_residual_row<T, BLOCK_DIM, N_READS>(
+      x + (int64_t)row * axis_size,
+      r + (int64_t)row * axis_size,
+      w, out, eps, axis_size, w_stride);
+}
+
+// K2: warp-per-row fast path for the decode case (few rows, modest axis size).
+// One warp handles one row: no shared memory, no block sync.
+template <typename T>
+__global__ void rms_norm_warp_kernel(
+    const T* x,
+    const T* w,
+    T* out,
+    float eps,
+    uint32_t axis_size,
+    int64_t w_stride,
+    int32_t n_rows) {
+  int32_t warp = (int32_t)(blockIdx.x * blockDim.x + threadIdx.x) / WARP_SIZE;
+  if (warp >= n_rows) {
+    return;
+  }
+  int32_t lane = threadIdx.x % WARP_SIZE;
+  x += (int64_t)warp * axis_size;
+  out += (int64_t)warp * axis_size;
+
+  constexpr int N_READS = 4;
+  float normalizer = 0;
+  for (int i = lane * N_READS; i < axis_size; i += WARP_SIZE * N_READS) {
+    #pragma unroll
+    for (int j = 0; j < N_READS && i + j < axis_size; ++j) {
+      float t = static_cast<float>(x[i + j]);
+      normalizer += t * t;
+    }
+  }
+  for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
+    normalizer += __shfl_xor(normalizer, offset);
+  }
+  normalizer = 1.0f / sqrtf(normalizer / axis_size + eps);
+
+  for (int i = lane * N_READS; i < axis_size; i += WARP_SIZE * N_READS) {
+    #pragma unroll
+    for (int j = 0; j < N_READS && i + j < axis_size; ++j) {
+      int idx = i + j;
+      float t = static_cast<float>(x[idx]);
+      T wi = (w_stride == 0) ? w[0] : w[idx * w_stride];
+      out[idx] = wi * static_cast<T>(t * normalizer);
+    }
+  }
+}
+
 // Packed input: rows tightly packed at row * axis_size.
 template <typename T, int BLOCK_DIM, int N_READS = 4>
 __global__ void rms_norm_kernel(
@@ -225,6 +383,10 @@ bool RMSNorm::use_fallback(Stream s) {
   return s.device == Device::cpu;
 }
 
+bool RMSNormResidual::use_fallback(Stream s) {
+  return s.device == Device::cpu;
+}
+
 void RMSNorm::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
@@ -296,6 +458,15 @@ void RMSNorm::eval_gpu(
           dim3(n_rows), dim3(BLOCK_DIM), 0,
           gpu_ptr<DT>(xk), gpu_ptr<DT>(w), gpu_ptr<DT>(out),
           eps_, axis_size, w_stride, n_row_dims, row_shape, row_strides);
+    } else if (n_rows <= 64 && axis_size <= 8192) {
+      // K2: decode fast path — one warp per row (no block reduction).
+      constexpr int WARP_BLOCK = 256;
+      int32_t n_blocks = (n_rows * WARP_SIZE + WARP_BLOCK - 1) / WARP_BLOCK;
+      encoder.add_kernel_node(
+          &rocm::rms_norm_warp_kernel<DT>,
+          dim3(n_blocks), dim3(WARP_BLOCK), 0,
+          gpu_ptr<DT>(xk), gpu_ptr<DT>(w), gpu_ptr<DT>(out),
+          eps_, axis_size, w_stride, n_rows);
     } else {
       encoder.add_kernel_node(
           &rocm::rms_norm_kernel<DT, BLOCK_DIM, N_READS>,
@@ -309,6 +480,86 @@ void RMSNorm::eval_gpu(
     case float16: launch(__half{}); break;
     case bfloat16: launch(hip_bfloat16{}); break;
     default: throw std::runtime_error("Unsupported type for rms_norm");
+  }
+}
+
+void RMSNormResidual::eval_gpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  auto& s = stream();
+  auto& out = outputs[0];
+  auto& encoder = rocm::get_command_encoder(s);
+
+  const array& xin = inputs[0];
+  const array& rin = inputs[1];
+  const array& w = inputs[2];
+  int ndim = xin.ndim();
+  int32_t axis_size = xin.shape().back();
+
+  bool last_contig = ndim >= 1 && xin.strides()[ndim - 1] == 1;
+  bool packed = xin.flags().contiguous && last_contig;
+  if (packed && ndim > 1) {
+    auto s2 = xin.strides()[ndim - 2];
+    packed &= (s2 == 0 || s2 == (int64_t)axis_size);
+  }
+
+  array x = xin;
+  array r = rin;
+  if (!packed) {
+    x = contiguous_copy_gpu(xin, s);
+    r = contiguous_copy_gpu(rin, s);
+    if (x.data_shared_ptr() != xin.data_shared_ptr()) {
+      encoder.add_temporary(x);
+    }
+    if (r.data_shared_ptr() != rin.data_shared_ptr()) {
+      encoder.add_temporary(r);
+    }
+    out.copy_shared_buffer(x);
+  } else {
+    if (xin.is_donatable() && rin.is_donatable()) {
+      out.copy_shared_buffer(xin);
+    } else {
+      out.set_data(
+          mlx::core::rocm::malloc_async(xin.data_size() * xin.itemsize(), encoder),
+          xin.data_size(), xin.strides(), xin.flags());
+    }
+  }
+
+  int32_t n_rows = (int32_t)(out.size() / axis_size);
+  int64_t w_stride = (w.ndim() == 1) ? w.strides()[0] : 0;
+
+  encoder.set_input_array(x);
+  encoder.set_input_array(r);
+  encoder.set_input_array(w);
+  encoder.set_output_array(out);
+
+  constexpr int BLOCK_DIM = 256;
+  constexpr int N_READS = 4;
+
+  auto launch = [&](auto tag) {
+    using DT = decltype(tag);
+    if (n_rows <= 64 && axis_size <= 8192) {
+      // K2: decode fast path — one warp per row.
+      constexpr int WARP_BLOCK = 256;
+      int32_t n_blocks = (n_rows * WARP_SIZE + WARP_BLOCK - 1) / WARP_BLOCK;
+      encoder.add_kernel_node(
+          &rocm::rms_norm_residual_warp_kernel<DT>,
+          dim3(n_blocks), dim3(WARP_BLOCK), 0,
+          gpu_ptr<DT>(x), gpu_ptr<DT>(r), gpu_ptr<DT>(w), gpu_ptr<DT>(out),
+          eps_, axis_size, w_stride, n_rows);
+    } else {
+      encoder.add_kernel_node(
+          &rocm::rms_norm_residual_kernel<DT, BLOCK_DIM, N_READS>,
+          dim3(n_rows), dim3(BLOCK_DIM), 0,
+          gpu_ptr<DT>(x), gpu_ptr<DT>(r), gpu_ptr<DT>(w), gpu_ptr<DT>(out),
+          eps_, axis_size, w_stride);
+    }
+  };
+  switch (out.dtype()) {
+    case float32: launch(float{}); break;
+    case float16: launch(__half{}); break;
+    case bfloat16: launch(hip_bfloat16{}); break;
+    default: throw std::runtime_error("Unsupported type for rms_norm_residual");
   }
 }
 

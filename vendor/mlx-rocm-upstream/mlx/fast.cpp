@@ -120,6 +120,122 @@ array rms_norm(
   return fallback({x, passed_weight})[0];
 }
 
+array rms_norm_residual(
+    const array& x,
+    const array& residual,
+    const array& weight,
+    float eps,
+    StreamOrDevice s_) {
+  if (x.ndim() == 0) {
+    throw std::invalid_argument(
+        "[rms_norm_residual] Input must have at least 1 dimension.");
+  }
+  if (residual.shape() != x.shape()) {
+    throw std::invalid_argument(
+        "[rms_norm_residual] residual must have the same shape as x.");
+  }
+  if (weight.ndim() != 1) {
+    throw std::invalid_argument(
+        "[rms_norm_residual] weight must have 1 dimension.");
+  }
+  if (weight.size() != x.shape(-1)) {
+    throw std::invalid_argument(
+        "[rms_norm_residual] weight must match the last dim of x.");
+  }
+
+  auto out_type = result_type(x, weight);
+  if (!issubdtype(out_type, floating)) {
+    std::ostringstream msg;
+    msg << "[rms_norm_residual] Received unsupported type " << out_type << ".";
+    throw std::invalid_argument(msg.str());
+  }
+
+  auto s = to_stream(s_);
+  auto fallback =
+      [eps, out_type, s](const std::vector<array>& inputs) {
+        auto x = astype(inputs[0], float32, s);
+        x = add(x, astype(inputs[1], float32, s), s);
+        x = multiply(
+            x,
+            rsqrt(
+                add(mean(square(x, s), -1, /* keepdims */ true, s),
+                    array(eps, float32),
+                    s),
+                s),
+            s);
+        x = astype(x, out_type, s);
+        x = multiply(x, inputs[2], s);
+        return std::vector<array>{x};
+      };
+
+  if (!RMSNormResidual::use_fallback(s)) {
+    return array(
+        x.shape(),
+        out_type,
+        std::make_shared<RMSNormResidual>(s, fallback, eps),
+        {astype(x, out_type, s), astype(residual, out_type, s),
+         astype(weight, out_type, s)});
+  }
+  return fallback({x, residual, weight})[0];
+}
+
+std::vector<array> kv_append(
+    const array& keys,
+    const array& values,
+    const array& cache_keys,
+    const array& cache_values,
+    int64_t offset,
+    StreamOrDevice s_) {
+  if (keys.ndim() != 4 || values.ndim() != 4) {
+    throw std::invalid_argument(
+        "[kv_append] keys/values must be 4D [B, H, T, D].");
+  }
+  if (keys.shape() != values.shape()) {
+    throw std::invalid_argument(
+        "[kv_append] keys and values must have the same shape.");
+  }
+  if (cache_keys.ndim() != 4 || cache_values.ndim() != 4) {
+    throw std::invalid_argument(
+        "[kv_append] caches must be 4D [B, H, T, D].");
+  }
+  if (keys.shape(0) != cache_keys.shape(0) ||
+      keys.shape(1) != cache_keys.shape(1) ||
+      keys.shape(3) != cache_keys.shape(3) ||
+      values.shape(0) != cache_values.shape(0) ||
+      values.shape(1) != cache_values.shape(1) ||
+      values.shape(3) != cache_values.shape(3)) {
+    throw std::invalid_argument(
+        "[kv_append] cache shapes must match keys/values on B, H, D.");
+  }
+  if (keys.shape(2) != 1) {
+    throw std::invalid_argument(
+        "[kv_append] only supports T=1 (decode); use slice_update for prefill.");
+  }
+  if (offset < 0 || offset + keys.shape(2) > cache_keys.shape(2)) {
+    throw std::invalid_argument(
+        "[kv_append] offset out of range for the cache.");
+  }
+
+  auto s = to_stream(s_);
+  auto fallback = [offset, s](const std::vector<array>& inputs) {
+    auto start = Shape{(int)0, (int)0, (int)offset, (int)0};
+    auto stop = Shape{(int)0, (int)0, (int)(offset + inputs[0].shape(2)), (int)0};
+    auto strides = Shape{(int)1, (int)1, (int)1, (int)1};
+    auto ok = slice_update(inputs[2], inputs[0], start, stop, strides, s);
+    auto ov = slice_update(inputs[3], inputs[1], start, stop, strides, s);
+    return std::vector<array>{ok, ov};
+  };
+
+  if (!KVAppend::use_fallback(s)) {
+    return array::make_arrays(
+        {cache_keys.shape(), cache_values.shape()},
+        {cache_keys.dtype(), cache_values.dtype()},
+        std::make_shared<KVAppend>(s, fallback, offset),
+        {keys, values, cache_keys, cache_values});
+  }
+  return fallback({keys, values, cache_keys, cache_values});
+}
+
 std::vector<array> RMSNorm::vjp(
     const std::vector<array>& primals,
     const std::vector<array>& cotangents,
@@ -180,6 +296,17 @@ std::vector<array> RMSNorm::vjp(
 bool RMSNorm::is_equivalent(const Primitive& other) const {
   const RMSNorm& a_other = static_cast<const RMSNorm&>(other);
   return eps_ == a_other.eps_;
+}
+
+bool RMSNormResidual::is_equivalent(const Primitive& other) const {
+  const RMSNormResidual& a_other =
+      static_cast<const RMSNormResidual&>(other);
+  return eps_ == a_other.eps_;
+}
+
+bool KVAppend::is_equivalent(const Primitive& other) const {
+  const KVAppend& a_other = static_cast<const KVAppend&>(other);
+  return offset_ == a_other.offset_;
 }
 
 bool RMSNormVJP::is_equivalent(const Primitive& other) const {
