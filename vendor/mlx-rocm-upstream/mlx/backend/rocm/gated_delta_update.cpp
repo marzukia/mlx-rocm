@@ -145,6 +145,14 @@ void GatedDeltaUpdate::eval_gpu(
   const int Dk = q.shape(3);
   const int Hv = v.shape(2);
   const int Dv = v.shape(3);
+  if (std::getenv("MLX_GDN_DEBUG")) {
+    for (size_t i = 0; i < inputs.size(); i++) {
+      fprintf(stderr, "GDN-DBG in[%zu] status=%d dptr=%p nbytes=%zu\n",
+              i, (int)inputs[i].status(),
+              (void*)inputs[i].data_shared_ptr().get(),
+              inputs[i].nbytes());
+    }
+  }
 
   // The fused kernels are compiled for bf16 q/k/v/g/beta, fp32 state, scalar
   // gates and no mask. Anything else runs the op-loop fallback the graph
