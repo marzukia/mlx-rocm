@@ -17,6 +17,8 @@ Deterministic: fixed seeds, no GPU nondeterminism (single-kernel ops).
 
 import hashlib
 
+import numpy as np
+
 import mlx.core as mx
 
 # (shape, note): decode = old fast path eligible; block = always block kernel
@@ -39,7 +41,7 @@ for dt in (mx.bfloat16, mx.float16, mx.float32):
         eps = 1e-5
         got = mx.fast.rms_norm(x, w, eps)
         mx.eval(got)
-        h = hashlib.sha256(got.tobytes()).hexdigest()[:16]
+        h = hashlib.sha256(np.asarray(got.astype(mx.float32)).tobytes()).hexdigest()[:16]
         # f32-accumulation reference (correctness, not the identity check)
         xf = x.astype(mx.float32)
         ref = (
