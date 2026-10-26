@@ -177,11 +177,33 @@ void GatedDeltaUpdate::eval_gpu(
   encoder.set_input_array(h0);
   out.set_data(mlx::core::rocm::malloc_async(out.nbytes(), encoder));
   state.set_data(mlx::core::rocm::malloc_async(state.nbytes(), encoder));
+  if (std::getenv("MLX_GDN_DEBUG")) {
+    fprintf(stderr,
+            "GDN-DBG post-set out.id=%p out.data=%p out.buf=%p "
+            "state.id=%p state.data=%p state.buf=%p\n",
+            (void*)out.id(),
+            (void*)out.data_shared_ptr().get(),
+            out.data_shared_ptr() ? (void*)out.buffer().ptr() : nullptr,
+            (void*)state.id(),
+            (void*)state.data_shared_ptr().get(),
+            state.data_shared_ptr() ? (void*)state.buffer().ptr()
+                : nullptr);
+  }
 
   if (T == 1) {
     // Decode: one recurrent state update per token. The recurrent kernel
     // reads the multiplicative gates directly, so no temp buffers are needed.
     encoder.launch_kernel([&](hipStream_t stream) {
+      if (std::getenv("MLX_GDN_DEBUG")) {
+        fprintf(stderr,
+                "GDN-DBG lambda out.data=%p out.buf=%p state.data=%p "
+                "state.buf=%p\n",
+                (void*)out.data_shared_ptr().get(),
+                out.data_shared_ptr() ? (void*)out.buffer().ptr() : nullptr,
+                (void*)state.data_shared_ptr().get(),
+                state.data_shared_ptr() ? (void*)state.buffer().ptr()
+                    : nullptr);
+      }
       const int rc = r4d_gdn_recurrent_update_k128_v128_bf16_fp32state(
           gpu_ptr<unsigned short>(q),
           gpu_ptr<unsigned short>(k),

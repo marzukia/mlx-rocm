@@ -852,6 +852,72 @@ void RocmAllocator::decode_arena_end() {
   decode_arena_.active = false;
 }
 
+// gfx1201 / ROCm 10.1: a single large host-shadow staging copy (>=300 MB;
+// the 1.2 GB model-weight scale) intermittently hangs in kfd_wait_on_events
+// with the GPU idle (t444/t454 lineage). Keep each staging copy at or below
+// the safe size. Override with MLX_ROCM_D2H_CHUNK_MB (0 = single copy, the
+// pre-chunking behavior).
+static size_t host_shadow_chunk_bytes() {
+  static const size_t chunk = [] {
+    const char* e = std::getenv("MLX_ROCM_D2H_CHUNK_MB");
+    if (e != nullptr) {
+      const long mb = std::strtol(e, nullptr, 10);
+      if (mb <= 0) {
+        return SIZE_MAX; // single copy (no chunking)
+      }
+      return static_cast<size_t>(mb) * 1024 * 1024;
+    }
+    return static_cast<size_t>(100) * 1024 * 1024;
+  }();
+  return chunk;
+}
+
+// t515 (k3): chunked host-shadow staging copy. Each chunk is issued on its
+// own freshly created stream (hipMemcpyAsync + hipStreamSynchronize) so no
+// chunk inherits a queue with a pending un-retired KFD completion event —
+// the per-chunk queue reset is the hang-avoidance property (t460).
+//
+// t461-class segfault fix: the t460 design also DESTROYED the per-chunk
+// stream (hipStreamDestroy). On gfx1201 the KFD completion event of an
+// async copy is not retired promptly; destroying the per-chunk stream while
+// that event is still pending races the runtime stream/event bookkeeping and
+// segfaults in this function (t506: core x4 in the GDN bf16 D2H, backtrace
+// at the chunked-copy region). The stream is therefore intentionally NOT
+// destroyed: one small bounded leak per chunk per shadow copy (a 1.2 GB
+// copy leaks 12 streams; negligible for a server process) in exchange for
+// no stream-lifecycle race.
+static hipError_t shadow_chunked_copy(void* dst, const void* src, size_t size,
+                                     hipMemcpyKind kind) {
+  const size_t chunk = host_shadow_chunk_bytes();
+  size_t off = 0;
+  while (off < size) {
+    const size_t n = std::min(chunk, size - off);
+    hipStream_t stream = nullptr;
+    hipError_t err = hipStreamCreate(&stream);
+    if (err != hipSuccess || stream == nullptr) {
+      // Fallback: sync hipMemcpy (the legacy path) if stream creation fails.
+      err = hipMemcpy(static_cast<char*>(dst) + off,
+                     static_cast<const char*>(src) + off, n, kind);
+      if (err != hipSuccess) {
+        return err;
+      }
+      off += n;
+      continue;
+    }
+    err = hipMemcpyAsync(static_cast<char*>(dst) + off,
+                        static_cast<const char*>(src) + off, n, kind, stream);
+    if (err == hipSuccess) {
+      err = hipStreamSynchronize(stream);
+    }
+    // t515: no hipStreamDestroy(stream) — see the comment above.
+    if (err != hipSuccess) {
+      return err;
+    }
+    off += n;
+  }
+  return hipSuccess;
+}
+
 void RocmAllocator::ensure_host_shadow(RocmBuffer& buf) {
   if (buf.alloc_stream == reinterpret_cast<void*>(static_cast<uintptr_t>(1))) {
     return;
@@ -868,8 +934,8 @@ void RocmAllocator::ensure_host_shadow(RocmBuffer& buf) {
     }
   }
   if (!buf.host_dirty) {
-    hipError_t err =
-        hipMemcpy(buf.host_shadow, buf.data, buf.size, hipMemcpyDeviceToHost);
+    hipError_t err = shadow_chunked_copy(buf.host_shadow, buf.data, buf.size,
+                                        hipMemcpyDeviceToHost);
     if (err != hipSuccess) {
       std::ostringstream oss;
       oss << "hipMemcpy (host shadow) failed: " << hipGetErrorString(err)
@@ -883,7 +949,8 @@ void RocmAllocator::flush_host_shadow(RocmBuffer& buf) {
   if (buf.host_shadow == nullptr || !buf.host_dirty) {
     return;
   }
-  (void)hipMemcpy(buf.data, buf.host_shadow, buf.size, hipMemcpyHostToDevice);
+  (void)shadow_chunked_copy(buf.data, buf.host_shadow, buf.size,
+                           hipMemcpyHostToDevice);
   buf.host_dirty = false;
 }
 
@@ -896,7 +963,8 @@ void RocmAllocator::flush_all_dirty_shadows() {
   std::lock_guard lock(mutex_);
   for (auto* buf : dirty_shadows_) {
     if (buf && buf->host_shadow && buf->host_dirty) {
-      (void)hipMemcpy(buf->data, buf->host_shadow, buf->size, hipMemcpyHostToDevice);
+      (void)shadow_chunked_copy(buf->data, buf->host_shadow, buf->size,
+                                hipMemcpyHostToDevice);
       buf->host_dirty = false;
     }
   }
