@@ -38,10 +38,109 @@
 #include <list>
 #include <mutex>
 #include <unordered_map>
+#include <set>
 
 namespace mlx::core {
 
 namespace rocm {
+
+// G1 first-error tracking (defined in device.cpp).
+extern void g1_check_hip(const char* call, hipError_t err, const char* phase = nullptr);
+extern void g1_check_rocblas(const char* call, rocblas_status st);
+extern std::atomic<bool> g_decode_capturing;
+
+// G1f: GEMM shape prewarm. The capture step's GEMMs (new shapes) trigger a
+// per-shape lazy init (Tensile kernel load) that does a stream-ordered call
+// from a BLAS internal thread on the capture stream, invalidating the capture
+// (delayed — reflected after op 20). Log shapes during eager steps; prewarm
+// them before capture so no lazy init happens during capture.
+struct G1GemmShape {
+  int m, n, k;
+  int dt; // 0=f32, 1=f16, 2=bf16
+  bool operator<(const G1GemmShape& o) const {
+    return std::tie(m, n, k, dt) < std::tie(o.m, o.n, o.k, o.dt);
+  }
+};
+inline std::set<G1GemmShape>& g1_gemm_shapes() {
+  static std::set<G1GemmShape> s;
+  return s;
+}
+inline std::mutex& g1_gemm_shapes_mu() {
+  static std::mutex m;
+  return m;
+}
+inline std::vector<G1GemmShape> g1_get_gemm_shapes() {
+  std::lock_guard lock(g1_gemm_shapes_mu());
+  return std::vector<G1GemmShape>(g1_gemm_shapes().begin(),
+                                 g1_gemm_shapes().end());
+}
+
+// G1f: prewarm the exact GEMM shapes logged during eager steps, so the
+// capture step's GEMMs (new shapes) do not trigger a per-shape lazy init
+// (Tensile kernel load) that does a stream-ordered call from a BLAS internal
+// thread on the capture stream (invalidates the capture, delayed).
+void g1_prewarm_gemm_shapes(rocblas_handle handle, hipStream_t stream) {
+  auto shapes = g1_get_gemm_shapes();
+  // Only prewarm decode-sized shapes (M <= 32) — large prefill GEMMs are slow
+  // and can OOM; the capture step only uses decode-sized GEMMs.
+  for (auto& s : shapes) {
+    if (s.m > 32)
+      continue;
+    // Allocate buffers for this shape (element size depends on dtype).
+    size_t esz = (s.dt == 0) ? 4 : 2; // f32=4 bytes, f16/bf16=2 bytes
+    size_t asz = size_t(s.m) * size_t(s.k) * esz;
+    size_t bsz = size_t(s.k) * size_t(s.n) * esz;
+    size_t csz = size_t(s.m) * size_t(s.n) * esz;
+    void* a = nullptr;
+    void* b = nullptr;
+    void* c = nullptr;
+    hipError_t m1 = hipMalloc(&a, asz);
+    g1_check_hip("hipMalloc (g1 shape prewarm a)", m1, "prewarm");
+    hipError_t m2 = (m1 == hipSuccess) ? hipMalloc(&b, bsz) : hipSuccess;
+    g1_check_hip("hipMalloc (g1 shape prewarm b)", m2, "prewarm");
+    hipError_t m3 =
+        (m1 == hipSuccess && m2 == hipSuccess) ? hipMalloc(&c, csz)
+                                             : hipSuccess;
+    g1_check_hip("hipMalloc (g1 shape prewarm c)", m3, "prewarm");
+    if (m1 == hipSuccess && m2 == hipSuccess && m3 == hipSuccess) {
+      (void)hipMemset(a, 0, asz);
+      (void)hipMemset(b, 0, bsz);
+      (void)hipMemset(c, 0, csz);
+      float alpha = 1.0f;
+      float beta = 0.0f;
+      // Run the GEMM for this shape with the correct dtype (gemm_ex for all).
+      // rocblas_gemm_ex is a 24-arg macro: (handle, transa, transb, m, n, k,
+      // alpha, a, a_type, lda, b, b_type, ldb, beta, c, c_type, ldc, d,
+      // d_type, ldd, compute_type, algo, solution_index, flag).
+      rocblas_datatype dt =
+          (s.dt == 0) ? rocblas_datatype_f32_r : (s.dt == 1)
+              ? rocblas_datatype_f16_r
+              : rocblas_datatype_bf16_r;
+      rocblas_status st = rocblas_gemm_ex(
+          handle,
+          rocblas_operation_none,
+          rocblas_operation_none,
+          s.n, s.m, s.k,
+          &alpha,
+          b, dt, s.k,
+          a, dt, s.k,
+          &beta,
+          c, dt, s.n,
+          c, dt, s.n,
+          rocblas_datatype_f32_r,
+          rocblas_gemm_algo_standard,
+          0,
+          0);
+      g1_check_rocblas("rocblas_gemm_ex (g1 shape prewarm)", st);
+    }
+    if (a)
+      (void)hipFree(a);
+    if (b)
+      (void)hipFree(b);
+    if (c)
+      (void)hipFree(c);
+  }
+}
 
 // Strided 2D row-copy kernel: copies rows from a source with row_stride != cols
 // into a contiguous destination.
@@ -1216,6 +1315,14 @@ void dequant_rocblas_gemm(
     enc.device().set_rocblas_stream(stream);
     rocblas_handle handle = enc.device().get_rocblas_handle();
 
+    // G1f: log the GEMM shape during eager steps (not during capture) so the
+    // prewarm can cover the exact shapes used in the capture step.
+    if (!rocm::g_decode_capturing.load(std::memory_order_relaxed)) {
+      int dt = (dtype == float32) ? 0 : (dtype == float16) ? 1 : 2;
+      std::lock_guard lock(rocm::g1_gemm_shapes_mu());
+      rocm::g1_gemm_shapes().insert({M, N, K, dt});
+    }
+
     rocblas_operation op_a = to_rocblas_op(transpose_a);
     rocblas_operation op_b = to_rocblas_op(transpose_b);
 
@@ -1275,9 +1382,10 @@ void dequant_rocblas_gemm(
               rocblas_gemm_algo_solution_index,
               solution_index,
               0);
+          rocm::g1_check_rocblas("rocblas_gemm_ex (qmm f32 solution)", status);
           if (status != rocblas_status_success) {
             solution_valid.store(false, std::memory_order_relaxed);
-            rocblas_sgemm(
+            rocblas_status s2 = rocblas_sgemm(
                 handle,
                 op_b,
                 op_a,
@@ -1292,9 +1400,10 @@ void dequant_rocblas_gemm(
                 &beta_f,
                 static_cast<float*>(c_ptr),
                 ldc);
+            rocm::g1_check_rocblas("rocblas_sgemm (qmm f32 fallback)", s2);
           }
         } else {
-          rocblas_sgemm(
+          rocblas_status s2 = rocblas_sgemm(
               handle,
               op_b,
               op_a,
@@ -1309,6 +1418,7 @@ void dequant_rocblas_gemm(
               &beta_f,
               static_cast<float*>(c_ptr),
               ldc);
+          rocm::g1_check_rocblas("rocblas_sgemm (qmm f32)", s2);
         }
         break;
       }
@@ -1318,7 +1428,7 @@ void dequant_rocblas_gemm(
         __half beta_f16 = static_cast<__half>(beta);
         std::memcpy(&alpha_h, &alpha_f16, sizeof(rocblas_half));
         std::memcpy(&beta_h, &beta_f16, sizeof(rocblas_half));
-        rocblas_hgemm(
+        rocblas_status s2 = rocblas_hgemm(
             handle,
             op_b,
             op_a,
@@ -1333,6 +1443,7 @@ void dequant_rocblas_gemm(
             &beta_h,
             reinterpret_cast<rocblas_half*>(c_ptr),
             ldc);
+        rocm::g1_check_rocblas("rocblas_hgemm (qmm f16)", s2);
         break;
       }
       case bfloat16: {
@@ -1393,11 +1504,12 @@ void dequant_rocblas_gemm(
             algo,
             solution_index,
             0);
+        rocm::g1_check_rocblas("rocblas_gemm_ex (qmm bf16)", status);
 
         if (status != rocblas_status_success &&
             algo == rocblas_gemm_algo_solution_index) {
           solution_valid.store(false, std::memory_order_relaxed);
-          rocblas_gemm_ex(
+          rocblas_status s2 = rocblas_gemm_ex(
               handle,
               op_b,
               op_a,
@@ -1422,6 +1534,7 @@ void dequant_rocblas_gemm(
               rocblas_gemm_algo_standard,
               0,
               0);
+          rocm::g1_check_rocblas("rocblas_gemm_ex (qmm bf16 fallback)", s2);
         }
         break;
       }
@@ -1501,9 +1614,10 @@ void dequant_rocblas_gemm_batched(
               rocblas_gemm_algo_solution_index,
               solution_index,
               0);
+          rocm::g1_check_rocblas("rocblas_gemm_strided_batched_ex (qmm f32)", status);
           if (status != rocblas_status_success) {
             solution_valid.store(false, std::memory_order_relaxed);
-            rocblas_sgemm_strided_batched(
+            rocblas_status s2 = rocblas_sgemm_strided_batched(
                 handle,
                 op_b,
                 op_a,
@@ -1522,9 +1636,11 @@ void dequant_rocblas_gemm_batched(
                 ldc,
                 stride_c,
                 batch_count);
+            rocm::g1_check_rocblas(
+                "rocblas_sgemm_strided_batched (qmm f32 fallback)", s2);
           }
         } else {
-          rocblas_sgemm_strided_batched(
+          rocblas_status s2 = rocblas_sgemm_strided_batched(
               handle,
               op_b,
               op_a,
@@ -1543,6 +1659,7 @@ void dequant_rocblas_gemm_batched(
               ldc,
               stride_c,
               batch_count);
+          rocm::g1_check_rocblas("rocblas_sgemm_strided_batched (qmm f32)", s2);
         }
         break;
       }
@@ -1552,7 +1669,7 @@ void dequant_rocblas_gemm_batched(
         __half beta_f16 = static_cast<__half>(beta);
         std::memcpy(&alpha_h, &alpha_f16, sizeof(rocblas_half));
         std::memcpy(&beta_h, &beta_f16, sizeof(rocblas_half));
-        rocblas_hgemm_strided_batched(
+        rocblas_status s2 = rocblas_hgemm_strided_batched(
             handle,
             op_b,
             op_a,
@@ -1571,6 +1688,7 @@ void dequant_rocblas_gemm_batched(
             ldc,
             stride_c,
             batch_count);
+        rocm::g1_check_rocblas("rocblas_hgemm_strided_batched (qmm f16)", s2);
         break;
       }
       case bfloat16: {
@@ -1617,11 +1735,12 @@ void dequant_rocblas_gemm_batched(
             algo,
             solution_index,
             0);
+        rocm::g1_check_rocblas("rocblas_gemm_strided_batched_ex (qmm bf16)", status);
 
         if (status != rocblas_status_success &&
             algo == rocblas_gemm_algo_solution_index) {
           solution_valid.store(false, std::memory_order_relaxed);
-          rocblas_gemm_strided_batched_ex(
+          rocblas_status s2 = rocblas_gemm_strided_batched_ex(
               handle,
               op_b,
               op_a,
@@ -1651,6 +1770,8 @@ void dequant_rocblas_gemm_batched(
               rocblas_gemm_algo_standard,
               0,
               0);
+          rocm::g1_check_rocblas(
+              "rocblas_gemm_strided_batched_ex (qmm bf16 fallback)", s2);
         }
         break;
       }
@@ -3497,6 +3618,13 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   // materialization. Default ON where the device has native WMMA (opt out with
   // MLX_ROCM_WMMA_QMM=0); dispatch below falls to rocBLAS when WMMA is absent or
   // the shape doesn't qualify. Single (non-batched) bf16 affine prefill.
+  //
+  // M > 8, not M > 1: the 64x128 tile is prefill-shaped. Small-M decode and
+  // spec-decode verify (M = 2..8) run the QMV decode kernels instead (wide
+  // QMV supports M <= 8; the dequant/rocBLAS crossover takes over at M >= 8 on
+  // large shapes). The tiled GEMM at M = 2 does ~32x the useful work and was
+  // measured 5.8x slower than the QMV path (S=2 verify 144 ms vs 39 ms on the
+  // 9B 4bit model), which is what made batched MTP verify 4.6x a T=1 forward.
   // Low-CU iGPUs (gfx1152 4–8 CU): skip WMMA-QMM — fat 64×128 tiles thrash the
   // tiny L2 and have produced garbage/NaN under APU memory pressure; QMV/dequant
   // paths are safer. Force on with MLX_ROCM_WMMA_QMM=1.
@@ -3517,7 +3645,7 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     if (want_wmma && transpose_ && mode_ == QuantizationMode::Affine &&
         x.dtype() == bfloat16 && scales.dtype() == bfloat16 &&
         (!biases.has_value() || biases->dtype() == bfloat16) &&
-        batch_count == 1 && x_batch_count == 1 && w_batch_count == 1 && M > 1 &&
+        batch_count == 1 && x_batch_count == 1 && w_batch_count == 1 && M > 8 &&
         (N % 16 == 0) && group_size_ == 64 && (K % 64 == 0) &&
         (bits_ == 4 || bits_ == 6 || bits_ == 8) && d.has_native_wmma()) {
       dim3 block(128, 1, 1);

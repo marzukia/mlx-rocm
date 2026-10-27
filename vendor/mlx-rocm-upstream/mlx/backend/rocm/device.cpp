@@ -6,6 +6,7 @@
 #include "mlx/backend/rocm/allocator.h"
 #include "mlx/backend/rocm/utils.h"
 #include "mlx/backend/rocm/worker.h"
+#include "mlx/backend/rocm/g1_hiplog.h"
 #include "mlx/utils.h"
 
 #include <chrono>
@@ -21,6 +22,21 @@
 #include <vector>
 
 namespace mlx::core::rocm {
+
+// G1 root-cause instrumentation (defined below).
+extern long g1_trace_n;
+// G1 first-error tracking (defined below, gated by MLX_G1_TRACE /
+// MLX_G1_FIRST_ERR). Forward-declared for use in the capture-region call
+// sites above the definition.
+bool g1_fe_on();
+void g1_check_hip(const char* call, hipError_t err, const char* phase = nullptr);
+void g1_check_rocblas(const char* call, rocblas_status st);
+// G1f: GEMM shape prewarm (defined in qmm.hip, same namespace).
+void g1_prewarm_gemm_shapes(rocblas_handle handle, hipStream_t stream);
+void g1_check_status(const char* call, int code, const char* msg,
+                    const char* phase = nullptr);
+void g1_reset_first_error();
+void g1_first_error_summary(const char* phase);
 
 namespace {
 
@@ -180,7 +196,16 @@ rocblas_handle Device::get_rocblas_handle() {
                 << "gfx1030, gfx1100, gfx1101, gfx1102, gfx1150, gfx1151, "
                 << "gfx1152, gfx1200, gfx1201." << std::endl;
     } else {
+      // G1: a mid-capture handle creation is a capture-region allocator call
+      // (rocBLAS lazy-inits a workspace here); name it if it fails.
       rocblas_status status = rocblas_create_handle(&rocblas_);
+      g1_check_rocblas("rocblas_create_handle (lazy init)", status);
+      if (g1_fe_on() &&
+          g_decode_capturing.load(std::memory_order_relaxed)) {
+        fprintf(stderr,
+                "[g1fe] NOTE: rocblas handle CREATED mid-capture (op %ld)\n",
+                g1_trace_n);
+      }
       if (status != rocblas_status_success) {
         rocblas_available_ = false;
         rocblas_ = nullptr;
@@ -272,7 +297,7 @@ bool Device::is_rocblas_bf16_available() {
         0);
 
     // Sync and check if the GPU is still alive
-    hipError_t sync_err = hipDeviceSynchronize();
+    hipError_t sync_err = G1_HL_SYNC("hipDeviceSynchronize (device_check)", hipDeviceSynchronize(), "device_check");
     // Clear any lingering error
     (void)hipGetLastError();
 
@@ -380,7 +405,8 @@ void Device::make_current() {
 
 void Device::set_rocblas_stream(hipStream_t stream) {
   if (rocblas_stream_ != stream) {
-    rocblas_set_stream(get_rocblas_handle(), stream);
+    rocblas_status rs = rocblas_set_stream(get_rocblas_handle(), stream);
+    g1_check_rocblas("rocblas_set_stream", rs);
     rocblas_stream_ = stream;
   }
 }
@@ -394,6 +420,9 @@ CommandEncoder& Device::get_command_encoder(Stream s) {
   std::lock_guard<std::mutex> lk(encoders_mtx_);
   auto it = encoders_.find(s.index);
   if (it == encoders_.end()) {
+    if (getenv("MLX_GDN_DEBUG")) {
+      fprintf(stderr, "[g1] CommandEncoder for stream index=%d dev=%d\n", s.index, hip_device());
+    }
     auto [inserted_it, success] =
         encoders_.emplace(s.index, std::make_unique<CommandEncoder>(*this));
     it = inserted_it;
@@ -546,8 +575,46 @@ void CommandEncoder::add_kernel_node_raw(
     void** params) {
   if (!use_hip_graphs()) {
     device_.make_current();
-    CHECK_HIP_ERROR(hipLaunchKernel(
-        func, grid_dim, block_dim, params, smem_bytes, stream_));
+    // G1f: probe the capture status BEFORE the launch. If the stream is
+    // already Invalidated (2) here, the invalidation came from an earlier
+    // call (asynchronous); if Active (1), this launch is the first to
+    // observe it. Names the exact transition point.
+    if (g_decode_capturing.load(std::memory_order_relaxed)) {
+      hipStreamCaptureStatus cs = hipStreamCaptureStatusNone;
+      hipError_t cse = hipStreamIsCapturing(stream_, &cs);
+      g1_check_hip("hipStreamIsCapturing (pre-launch probe)", cse);
+      if (cs != hipStreamCaptureStatusActive) {
+        g1_check_status(
+            "pre-launch probe: stream NOT active", 1,
+            cs == hipStreamCaptureStatusInvalidated
+                ? "capture ALREADY INVALIDATED before this launch"
+                : "capture status unexpected",
+            "pre-launch");
+      }
+    }
+    hipError_t le = hipLaunchKernel(
+        func, grid_dim, block_dim, params, smem_bytes, stream_);
+    g1_check_hip("hipLaunchKernel (add_kernel_node_raw)", le);
+    if (le != hipSuccess) {
+      if (g_decode_capturing.load(std::memory_order_relaxed)) {
+        // A failed launch (hipErrorStreamCaptureInvalidated) ends the
+        // capture. Reset the flag so later commits are not deferred and
+        // synchronize()'s completion handler can fire (otherwise the
+        // worker gate + deferred commit deadlock the caller); discard the
+        // invalidated capture and clear the sticky last error.
+        g_decode_capturing.store(false, std::memory_order_relaxed);
+        set_stream_capturing(false);
+        hipGraph_t stale = nullptr;
+        (void)hipStreamEndCapture(stream_, &stale);
+        if (stale)
+          (void)hipGraphDestroy(stale);
+        (void)hipGetLastError();
+      }
+      check_hip_error(
+          "hipLaunchKernel( func, grid_dim, block_dim, params, smem_bytes, "
+          "stream_ )",
+          le);
+    }
     node_count_++;
     return;
   }
@@ -791,6 +858,209 @@ bool CommandEncoder::needs_commit() {
       ((bytes_in_graph_ >> 20) > static_cast<size_t>(max_mb_per_graph_));
 }
 
+// --- G1 root-cause instrumentation (gated by MLX_G1_TRACE) -----------------
+long g1_trace_n{0};
+inline bool g1_trace_on() {
+  static const bool on = std::getenv("MLX_G1_TRACE") != nullptr;
+  return on;
+}
+inline long g1_trace_ops_limit() {
+  static const long lim = [] {
+    const char* e = std::getenv("MLX_G1_TRACE_OPS");
+    return e ? std::atol(e) : 0;
+  }();
+  return lim;
+}
+
+// --- G1 first-error tracking (gated by MLX_G1_TRACE / MLX_G1_FIRST_ERR) ---
+// The capture crash (hipLaunchKernel "operation failed due to a previous
+// error during capture" + rocblas_status_internal_error at handle free) is a
+// SYMPTOM: the first failing hip/rocBLAS call in the capture region
+// invalidates the capture sequence, and every later call on the stream then
+// fails with the invalidation error. This tracker names the FIRST failing
+// call: every instrumented hip*/rocblas* call in the capture region reports
+// its non-success return; the first one wins and is logged once with the op
+// index; capture continues so the downstream symptom chain stays visible.
+// The tracker resets at capture begin; a summary prints at capture end.
+struct G1FirstError {
+  std::atomic<bool> reported{false};
+  const char* call{""};
+  int code{0};
+  const char* msg{""};
+  long op{-1};
+  const char* phase{""};
+};
+inline G1FirstError& g1_first_error() {
+  static G1FirstError fe;
+  return fe;
+}
+inline bool g1_fe_on() {
+  static const bool on = std::getenv("MLX_G1_TRACE") != nullptr ||
+      std::getenv("MLX_G1_FIRST_ERR") != nullptr;
+  return on;
+}
+inline void g1_record_first(const char* call, int code, const char* msg,
+                           const char* phase) {
+  if (code == 0 || !g1_fe_on())
+    return;
+  auto& fe = g1_first_error();
+  if (fe.reported.exchange(true))
+    return;
+  fe.call = call;
+  fe.code = code;
+  fe.msg = msg;
+  fe.op = g1_trace_n;
+  fe.phase = phase ? phase : "in-capture";
+  fprintf(stderr,
+          "[g1fe] FIRST ERROR: %s -> %s (code %d) at op %ld [%s] "
+          "capturing=%d\n",
+          call, msg, code, g1_trace_n, fe.phase,
+          g_decode_capturing.load(std::memory_order_relaxed));
+}
+void g1_check_hip(const char* call, hipError_t err, const char* phase) {
+  if (err == hipSuccess)
+    return;
+  g1_record_first(call, static_cast<int>(err), hipGetErrorString(err), phase);
+}
+void g1_check_rocblas(const char* call, rocblas_status st) {
+  if (st == rocblas_status_success)
+    return;
+  g1_record_first(call, static_cast<int>(st), "rocblas_status", "in-capture");
+}
+void g1_check_status(const char* call, int code, const char* msg,
+                    const char* phase) {
+  g1_record_first(call, code, msg, phase);
+}
+void g1_reset_first_error() {
+  g1_first_error().reported.store(false);
+}
+void g1_first_error_summary(const char* phase) {
+  auto& fe = g1_first_error();
+  if (!fe.reported.load() || !g1_fe_on())
+    return;
+  fprintf(stderr,
+          "[g1fe] summary (%s): first error was %s (code %d, %s) at op %ld\n",
+          phase, fe.call, fe.code, fe.msg, fe.op);
+}
+
+// G1f: pre-warm rocBLAS OUTSIDE the capture region. During a capture step
+// is_hipblaslt_available() is false (hipBLASLt's lazy init is non-capturable),
+// so the step's first GEMM (QuantizedMatmul) falls to the rocBLAS path, whose
+// handle / stream / workspace / Tensile kernels are ALL lazily initialised on
+// the first gemm. Any of that inside the capture region invalidates the
+// capture (next launch: 901 "previous error during capture"). Force it all
+// here, on the capture stream, before BeginCapture:
+//   1. rocblas_create_handle (via get_rocblas_handle),
+//   2. rocblas_set_stream,
+//   3. one tiny bf16 + f32 GEMM (async) -> workspace alloc + kernel load.
+// The hipStreamSynchronize below completes the GEMMs (doubles as a final
+// drain). Failures are g1fe-logged but non-fatal: the GEMM paths have
+// fallbacks and the capture can still succeed.
+static void g1_prewarm_rocblas(Device& dev, hipStream_t stream) {
+  dev.make_current();
+  rocblas_handle handle = nullptr;
+  try {
+    handle = dev.get_rocblas_handle();
+  } catch (...) {
+    // Arch unsupported / init failed: GEMM paths fall back to kernels.
+    return;
+  }
+  dev.set_rocblas_stream(stream);
+  const int n = 16;
+  const size_t hbytes = size_t(n) * n * 2; // bf16
+  const size_t fbytes = size_t(n) * n * 4; // f32
+  void* a = nullptr;
+  void* b = nullptr;
+  void* c = nullptr;
+  void* fa = nullptr;
+  void* fb = nullptr;
+  void* fc = nullptr;
+  hipError_t m1 = hipMalloc(&a, hbytes);
+  g1_check_hip("hipMalloc (g1 prewarm bf16 a)", m1, "prewarm");
+  hipError_t m2 = (m1 == hipSuccess) ? hipMalloc(&b, hbytes) : hipSuccess;
+  g1_check_hip("hipMalloc (g1 prewarm bf16 b)", m2, "prewarm");
+  hipError_t m3 =
+      (m1 == hipSuccess && m2 == hipSuccess) ? hipMalloc(&c, hbytes) : hipSuccess;
+  g1_check_hip("hipMalloc (g1 prewarm bf16 c)", m3, "prewarm");
+  if (m1 == hipSuccess && m2 == hipSuccess && m3 == hipSuccess) {
+    (void)hipMemset(a, 0, hbytes);
+    (void)hipMemset(b, 0, hbytes);
+    (void)hipMemset(c, 0, hbytes);
+    float alpha = 1.0f;
+    float beta = 0.0f;
+    // Same call shape as the qmm bf16 capture path (dequant_rocblas_gemm).
+    rocblas_status st = rocblas_gemm_ex(
+        handle,
+        rocblas_operation_none,
+        rocblas_operation_none,
+        n, n, n,
+        &alpha,
+        a, rocblas_datatype_bf16_r, n,
+        b, rocblas_datatype_bf16_r, n,
+        &beta,
+        c, rocblas_datatype_bf16_r, n,
+        c, rocblas_datatype_bf16_r, n,
+        rocblas_datatype_f32_r,
+        rocblas_gemm_algo_standard,
+        0, 0);
+    g1_check_rocblas("rocblas_gemm_ex (g1 prewarm bf16)", st);
+  }
+  // f32 (non-quantized Matmul capture path: gemm_rocblas / qmm f32).
+  hipError_t f1 = (m1 == hipSuccess) ? hipMalloc(&fa, fbytes) : hipSuccess;
+  g1_check_hip("hipMalloc (g1 prewarm f32 a)", f1, "prewarm");
+  hipError_t f2 =
+      (m1 == hipSuccess && f1 == hipSuccess) ? hipMalloc(&fb, fbytes) : hipSuccess;
+  g1_check_hip("hipMalloc (g1 prewarm f32 b)", f2, "prewarm");
+  hipError_t f3 =
+      (m1 == hipSuccess && f1 == hipSuccess && f2 == hipSuccess)
+          ? hipMalloc(&fc, fbytes)
+          : hipSuccess;
+  g1_check_hip("hipMalloc (g1 prewarm f32 c)", f3, "prewarm");
+  if (f1 == hipSuccess && f2 == hipSuccess && f3 == hipSuccess) {
+    (void)hipMemset(fa, 0, fbytes);
+    (void)hipMemset(fb, 0, fbytes);
+    (void)hipMemset(fc, 0, fbytes);
+    float alpha = 1.0f;
+    float beta = 0.0f;
+    rocblas_status st = rocblas_sgemm(
+        handle,
+        rocblas_operation_none,
+        rocblas_operation_none,
+        n, n, n,
+        &alpha,
+        static_cast<const float*>(fa), n,
+        static_cast<const float*>(fb), n,
+        &beta,
+        static_cast<float*>(fc), n);
+    g1_check_rocblas("rocblas_sgemm (g1 prewarm f32)", st);
+  }
+  hipError_t sy = G1_HL_SYNC("hipStreamSynchronize (prewarm)", hipStreamSynchronize(stream), "prewarm");
+  g1_check_hip("hipStreamSynchronize (g1 prewarm)", sy, "prewarm");
+  (void)hipGetLastError();
+  if (a)
+    (void)hipFree(a);
+  if (b)
+    (void)hipFree(b);
+  if (c)
+    (void)hipFree(c);
+  if (fa)
+    (void)hipFree(fa);
+  if (fb)
+    (void)hipFree(fb);
+  if (fc)
+    (void)hipFree(fc);
+  // G1f: prewarm the exact GEMM shapes logged during eager steps, so the
+  // capture step's GEMMs (new shapes) do not trigger a per-shape lazy init
+  // (Tensile kernel load) that does a stream-ordered call from a BLAS internal
+  // thread on the capture stream (invalidates the capture, delayed).
+  handle = dev.get_rocblas_handle();
+  dev.set_rocblas_stream(stream);
+  g1_prewarm_gemm_shapes(handle, stream);
+  hipError_t sync2 = hipStreamSynchronize(stream);
+  g1_check_hip("hipStreamSynchronize (g1 shape prewarm)", sync2, "prewarm");
+  (void)hipGetLastError();
+}
+
 // --- Full decode-step stream capture (build-once / replay) ------------------
 // The manual-node chain can't capture the ~1.4k library/JIT/memset ops that go
 // through launch_kernel during decode. Instead, run the whole forward with
@@ -802,16 +1072,75 @@ bool CommandEncoder::needs_commit() {
 
 bool CommandEncoder::decode_capture_begin() {
   device_.make_current();
+  // Defensive: if a prior capture was left open (e.g., a failed step), end
+  // and discard it first, or every later op records into it and never runs.
+  // ROCm 10.1's hipStreamIsCapturing is 2-arg (status out-param) only.
+  hipStreamCaptureStatus cs = hipStreamCaptureStatusNone;
+  hipError_t ic = hipStreamIsCapturing(stream_, &cs);
+  g1_check_hip("hipStreamIsCapturing (begin, defensive)", ic, "pre-capture");
+  if (ic == hipSuccess && cs != hipStreamCaptureStatusNone) {
+    hipGraph_t stale = nullptr;
+    hipError_t se = hipStreamEndCapture(stream_, &stale);
+    g1_check_hip("hipStreamEndCapture (begin, defensive)", se, "pre-capture");
+    if (stale)
+      (void)hipGraphDestroy(stale);
+    (void)hipGetLastError();
+  }
+  // Before starting the capture, wait for the worker to finish running any
+  // in-flight completion handlers (buffer frees via hipFreeAsync on the worker
+  // thread), then DRAIN the stream. The previous step's hipLaunchHostFunc and
+  // the worker's enqueued hipFreeAsync are still in flight on the GPU when
+  // wait_idle returns (wait_idle only waits for the worker task queue, not
+  // the stream). On ROCm a stream-ordered free enqueued from another thread
+  // that completes on the GPU during a thread-local capture invalidates the
+  // capture (the next launch fails with hipErrorStreamCaptureInvalidated,
+  // 901). Two drain rounds: sync fires the host func (which re-signals the
+  // worker, which enqueues new frees), so sync again to drain those.
+  if (worker_) {
+    worker_->wait_idle();
+  }
+  hipError_t s1 = hipStreamSynchronize(stream_);
+  g1_check_hip("hipStreamSynchronize (pre-capture drain 1)", s1, "pre-capture");
+  if (worker_) {
+    worker_->wait_idle();
+  }
+  hipError_t s2 = hipStreamSynchronize(stream_);
+  g1_check_hip("hipStreamSynchronize (pre-capture drain 2)", s2, "pre-capture");
+  // G1f: pre-warm rocBLAS (handle/stream/workspace/kernels) BEFORE the
+  // capture — see g1_prewarm_rocblas. Fresh first-error tracker so a
+  // prewarm failure is attributed to this capture, not the previous one.
+  if (g1_fe_on())
+    g1_reset_first_error();
+  g1_prewarm_rocblas(device_, stream_);
   g_decode_capturing.store(true, std::memory_order_relaxed);
+  // G1f: mirror the capture flag into stream_capturing() — is_hipblaslt_available()
+  // consults it to force the capture-safe rocBLAS path during capture (the flag
+  // was previously never set, so the capture step's first GEMM could hit
+  // hipBLASLt's non-capturable lazy init).
+  set_stream_capturing(true);
   hipError_t e =
-      hipStreamBeginCapture(stream_, hipStreamCaptureModeThreadLocal);
+      hipStreamBeginCapture(stream_, hipStreamCaptureModeGlobal);
+  g1_check_hip("hipStreamBeginCapture", e, "begin");
   if (e != hipSuccess) {
     g_decode_capturing.store(false, std::memory_order_relaxed);
+    set_stream_capturing(false);
     (void)hipGetLastError();
     static const bool dbg = std::getenv("MLX_PURE_DEBUG") != nullptr;
     if (dbg)
       fprintf(stderr, "[cap] BeginCapture failed: %s\n", hipGetErrorString(e));
     return false;
+  }
+  // G1: fresh first-error tracker for this capture region.
+  if (g1_fe_on())
+    g1_reset_first_error();
+  if (g1_trace_on()) {
+    g1_trace_n = 0;
+    hipStreamCaptureStatus st = hipStreamCaptureStatusNone;
+    (void)hipStreamIsCapturing(stream_, &st);
+    fprintf(stderr,
+            "[g1t] begin: stream=%p status_after_begin=%d\n",
+            static_cast<void*>(stream_),
+            static_cast<int>(st));
   }
   return true;
 }
@@ -820,19 +1149,61 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
   device_.make_current();
   slot &= 1;
   static const bool dbg = std::getenv("MLX_PURE_DEBUG") != nullptr;
+  if (g1_trace_on()) {
+    hipStreamCaptureStatus st = hipStreamCaptureStatusNone;
+    hipError_t es = hipStreamIsCapturing(stream_, &st);
+    g1_check_hip("hipStreamIsCapturing (end_record, pre)", es, "end");
+    auto& al = rocm::allocator();
+    fprintf(stderr,
+            "[g1t] end_record: stream=%p status_before_end=%d ops_traced=%ld "
+            "arena_off=%zu arena_hw=%zu arena_cap=%zu arena_ovf=%d\n",
+            static_cast<void*>(stream_),
+            static_cast<int>(st),
+            g1_trace_n,
+            al.decode_arena_offset(),
+            al.decode_arena_high_water(),
+            al.decode_arena_capacity(),
+            al.decode_arena_overflowed() ? 1 : 0);
+  }
   hipGraph_t g = nullptr;
   hipError_t ee = hipStreamEndCapture(stream_, &g);
+  g1_check_hip("hipStreamEndCapture", ee, "end");
   g_decode_capturing.store(false, std::memory_order_relaxed);
-  if (ee != hipSuccess || !g) {
-    if (g)
-      (void)hipGraphDestroy(g);
+  set_stream_capturing(false);
+  // Run the completion handlers (buffer frees) that were deferred during the
+  // capture. Doing this now (after the stream is no longer capturing) avoids
+  // the cross-thread hipFreeAsync invalidating the capture.
+  if (worker_) {
+    worker_->signal_now();
+  }
+  if (ee != hipSuccess) {
+    // Driver-dependent: a failed EndCapture may leave the stream capturing.
+    // Release it so later ops execute instead of recording forever.
+    hipStreamCaptureStatus cs = hipStreamCaptureStatusNone;
+    hipError_t cs2 = hipStreamIsCapturing(stream_, &cs);
+    g1_check_hip("hipStreamIsCapturing (end_record, defensive)", cs2, "end");
+    if (cs2 == hipSuccess && cs != hipStreamCaptureStatusNone) {
+      hipGraph_t stale = nullptr;
+      hipError_t se = hipStreamEndCapture(stream_, &stale);
+      g1_check_hip("hipStreamEndCapture (end_record, defensive)", se, "end");
+      if (stale)
+        (void)hipGraphDestroy(stale);
+      (void)hipGetLastError();
+    }
     (void)hipGetLastError();
     if (dbg)
       fprintf(stderr, "[cap] EndCapture failed: %s\n", hipGetErrorString(ee));
+    g1_first_error_summary("end_record:EndCapture-fail");
+    return false;
+  }
+  if (!g) {
+    (void)hipGetLastError();
+    g1_first_error_summary("end_record:empty-graph");
     return false;
   }
   size_t nn = 0;
-  (void)hipGraphGetNodes(g, nullptr, &nn);
+  hipError_t gn = hipGraphGetNodes(g, nullptr, &nn);
+  g1_check_hip("hipGraphGetNodes", gn, "end");
   if (dbg) {
     fprintf(stderr, "[cap] captured %zu nodes\n", nn);
     std::vector<hipGraphNode_t> nodes(nn);
@@ -875,26 +1246,59 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
   }
   if (nn == 0) {
     (void)hipGraphDestroy(g);
+    g1_first_error_summary("end_record:zero-nodes");
     return false;
   }
+  // Refresh the slot's exec in place (hipGraphExecUpdate) when one exists —
+  // the decode topology is stable across tokens, so the update succeeds and
+  // the exec's baked pointers (arena buffers) stay valid. Fall back to a
+  // fresh instantiate when there is no exec yet or the update fails (shape
+  // change, node-count change).
   hipGraphExec_t exec = nullptr;
-  hipError_t ie = hipGraphInstantiate(&exec, g, nullptr, nullptr, 0);
-  if (ie != hipSuccess) {
-    if (dbg)
-      fprintf(stderr, "[cap] Instantiate failed: %s\n", hipGetErrorString(ie));
-    (void)hipGraphDestroy(g);
-    (void)hipGetLastError();
-    return false;
+  bool refreshed = false;
+  if (decode_cap_exec_[slot]) {
+    hipGraphExecUpdateResult ur;
+    hipGraphNode_t en;
+    hipError_t ue = hipGraphExecUpdate(decode_cap_exec_[slot], g, &en, &ur);
+    g1_check_hip("hipGraphExecUpdate", ue, "refresh");
+    if (ue == hipSuccess && ur == hipGraphExecUpdateSuccess) {
+      refreshed = true;
+    } else {
+      (void)hipGetLastError();
+    }
   }
-  if (decode_cap_exec_[slot])
-    (void)hipGraphExecDestroy(decode_cap_exec_[slot]);  if (decode_cap_graph_[slot])
-    (void)hipGraphDestroy(decode_cap_graph_[slot]);
-  decode_cap_graph_[slot] = g;
-  decode_cap_exec_[slot] = exec;
+  if (!refreshed) {
+    hipError_t ie = hipGraphInstantiate(&exec, g, nullptr, nullptr, 0);
+    g1_check_hip("hipGraphInstantiate", ie, "instantiate");
+    if (ie != hipSuccess) {
+      if (dbg)
+        fprintf(stderr, "[cap] Instantiate failed: %s\n", hipGetErrorString(ie));
+      (void)hipGraphDestroy(g);
+      (void)hipGetLastError();
+      g1_first_error_summary("end_record:instantiate-fail");
+      return false;
+    }
+    if (decode_cap_exec_[slot])
+      (void)hipGraphExecDestroy(decode_cap_exec_[slot]);
+    if (decode_cap_graph_[slot])
+      (void)hipGraphDestroy(decode_cap_graph_[slot]);
+    decode_cap_graph_[slot] = g;
+    decode_cap_exec_[slot] = exec;
+  } else {
+    // The exec now references its own copy of the nodes; keep the source
+    // graph alive for the slot's lifetime (same as the manual path).
+    if (decode_cap_graph_[slot])
+      (void)hipGraphDestroy(decode_cap_graph_[slot]);
+    decode_cap_graph_[slot] = g;
+  }
   // Stream capture records WITHOUT executing — run the exec once to actually
   // compute the record token's logits/state.
-  CHECK_HIP_ERROR(hipGraphLaunch(exec, stream_));
+  hipError_t lt = hipGraphLaunch(decode_cap_exec_[slot], stream_);
+  g1_check_hip("hipGraphLaunch (end_record)", lt, "launch");
+  if (lt != hipSuccess)
+    check_hip_error("hipGraphLaunch(decode_cap_exec_[slot], stream_)", lt);
   worker_->commit(stream_);
+  g1_first_error_summary("end_record:success");
   return true;
 }
 
@@ -928,11 +1332,14 @@ void CommandEncoder::commit() {
 
   if (use_hip_graphs() && node_count_ > 0) {
     if (!from_nodes_.empty()) {
-      CHECK_HIP_ERROR(hipGraphAddDependencies(
+      hipError_t de = hipGraphAddDependencies(
           build_graph_,
           from_nodes_.data(),
           to_nodes_.data(),
-          from_nodes_.size()));
+          from_nodes_.size());
+      g1_check_hip("hipGraphAddDependencies (commit)", de);
+      if (de != hipSuccess)
+        check_hip_error("hipGraphAddDependencies(...)", de);
     }
     device_.make_current();
 

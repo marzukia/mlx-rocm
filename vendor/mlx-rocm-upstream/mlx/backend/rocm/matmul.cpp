@@ -25,6 +25,12 @@
 
 namespace mlx::core {
 
+// G1 first-error tracking (defined in device.cpp).
+namespace rocm {
+extern void g1_check_hip(const char* call, hipError_t err, const char* phase = nullptr);
+extern void g1_check_rocblas(const char* call, rocblas_status st);
+} // namespace rocm
+
 namespace {
 
 // Async MoE segment launch job (filled on main thread, consumed in host-func).
@@ -308,9 +314,10 @@ void gemm_rocblas(
               rocblas_gemm_algo_solution_index,
               solution_index,
               0);
+          rocm::g1_check_rocblas("rocblas_gemm_ex (f32 solution)", status);
           if (status != rocblas_status_success) {
             solution_valid.store(false, std::memory_order_relaxed);
-            rocblas_sgemm(
+            rocblas_status s2 = rocblas_sgemm(
                 handle,
                 trans_a,
                 trans_b,
@@ -325,9 +332,10 @@ void gemm_rocblas(
                 &beta_f,
                 static_cast<float*>(out_ptr),
                 N);
+            rocm::g1_check_rocblas("rocblas_sgemm (f32 fallback)", s2);
           }
         } else {
-          rocblas_sgemm(
+          rocblas_status s2 = rocblas_sgemm(
               handle,
               trans_a,
               trans_b,
@@ -342,6 +350,7 @@ void gemm_rocblas(
               &beta_f,
               static_cast<float*>(out_ptr),
               N);
+          rocm::g1_check_rocblas("rocblas_sgemm (f32)", s2);
         }
         break;
       }
@@ -372,7 +381,7 @@ void gemm_rocblas(
         float16_t beta_f16 = static_cast<float16_t>(beta);
         std::memcpy(&alpha_h, &alpha_f16, sizeof(rocblas_half));
         std::memcpy(&beta_h, &beta_f16, sizeof(rocblas_half));
-        rocblas_hgemm(
+        rocblas_status s2 = rocblas_hgemm(
             handle,
             trans_a,
             trans_b,
@@ -389,6 +398,7 @@ void gemm_rocblas(
             &beta_h,
             reinterpret_cast<rocblas_half*>(static_cast<float16_t*>(out_ptr)),
             N);
+        rocm::g1_check_rocblas("rocblas_hgemm (f16)", s2);
         break;
       }
       case bfloat16: {
@@ -430,10 +440,11 @@ void gemm_rocblas(
             algo,
             solution_index,
             0);
+        rocm::g1_check_rocblas("rocblas_gemm_ex (bf16)", status);
         if (status != rocblas_status_success &&
             algo == rocblas_gemm_algo_solution_index) {
           solution_valid.store(false, std::memory_order_relaxed);
-          rocblas_gemm_ex(
+          rocblas_status s2 = rocblas_gemm_ex(
               handle,
               trans_a,
               trans_b,
@@ -458,6 +469,7 @@ void gemm_rocblas(
               rocblas_gemm_algo_standard,
               0,
               0);
+          rocm::g1_check_rocblas("rocblas_gemm_ex (bf16 fallback)", s2);
         }
         break;
       }
@@ -571,9 +583,10 @@ void gemm_strided_batched_rocblas(
               rocblas_gemm_algo_solution_index,
               solution_index,
               0);
+          rocm::g1_check_rocblas("rocblas_gemm_strided_batched_ex (f32)", status);
           if (status != rocblas_status_success) {
             solution_valid.store(false, std::memory_order_relaxed);
-            rocblas_sgemm_strided_batched(
+            rocblas_status s2 = rocblas_sgemm_strided_batched(
                 handle,
                 trans_a,
                 trans_b,
@@ -592,9 +605,10 @@ void gemm_strided_batched_rocblas(
                 N,
                 stride_c,
                 batch_count);
+            rocm::g1_check_rocblas("rocblas_sgemm_strided_batched (f32 fallback)", s2);
           }
         } else {
-          rocblas_sgemm_strided_batched(
+          rocblas_status s2 = rocblas_sgemm_strided_batched(
               handle,
               trans_a,
               trans_b,
@@ -613,6 +627,7 @@ void gemm_strided_batched_rocblas(
               N,
               stride_c,
               batch_count);
+          rocm::g1_check_rocblas("rocblas_sgemm_strided_batched (f32)", s2);
         }
         break;
       }
@@ -646,7 +661,7 @@ void gemm_strided_batched_rocblas(
         float16_t beta_f16 = static_cast<float16_t>(beta);
         std::memcpy(&alpha_h, &alpha_f16, sizeof(rocblas_half));
         std::memcpy(&beta_h, &beta_f16, sizeof(rocblas_half));
-        rocblas_hgemm_strided_batched(
+        rocblas_status s2 = rocblas_hgemm_strided_batched(
             handle,
             trans_a,
             trans_b,
@@ -667,6 +682,7 @@ void gemm_strided_batched_rocblas(
             N,
             stride_c,
             batch_count);
+        rocm::g1_check_rocblas("rocblas_hgemm_strided_batched (f16)", s2);
         break;
       }
       case bfloat16: {
@@ -713,10 +729,11 @@ void gemm_strided_batched_rocblas(
             algo,
             solution_index,
             0);
+        rocm::g1_check_rocblas("rocblas_gemm_strided_batched_ex (bf16)", status);
         if (status != rocblas_status_success &&
             algo == rocblas_gemm_algo_solution_index) {
           solution_valid.store(false, std::memory_order_relaxed);
-          rocblas_gemm_strided_batched_ex(
+          rocblas_status s2 = rocblas_gemm_strided_batched_ex(
               handle,
               trans_a,
               trans_b,
@@ -746,6 +763,7 @@ void gemm_strided_batched_rocblas(
               rocblas_gemm_algo_standard,
               0,
               0);
+          rocm::g1_check_rocblas("rocblas_gemm_strided_batched_ex (bf16 fallback)", s2);
         }
         break;
       }
@@ -925,7 +943,7 @@ void gemm_and_bias(
           switch (a.dtype()) {
             case float32: {
               float alpha_f = alpha, beta_f = beta;
-              rocblas_sgemm(
+              rocblas_status s2 = rocblas_sgemm(
                   handle,
                   trans_a,
                   trans_b,
@@ -940,12 +958,13 @@ void gemm_and_bias(
                   &beta_f,
                   static_cast<float*>(out_ptr_base) + batch * M * N,
                   N);
+              rocm::g1_check_rocblas("rocblas_sgemm (naive batch)", s2);
               break;
             }
             case float64: {
               double alpha_d = static_cast<double>(alpha);
               double beta_d = static_cast<double>(beta);
-              rocblas_dgemm(
+              rocblas_status s2 = rocblas_dgemm(
                   handle,
                   trans_a,
                   trans_b,
@@ -960,6 +979,7 @@ void gemm_and_bias(
                   &beta_d,
                   static_cast<double*>(out_ptr_base) + batch * M * N,
                   N);
+              rocm::g1_check_rocblas("rocblas_dgemm (naive batch)", s2);
               break;
             }
             case float16: {
@@ -968,7 +988,7 @@ void gemm_and_bias(
               float16_t beta_f16 = static_cast<float16_t>(beta);
               std::memcpy(&alpha_h, &alpha_f16, sizeof(rocblas_half));
               std::memcpy(&beta_h, &beta_f16, sizeof(rocblas_half));
-              rocblas_hgemm(
+              rocblas_status s2 = rocblas_hgemm(
                   handle,
                   trans_a,
                   trans_b,
@@ -986,6 +1006,7 @@ void gemm_and_bias(
                   reinterpret_cast<rocblas_half*>(
                       static_cast<float16_t*>(out_ptr_base) + batch * M * N),
                   N);
+              rocm::g1_check_rocblas("rocblas_hgemm (naive batch)", s2);
               break;
             }
             case bfloat16: {
@@ -993,7 +1014,7 @@ void gemm_and_bias(
               float beta_f = beta;
               auto* out_ptr =
                   static_cast<bfloat16_t*>(out_ptr_base) + batch * M * N;
-              rocblas_gemm_ex(
+              rocblas_status s2 = rocblas_gemm_ex(
                   handle,
                   trans_a,
                   trans_b,
@@ -1018,6 +1039,7 @@ void gemm_and_bias(
                   rocblas_gemm_algo_standard,
                   0,
                   0);
+              rocm::g1_check_rocblas("rocblas_gemm_ex (naive batch bf16)", s2);
               break;
             }
             default:

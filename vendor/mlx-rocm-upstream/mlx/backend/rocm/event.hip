@@ -17,6 +17,12 @@
 
 namespace mlx::core {
 
+// G1 first-error tracking (defined in device.cpp).
+namespace rocm {
+extern void g1_check_hip(
+    const char* call, hipError_t err, const char* phase = nullptr);
+} // namespace rocm
+
 namespace rocm {
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -92,14 +98,27 @@ void HipEvent::wait() {
 }
 
 void HipEvent::wait(hipStream_t stream) {
-  (void)hipStreamWaitEvent(stream, event_, 0);
+  hipError_t e = hipStreamWaitEvent(stream, event_, 0);
+  g1_check_hip("hipStreamWaitEvent (HipEvent::wait)", e);
+  (void)e;
 }
 
 void HipEvent::record(hipStream_t stream) {
-  (void)hipEventRecord(event_, stream);
+  hipError_t e = hipEventRecord(event_, stream);
+  g1_check_hip("hipEventRecord (HipEvent::record)", e);
+  (void)e;
 }
 
 bool HipEvent::completed() const {
+  // hipEventQuery is not capturable: while a decode-step stream capture is
+  // in progress it returns 900 (operation not permitted) and INVALIDATES
+  // the capture. Report "not complete" so the eval driver records a
+  // capturable cross-stream wait (or relies on same-stream ordering)
+  // instead of querying; the event is queried/detached on the next eager
+  // step. Eager (non-capturing) behavior is unchanged.
+  if (g_decode_capturing.load(std::memory_order_relaxed)) {
+    return false;
+  }
   return hipEventQuery(event_) == hipSuccess;
 }
 
@@ -273,7 +292,10 @@ void AtomicEvent::signal(hipStream_t stream, uint64_t value) {
   // host poll (wait()) spins forever and the discrete-GPU queue wedges (busy
   // 100%, mem-ctrl 0%). The host callback always delivers the value correctly.
   auto* data = new std::pair<std::atomic<uint64_t>*, uint64_t>(atomic(), value);
-  CHECK_HIP_ERROR(hipLaunchHostFunc(stream, signal_atomic_callback, data));
+  hipError_t e = hipLaunchHostFunc(stream, signal_atomic_callback, data);
+  g1_check_hip("hipLaunchHostFunc (AtomicEvent::signal)", e);
+  if (e != hipSuccess)
+    check_hip_error("hipLaunchHostFunc(stream, signal_atomic_callback, data)", e);
 }
 
 void AtomicEvent::signal(Stream s, uint64_t value) {

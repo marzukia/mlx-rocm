@@ -16,6 +16,10 @@ namespace mlx::core {
 
 namespace rocm {
 
+// G1 first-error tracking (defined in device.cpp).
+extern void g1_check_hip(
+    const char* call, hipError_t err, const char* phase = nullptr);
+
 template <typename T>
 struct IndexValPair {
   uint32_t index;
@@ -234,7 +238,10 @@ void ArgReduce::eval_gpu(const std::vector<array>& inputs, array& out) {
     auto& encoder = rocm::get_command_encoder(s);
     encoder.set_output_array(out);
     encoder.launch_kernel([&](hipStream_t stream) {
-      (void)hipMemsetAsync(gpu_ptr<uint32_t>(out), 0, sizeof(uint32_t), stream);
+      hipError_t ms =
+          hipMemsetAsync(gpu_ptr<uint32_t>(out), 0, sizeof(uint32_t), stream);
+      rocm::g1_check_hip("hipMemsetAsync (arg_reduce scalar)", ms);
+      (void)ms;
     });
     return;
   }

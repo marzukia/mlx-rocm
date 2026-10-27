@@ -12,6 +12,10 @@
 
 namespace mlx::core::rocm {
 
+// G1 first-error tracking (defined in device.cpp).
+extern void g1_check_hip(
+    const char* call, hipError_t err, const char* phase = nullptr);
+
 namespace {
 
 // One pinned bounce buffer, reused across saves. 64 MB keeps the DMA engine
@@ -98,6 +102,7 @@ bool staged_write(io::Writer& out, const array& a) {
     // hipMemcpyDefault infers direction from pointer attributes and picks the
     // fastest engine (measured 50.4 GB/s vs 10.4 GB/s for an explicit D2H).
     hipError_t err = hipMemcpy(pin, src + off, c, hipMemcpyDefault);
+    g1_check_hip("hipMemcpy D2H (staged_write)", err);
     if (err != hipSuccess) {
       std::ostringstream oss;
       oss << "staged_write: hipMemcpy D2H failed at offset " << off << " of "

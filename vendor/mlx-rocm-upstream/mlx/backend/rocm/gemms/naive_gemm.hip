@@ -21,6 +21,10 @@
 
 namespace mlx::core::rocm {
 
+// G1 first-error tracking (defined in device.cpp).
+extern void g1_check_hip(
+    const char* call, hipError_t err, const char* phase = nullptr);
+
 // Tile sizes for the naive GEMM kernel
 static constexpr int TILE_M = 16;
 static constexpr int TILE_N = 16;
@@ -1396,8 +1400,12 @@ void moe_pack_tokens(
   const size_t counts_bytes = counts.nbytes();
 
   encoder.launch_kernel([=](hipStream_t stream) {
-    (void)hipMemsetAsync(counts_ptr, 0, counts_bytes, stream);
-    (void)hipMemsetAsync(packed_ptr, 0, packed_bytes, stream);
+    hipError_t ms1 = hipMemsetAsync(counts_ptr, 0, counts_bytes, stream);
+    g1_check_hip("hipMemsetAsync (moe fill counts)", ms1);
+    hipError_t ms2 = hipMemsetAsync(packed_ptr, 0, packed_bytes, stream);
+    g1_check_hip("hipMemsetAsync (moe fill packed)", ms2);
+    (void)ms1;
+    (void)ms2;
     dim3 bfill(256);
     dim3 gfill((map_n + 255) / 256);
     hipLaunchKernelGGL(moe_fill_neg1, gfill, bfill, 0, stream, map_ptr, map_n);
@@ -1935,7 +1943,9 @@ void moe_max_run_length(
   const uint32_t* idx = gpu_ptr<const uint32_t>(expert_ids);
   int* mxp = gpu_ptr<int>(max_run);
   encoder.launch_kernel([=](hipStream_t stream) {
-    (void)hipMemsetAsync(mxp, 0, sizeof(int), stream);
+    hipError_t ms = hipMemsetAsync(mxp, 0, sizeof(int), stream);
+    g1_check_hip("hipMemsetAsync (moe max_run)", ms);
+    (void)ms;
     dim3 block(256);
     dim3 grid((E + 255) / 256);
     hipLaunchKernelGGL(
@@ -1965,12 +1975,14 @@ int moe_max_run_length_sync(
     }
   }
   hipStream_t hs = static_cast<hipStream_t>(encoder.stream());
-  if (hipMemcpyAsync(
-          pin,
-          gpu_ptr<const int>(max_run),
-          sizeof(int),
-          hipMemcpyDeviceToHost,
-          hs) != hipSuccess) {
+  hipError_t mc = hipMemcpyAsync(
+      pin,
+      gpu_ptr<const int>(max_run),
+      sizeof(int),
+      hipMemcpyDeviceToHost,
+      hs);
+  g1_check_hip("hipMemcpyAsync D2H (moe max_run sync)", mc);
+  if (mc != hipSuccess) {
     throw std::runtime_error("moe_max_run_length_sync: D2H failed");
   }
   if (hipStreamSynchronize(hs) != hipSuccess) {
