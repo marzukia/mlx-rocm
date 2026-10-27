@@ -41,6 +41,7 @@ bool use_hip_graphs();
 
 // Inline (graph-splitting) launch counter; see device.cpp diagnostics.
 extern std::atomic<long> g_inline_launches_;
+extern std::atomic<bool> g_decode_capturing;
 // Diagnostics: tag inline launches by the primitive currently in eval_gpu.
 void set_current_prim(const char* name);
 void record_inline_launch();

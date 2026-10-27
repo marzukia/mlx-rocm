@@ -11,6 +11,10 @@
 
 namespace mlx::core::rocm {
 
+// G1 first-error tracking (defined in device.cpp).
+extern void g1_check_hip(
+    const char* call, hipError_t err, const char* phase = nullptr);
+
 static constexpr int rows_per_block = 16;
 static constexpr int kMaxInlineBatchDims = 8;
 
@@ -447,25 +451,37 @@ void gemv(
         inline_batch_params.vec_batch_strides[i] = (*vec_strides_ptr)[i];
       }
     } else {
-      (void)hipMalloc(&d_batch_shape, batch_ndim * sizeof(int32_t));
-      (void)hipMalloc(&d_mat_strides, batch_ndim * sizeof(int64_t));
-      (void)hipMalloc(&d_vec_strides, batch_ndim * sizeof(int64_t));
+      hipError_t g1a = hipMalloc(&d_batch_shape, batch_ndim * sizeof(int32_t));
+      g1_check_hip("hipMalloc (gemv d_batch_shape)", g1a);
+      hipError_t g1b = hipMalloc(&d_mat_strides, batch_ndim * sizeof(int64_t));
+      g1_check_hip("hipMalloc (gemv d_mat_strides)", g1b);
+      hipError_t g1c = hipMalloc(&d_vec_strides, batch_ndim * sizeof(int64_t));
+      g1_check_hip("hipMalloc (gemv d_vec_strides)", g1c);
 
-      (void)hipMemcpy(
+      hipError_t g1d = hipMemcpy(
           d_batch_shape,
           batch_shape.data(),
           batch_ndim * sizeof(int32_t),
           hipMemcpyHostToDevice);
-      (void)hipMemcpy(
+      g1_check_hip("hipMemcpy H2D (gemv batch_shape)", g1d);
+      hipError_t g1e = hipMemcpy(
           d_mat_strides,
           mat_strides_ptr->data(),
           batch_ndim * sizeof(int64_t),
           hipMemcpyHostToDevice);
-      (void)hipMemcpy(
+      g1_check_hip("hipMemcpy H2D (gemv mat_strides)", g1e);
+      hipError_t g1f = hipMemcpy(
           d_vec_strides,
           vec_strides_ptr->data(),
           batch_ndim * sizeof(int64_t),
           hipMemcpyHostToDevice);
+      g1_check_hip("hipMemcpy H2D (gemv vec_strides)", g1f);
+      (void)g1a;
+      (void)g1b;
+      (void)g1c;
+      (void)g1d;
+      (void)g1e;
+      (void)g1f;
     }
   }
 
@@ -666,12 +682,16 @@ void gather_mv(
       if (shape.empty()) {
         return;
       }
-      (void)hipMalloc(dst_shape, shape.size() * sizeof(int32_t));
-      (void)hipMemcpy(
+      hipError_t g1a = hipMalloc(dst_shape, shape.size() * sizeof(int32_t));
+      g1_check_hip("hipMalloc (gemv d batch shape)", g1a);
+      hipError_t g1b = hipMemcpy(
           *dst_shape,
           shape.data(),
           shape.size() * sizeof(int32_t),
           hipMemcpyHostToDevice);
+      g1_check_hip("hipMemcpy H2D (gemv batch shape)", g1b);
+      (void)g1a;
+      (void)g1b;
     };
 
     auto copy_strides_to_device = [](const mlx::core::Strides& strides,
@@ -679,12 +699,16 @@ void gather_mv(
       if (strides.empty()) {
         return;
       }
-      (void)hipMalloc(dst_strides, strides.size() * sizeof(int64_t));
-      (void)hipMemcpy(
+      hipError_t g1a = hipMalloc(dst_strides, strides.size() * sizeof(int64_t));
+      g1_check_hip("hipMalloc (gemv d batch strides)", g1a);
+      hipError_t g1b = hipMemcpy(
           *dst_strides,
           strides.data(),
           strides.size() * sizeof(int64_t),
           hipMemcpyHostToDevice);
+      g1_check_hip("hipMemcpy H2D (gemv batch strides)", g1b);
+      (void)g1a;
+      (void)g1b;
     };
 
     copy_shape_to_device(mat_batch_shape, &d_mat_batch_shape);

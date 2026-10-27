@@ -1,5 +1,7 @@
 // Copyright © 2025 Apple Inc.
 
+#include <atomic>
+#include <execinfo.h>
 #include "mlx/backend/rocm/utils.h"
 #include "mlx/backend/rocm/device.h"
 #include "mlx/dtype_utils.h"
@@ -74,9 +76,25 @@ void HipGraphExec::instantiate(hipGraph_t graph) {
   CHECK_HIP_ERROR(hipGraphInstantiate(&handle_, graph, nullptr, nullptr, 0));
 }
 
+static std::atomic<int> g1_stream_count{0};
 HipStream::HipStream(rocm::Device& device) {
   device.make_current();
-  CHECK_HIP_ERROR(hipStreamCreateWithFlags(&handle_, hipStreamNonBlocking));
+  int n = g1_stream_count.fetch_add(1) + 1;
+  if (getenv("MLX_GDN_DEBUG") && (n % 100 == 0 || n <= 5)) {
+    fprintf(stderr, "[g1] HipStream #%d created\n", n);
+  }
+  {
+    hipError_t rc = hipStreamCreateWithFlags(&handle_, hipStreamNonBlocking);
+    if (rc != hipSuccess) {
+      if (getenv("MLX_GDN_DEBUG")) {
+        fprintf(stderr, "[g1] HipStream #%d CREATE FAILED rc=%d\n", n, (int)rc);
+        void* bt[16];
+        int f = backtrace(bt, 16);
+        backtrace_symbols_fd(bt, f, 2);
+      }
+      throw std::runtime_error(std::string("hipStreamCreateWithFlags failed: ") + hipGetErrorString(rc));
+    }
+  }
 }
 
 } // namespace mlx::core

@@ -18,6 +18,11 @@
 
 namespace mlx::core::rocm {
 
+// G1 first-error tracking (defined in device.cpp).
+extern void g1_check_hip(const char* call, hipError_t err, const char* phase = nullptr);
+extern void g1_check_status(const char* call, int code, const char* msg,
+                           const char* phase = nullptr);
+
 namespace {
 
 // Maximum workspace size for hipBLASLt algorithms (32 MB).
@@ -58,6 +63,8 @@ void init_handle(HipblasltState& state, int device_id) {
   state.initialized = true;
 
   hipblasStatus_t status = hipblasLtCreate(&state.handle);
+  g1_check_status("hipblasLtCreate (lazy init)", static_cast<int>(status),
+                  "hipblasLt status", "handle-init");
   if (status != HIPBLAS_STATUS_SUCCESS) {
     state.available = false;
     state.handle = nullptr;
@@ -75,7 +82,9 @@ void init_handle(HipblasltState& state, int device_id) {
   int prev_dev = 0;
   (void)hipGetDevice(&prev_dev);
   (void)hipSetDevice(device_id);
-  if (hipMalloc(&state.workspace, kMaxWorkspaceBytes) == hipSuccess) {
+  hipError_t wm = hipMalloc(&state.workspace, kMaxWorkspaceBytes);
+  g1_check_hip("hipMalloc (hipblaslt workspace, lazy init)", wm, "handle-init");
+  if (wm == hipSuccess) {
     state.workspace_size = kMaxWorkspaceBytes;
   } else {
     state.workspace = nullptr;
@@ -108,7 +117,8 @@ std::pair<void*, size_t> ensure_workspace(int device_id, size_t required) {
   }
   // Free old allocation (hipFree is a no-op on nullptr).
   if (state.workspace) {
-    (void)hipFree(state.workspace);
+    hipError_t wf = hipFree(state.workspace);
+    g1_check_hip("hipFree (hipblaslt workspace, reallocate)", wf);
     state.workspace = nullptr;
     state.workspace_size = 0;
   }
@@ -116,6 +126,7 @@ std::pair<void*, size_t> ensure_workspace(int device_id, size_t required) {
     return {nullptr, 0};
   }
   hipError_t err = hipMalloc(&state.workspace, required);
+  g1_check_hip("hipMalloc (hipblaslt workspace)", err);
   if (err != hipSuccess) {
     state.workspace = nullptr;
     state.workspace_size = 0;
@@ -805,7 +816,9 @@ void hipblaslt_gemm_impl(
         hipEvent_t start_ev, stop_ev;
         (void)hipEventCreate(&start_ev);
         (void)hipEventCreate(&stop_ev);
-        (void)hipEventRecord(start_ev, stream);
+        hipError_t ev1 = hipEventRecord(start_ev, stream);
+        g1_check_hip("hipEventRecord (hipblaslt bench start)", ev1);
+        (void)ev1;
 
         static constexpr int kBenchIters = 3;
         for (int r = 0; r < kBenchIters; r++) {
@@ -828,7 +841,9 @@ void hipblaslt_gemm_impl(
               stream);
         }
 
-        (void)hipEventRecord(stop_ev, stream);
+        hipError_t ev2 = hipEventRecord(stop_ev, stream);
+        g1_check_hip("hipEventRecord (hipblaslt bench stop)", ev2);
+        (void)ev2;
         (void)hipStreamSynchronize(stream);
         float ms = 0;
         (void)hipEventElapsedTime(&ms, start_ev, stop_ev);
@@ -943,6 +958,8 @@ void hipblaslt_gemm_impl(
       ws_ptr,
       ws_actual,
       stream);
+  g1_check_status("hipblasLtMatmul (gemm_impl)", static_cast<int>(status),
+                  "hipblasLt status");
 
   // One retry with a fresh exact-size heuristic if the cached algo is bad
   // (bucketed NN hit used on a slightly different geometry).
@@ -1004,6 +1021,8 @@ void hipblaslt_gemm_impl(
           wp2,
           ws2a,
           stream);
+      g1_check_status("hipblasLtMatmul (gemm_impl retry)",
+                      static_cast<int>(status), "hipblasLt status");
     }
   }
 
@@ -1589,7 +1608,9 @@ void hipblaslt_gemm_fp8_raw(
         hipEvent_t e0, e1;
         (void)hipEventCreate(&e0);
         (void)hipEventCreate(&e1);
-        (void)hipEventRecord(e0, stream);
+        hipError_t ev3 = hipEventRecord(e0, stream);
+        g1_check_hip("hipEventRecord (hipblaslt algo bench start)", ev3);
+        (void)ev3;
         for (int r = 0; r < 3; ++r) {
           (void)hipblasLtMatmul(
               handle,
@@ -1609,7 +1630,9 @@ void hipblaslt_gemm_fp8_raw(
               ws,
               stream);
         }
-        (void)hipEventRecord(e1, stream);
+        hipError_t ev4 = hipEventRecord(e1, stream);
+        g1_check_hip("hipEventRecord (hipblaslt algo bench stop)", ev4);
+        (void)ev4;
         (void)hipEventSynchronize(e1);
         float ms = 0;
         (void)hipEventElapsedTime(&ms, e0, e1);

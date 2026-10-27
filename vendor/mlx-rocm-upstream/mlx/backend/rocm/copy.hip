@@ -15,6 +15,11 @@
 
 namespace mlx::core {
 
+namespace rocm {
+extern void g1_check_hip(
+    const char* call, hipError_t err, const char* phase = nullptr);
+} // namespace rocm
+
 namespace {
 // Env-gated (MLX_COUNT_COPIES) attribution of general copies by shape, to find
 // which model ops generate the copy_gg/copy_g kernels. Prints a histogram at exit.
@@ -99,7 +104,9 @@ void copy_gpu_inplace(
       // Initialize to zero on GPU using hipMemset
       int64_t* ptr = gpu_ptr<int64_t>(*dynamic_offset_in);
       encoder.launch_kernel([ptr](hipStream_t stream) {
-        (void)hipMemsetAsync(ptr, 0, sizeof(int64_t), stream);
+        hipError_t ms = hipMemsetAsync(ptr, 0, sizeof(int64_t), stream);
+        rocm::g1_check_hip("hipMemsetAsync (copy dynamic_offset_in)", ms);
+        (void)ms;
       });
     }
     if (!dynamic_offset_out) {
@@ -109,7 +116,9 @@ void copy_gpu_inplace(
       // Initialize to zero on GPU using hipMemset
       int64_t* ptr = gpu_ptr<int64_t>(*dynamic_offset_out);
       encoder.launch_kernel([ptr](hipStream_t stream) {
-        (void)hipMemsetAsync(ptr, 0, sizeof(int64_t), stream);
+        hipError_t ms = hipMemsetAsync(ptr, 0, sizeof(int64_t), stream);
+        rocm::g1_check_hip("hipMemsetAsync (copy dynamic_offset_out)", ms);
+        (void)ms;
       });
     }
     encoder.set_input_array(*dynamic_offset_in);
