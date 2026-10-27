@@ -33,6 +33,9 @@ where = ["src/python"]
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+# np-rca-*.py = one-off RCA diagnostic probes (t605/t606, MTP norms fix).
+# Kept byte-identical to as-run evidence; excluded from lint + format.
+extend-exclude = ["np-rca-*.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
