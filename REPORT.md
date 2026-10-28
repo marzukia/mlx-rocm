@@ -1,201 +1,148 @@
-# K2 non-GEMM fusion — round-4 fix report (monky)
+# t789 — vendor-pin fix (dangling pin + silent build-wheel) — worker report
 
-Branch: `k2-non-gemm-fusion` (base `33b13dd`). Fixes the round-3 adversarial
-review (t535, `reviews/k2-r3-review.md`): 0 BLOCKER / 3 MAJOR / 2 MINOR / 3 NIT.
-Scope of this round: the 3 MAJORs (one-line guards in `fast.cpp`) + MINOR-1
-(report reconciliation). MINOR-2 (fast.h wording) and NITs are left open
-(see §7).
+Branch: `worker/t789-vendor-pin-fix` (base `origin/main` @ 64b98b8).
+Fixes the t781 review-FAIL finding on PR #10 (96a1677 "fix(rocm): GDN fused
+decode T=1 launcher pointer write"): `vendor.json` pinned
+`75ca881b2e82f7b4069c8564a203792aa16d8a29`, but the fork branch
+`lifeofpiboy/mlx:tail-fusion-gdn` was at `96a1677` (the fix's parent) —
+`75ca881` existed only in a guest build clone and was never pushed, and
+`scripts/build-wheel.sh` never verified the checkout against the pin.
 
-## 1. The fixes
+## 1. Push the pin (part 1)
 
-All in `vendor/mlx-rocm-upstream/mlx/fast.cpp` (the kv_append gate). The
-verified wheel (t531, source `ec48eb4c`, `/mnt/models/mlx-clone-k2`) carries
-MAJOR-1; MAJOR-2/3 are new one-line checks per the review's suggested fix
-list. No other file changed (fast.h / fast_primitives.h / copy.hip /
-rms_norm.hip were already byte-identical to the wheel source — md5-verified).
+- `75ca881` recovered from the t761 build clone (`/mnt/models/mlx-clone-g4`;
+  the task text said g1, but g4 is the clone that carries it — g1's HEAD is
+  `1641333`). Fetched into a local repo, then:
 
-### MAJOR-1 — `kernel_layout_ok`: unscheduled guard (ported from the wheel)
+  ```
+  git push --force-with-lease origin 75ca881:refs/heads/tail-fusion-gdn
+  #   To github.com:lifeofpiboy/mlx.git
+  #    + 96a1677...75ca881 75ca881 -> tail-fusion-gdn (forced)
+  ```
 
-An unscheduled graph node carries the C-default strides from
-`ArrayDesc::init()` (and all-true default flags), which always pass the
-stride gate, so a non-standard lazy view was routed to the fast kernel and
-misaddressed at eval time — the r1 failure mode, open on the branch.
+  Fast-forward on the branch (96a1677 is 75ca881's parent; the push is a
+  2-commit advance, no history rewrite of the pinned commit).
 
-```diff
-   // fallback (arbitrary strides).
-   //
-   // Layout metadata is only trustworthy once the array is materialized:
-   // an unscheduled graph node carries the C-default strides from
-   // ArrayDesc::init() (and all-true default flags), not the true view
-   // strides, while the kernel reads the input's strides at eval time
-   // (after materialization). Checking the stale metadata would dispatch
-   // the fast kernel for a transposed view (e.g. [2,2,1,8] strides
-   // (8,16,1,1) of a transposed [1,2,8] buffer) and misaddress the B
-   // rows. This matches the verify harness's _row_contiguous numpy-bridge
-   // check, which materializes before reading strides: both reject the
-   // view.
-   auto kernel_layout_ok = [](const array& a) {
-+    if (a.status() == array::Status::unscheduled) {
-+      return false;
-+    }
-     const auto& sh = a.shape();
+- Verification (all three agree):
+  - `git ls-remote https://github.com/lifeofpiboy/mlx.git refs/heads/tail-fusion-gdn`
+    → `75ca881b2e82f7b4069c8564a203792aa16d8a29`
+  - `gh api repos/lifeofpiboy/mlx/commits/75ca881b2e82f7b4069c8564a203792aa16d8a29`
+    → 200, `sha=75ca881b...`, `commit.message="fix(rocm): GDN fused decode T=1 launcher pointer write"`,
+    parent `96a16773a1133795406a85545b654b6972d93721`
+  - `gh api repos/lifeofpiboy/mlx/branches/tail-fusion-gdn` →
+    `sha=75ca881b...`
+  - `75ca881` is also in the fork's default branch (`main`) history
+    (`git merge-base --is-ancestor` → yes), so the pin is resolvable from
+    any clone of the fork.
+
+## 2. build-wheel.sh: verify the checkout against the pin (part 2)
+
+`scripts/build-wheel.sh` now reads the pin from `vendor.json`
+(`PIN_SHA=$(python3 -c 'import json; print(json.load(open("vendor.json"))["ref"])')`)
+and, after the clone/checkout, verifies it:
+
+```bash
+# Verify the checkout matches the pinned sha — a dangling pin must fail
+# loudly, not build a different commit silently.
+CHECKED_OUT_SHA=$(git rev-parse HEAD)
+if ! git cat-file -e "${PIN_SHA}^{commit}" 2>/dev/null; then
+  echo "ERROR: pinned sha ${PIN_SHA} not resolvable in the vendor clone" >&2
+  echo "       (pin=$PIN_SHA checked-out=$CHECKED_OUT_SHA)" >&2
+  exit 1
+fi
+if [ "$(git rev-parse "${PIN_SHA}^{commit}")" != "$CHECKED_OUT_SHA" ]; then
+  echo "ERROR: checkout does not match vendor.json pin" >&2
+  echo "       (pin=$PIN_SHA checked-out=$CHECKED_OUT_SHA)" >&2
+  exit 1
+fi
+echo "vendor checkout verified: ${CHECKED_OUT_SHA} == vendor.json pin ${PIN_SHA}"
 ```
 
-**Exact-port proof** — `diff` of the branch's pre-fix fast.cpp (git `33b13dd`)
-against the wheel source (`/mnt/models/mlx-clone-k2/mlx/fast.cpp`,
-`ec48eb4c`): the wheel's only delta is the comment paragraph above + the 3-line
-guard. After the port, `diff` of the branch's post-fix fast.cpp against the
-wheel source shows **only** the two new checks (MAJOR-2/3 below) — the
-guard and comment are byte-identical to the wheel:
+Behavior (exercised with a stubbed clone, three branches):
+- pin not resolvable in the clone → `ERROR ... not resolvable` + exit 1
+- pin resolvable but checkout differs → `ERROR ... does not match vendor.json
+  pin (pin=... checked-out=...)` + exit 1
+- pin matches → `vendor checkout verified: ... == vendor.json pin ...` + continue
 
-```diff
-# diff: wheel fast.cpp -> branch post-fix fast.cpp (only delta)
-209a210,217
->   // K2 review MAJOR-3 (round 4): the fast kernel writes cv at
->   // offset * cache_values strides[2] with no bounds check, so a smaller-T
->   // cache_values would be written out of bounds. Validate up front.
->   if (cache_keys.shape(2) != cache_values.shape(2)) {
->     throw std::invalid_argument(
->         "[kv_append] cache_keys and cache_values must have the same "
->         "T (shape(2)).");
->   }
-228a237,245
->   // K2 review MAJOR-2 (round 4): the fast kernel is single-dtype (one T
->   // for all four pointers, dispatch on keys dtype only), so a mixed
->   // keys/values dtype pair (each matching its own cache) would be read
->   // with the wrong element size — silent corruption. Validate up front.
->   if (keys.dtype() != values.dtype()) {
->     throw std::invalid_argument(
->         "[kv_append] keys and values must have the same dtype (the fast "
->         "kernel is single-dtype).");
->   }
-```
+No other change to the script (clone/fetch/install flow untouched).
 
-### MAJOR-2 — mixed k/v dtype check (new)
+## 3. G1/G2 on a wheel built from the landed ref (part 3)
 
-The fast kernel is single-dtype (one `T` for all four pointers, dispatch on
-`keys.dtype()` only); a mixed keys/values pair (each matching its own cache)
-passed the pre-existing k==ck / v==cv checks and was misread with the wrong
-element size. Added before the fast path, after the existing dtype checks:
+Built on neon (guest, ROCm 10.1, gfx1201) under `flock /mnt/models/gpu-bench.lock`:
 
-```cpp
-  if (keys.dtype() != values.dtype()) {
-    throw std::invalid_argument(
-        "[kv_append] keys and values must have the same dtype (the fast "
-        "kernel is single-dtype).");
-  }
-```
+- Fresh clone of `lifeofpiboy/mlx` @ `tail-fusion-gdn` →
+  `/mnt/models/mlx-clone-t789`; `git rev-parse HEAD` =
+  `75ca881b2e82f7b4069c8564a203792aa16d8a29` (the pinned commit, from the
+  fork — not the guest build clone).
+- `MLX_VENDOR_DIR=/mnt/models/mlx-clone-t789 bash scripts/build-wheel.sh`
+  (with the new verification — it printed `vendor checkout verified` and
+  proceeded) → `/mnt/models/dist-t789/mlx-0.32.3.dev20261028+75ca881-cp312-...whl`.
+- Installed into a scratch venv (`/mnt/models/venv-t789`, python 3.12.3;
+  `venv-g4` untouched). The scratch venv mirrors venv-g4's mlx_lm model
+  files: `qwen3_5.py` (S==1-guarded fused branch) **and** `gated_delta.py`
+  (K3 patch: non-fused GDN update routes through
+  `mx.fast.gated_delta_update` on ROCm). The first gate round ran with the
+  stock PyPI `gated_delta.py` (Python op loop) and G2 diverged at token 33 —
+  an environment artifact, not a wheel difference: the m0 reference and the
+  t771 AR baseline were both produced with the K3-patched wrapper. With the
+  K3 file in place, all gates below pass.
 
-### MAJOR-3 — cache T-shape check (new)
-
-The fast kernel writes `cv` at `offset * cache_values strides[2]` with no
-bounds check; `cache_values.shape(2) <= offset < cache_keys.shape(2)` was an
-OOB global write (the offset range check is against `cache_keys` only).
-Added after the B/H/D cache-shape check:
-
-```cpp
-  if (cache_keys.shape(2) != cache_values.shape(2)) {
-    throw std::invalid_argument(
-        "[kv_append] cache_keys and cache_values must have the same "
-        "T (shape(2)).");
-  }
-```
-
-## 2. Rebuild (guest, /mnt/models/mlx-clone-k2)
-
-fast.cpp synced (md5-verified), then in `/mnt/models/venv-k2` PATH:
-`cmake -S . -B build/temp.../mlx.core -DCMAKE_PREFIX_PATH=/opt/rocm/core-10.1
--DBLA_VENDOR=OpenBLAS -DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201
--DCMAKE_BUILD_TYPE=Release` (reconfigure, 9.3s) → `cmake --build ... -j8`
-(fast.cpp recompiled, libmlx.so relinked, python extension rebuilt) →
-`pip wheel . --no-deps -w /mnt/models/dist/ --no-build-isolation` →
-force-reinstall into venv-k2. Log: `/mnt/models/tmp/k2-r4-build.log`.
-
-Wheel: `mlx-0.32.3.dev20261026+the earlier vendor base-cp312-cp312-linux_x86_64.whl`,
-`sha256=d617a1b841c324e426367c0299154c23c566d562e805046dcc130a4711e881ee`
-(supersedes `ec48eb4c`).
-
-Build log tail:
+### Rule-6 effective config (printed + asserted by `scripts/t789_config.py`)
 
 ```
-[ 31%] Building CXX object CMakeFiles/mlx.dir/mlx/fast.cpp.o
-[ 35%] Linking CXX shared library libmlx.so
-[ 86%] Built target mlx
-[ 92%] Building CXX object python/src/CMakeFiles/core.dir/fast.cpp.o
-[100%] Linking CXX shared module .../mlx/core.cpython-312-x86_64-linux-gnu.so
-[100%] Built target core
-BUILD_EXIT=0
-  Created wheel for mlx: filename=mlx-0.32.3.dev20261026+the earlier vendor base-cp312-cp312-linux_x86_64.whl size=21540077 sha256=d617a1b841c324e426367c0299154c23c566d562e805046dcc130a4711e881ee
-WHEEL_EXIT=0
-Successfully installed mlx-0.32.3.dev20261026+the earlier vendor base
-INSTALL_EXIT=0
-=== BUILD END Mon Oct 26 12:41:04 UTC 2026 ===
+t789-config: OK
+  env: MLX_GDN_TAIL_FUSION=1  MLX_ROCM_GDN_FALLBACK=0  MLX_GDN_MLXFAST=1
+  wheel: 0.32.3.dev20261028+75ca881  (source sha 75ca881b2e82f7b4069c8564a203792aa16d8a29)
+  device: gpu  (rocminfo: gfx1201, AMD Radeon RX 9070 XT)
 ```
 
-Install verification: installed `core.so` / `libmlx.so` md5-identical to the
-wheel; `strings libmlx.so` contains both new guard messages;
-`import mlx.core` OK in venv-k2. (Note: venv-k2's `bin/pip` shebang points at
-`/mnt/models/venv`, so the reinstall used `venv-k2/bin/python -m pip` — the
-first `pip` invocation installed into the base venv; corrected before any
-GPU run.)
+Kernel names (rocprofv3 `--kernel-trace` over a dispatch of all three fused
+ops): `gdn_prep`, `gdn_qk_norm`, `gdn_norm_gated` all dispatched.
 
-## 3. Suite result (this wheel, log preserved on disk)
+### G1 — no-fault serve/generation: PASS
 
-`scripts/verify-k2.py` (69 checks), venv-k2, `flock /mnt/models/gpu-bench.lock`,
-`LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib`. Full log:
-**`reports/k2-r4-suite-full.log`** (79 lines, preserved in-repo).
+`TAIL_FUSION=1`, greedy, 1024 tokens, qwen3-9b-mlx 4bit:
+`FUSION=1 LOAD=2.82 GEN=14.71 TOKS=1024 TOKS_S=69.59`, rc=0, no HSA-fault
+signature in the log (grep `HSA|fault|Aborted|core dumped|Segmentation|HIP`
+→ no match).
 
-**Verdict: 69 PASS / 0 FAIL** (`grep -c '^\[PASS\]'` = 69,
-`grep -c '^\[FAIL\]'` = 0, "all unit checks passed"). No regression vs the
-t531 run (69/0 on `ec48eb4c`): the new checks only fire on invalid input,
-and the unscheduled guard routes the same lazy suite inputs to the same
-slice_update fallback the t531 wheel used.
+### G2 — maxdiff 0.0 vs the 4bit-MLX reference + fused==unfused: PASS
 
-This also resolves MINOR-1: the 69/0 evidence is now substantiated on disk —
-`reports/k2-r4-suite-full.log` is the full raw log of the suite run on the
-branch-as-committed wheel (`d617a1b8`), and `reports/k2-r2-suite-evidence.txt`
-retains the t531 session extraction for the `ec48eb4c` run.
-`reports/k2-verify-r2.md`'s sourcing note is updated accordingly.
+Same model/prompt/seed as the t612 reference (bench4 `m0.out`, 1024 greedy
+tokens), vacuity-guarded stream compare:
 
-## 4. Guard-firing evidence (probe, log: `reports/k2-r4-guards.log`)
+```
+G2-FUSED-VS-M0-REF:    STATUS=MATCH (maxdiff 0.0) first_div=- match=1024/1024
+G2-FUSED-VS-UNFUSED:  STATUS=MATCH (maxdiff 0.0) first_div=- match=1024/1024
+GATE-LIVE (all compared streams non-empty)
+```
 
-`k2-r4-guards-probe.py` (5 cases, same env/lock protocol):
+The fused stream is bit-identical to both the 4bit-MLX (m0) reference and
+the same-wheel unfused stream. Cross-check: the t771 AR baseline
+(`bench-g4d/m0a.out`, 75ca881 wheel, venv-g4) is byte-identical to m0
+(diff 0/1024), so the reference itself is stable across the two 75ca881
+builds.
 
-1. **Materialized standard layout, ck buffer shared via view** (so the
-   fallback's buffer-donation cannot fake in-place):
-   `ck buffer modified at offset row: True | cv: True | rest untouched: True`
-   → **VERDICT: FAST KERNEL (in-place, correct)**. The fast path is intact
-   for scheduled inputs; the unscheduled guard is a no-op there (no
-   happy-path change — (c)).
-2. **Materialized non-contig view** (strides (8,16,1,1)): `0/256` mismatched
-   → **FALLBACK (correct)** — the stride gate rejects it (case would have
-   been misaddressed by the fast kernel).
-3. **Unscheduled non-contig view** (the suite's case, lazy at gate time):
-   `0/256` mismatched → **FALLBACK (correct)** — **MAJOR-1 guard fires**
-   (without it, C-default strides pass the gate and the fast kernel
-   misaddresses: r1's 16/256).
-4. **Mixed k/v dtype** (keys bf16 + values f32, each matching its own
-   cache): `RAISED ValueError: [kv_append] keys and values must have the
-   same dtype (the fast kernel is single-dtype).` → **MAJOR-2 guard fires**.
-5. **Cache T mismatch** (ck T=8, cv T=4, offset=5): `RAISED ValueError:
-   [kv_append] cache_keys and cache_values must have the same T (shape(2)).`
-   → **MAJOR-3 guard fires**.
+### t761 primitive gates (re-run on this wheel): PASS
 
-## 5. Host-side checks
+```
+PRIM-GATES-PASS
+FWD-LAYER maxdiff=0.000000e+00            (fused T=1 layer fwd, 5-layer chain)
+[zero]/[rand] norm_gated maxdiff=0.0      (gdn_norm_gated vs (x/||x||)*z)
+[zero]/[rand] qn,kn,vc,beta,g maxdiff=0.0 (gdn_prep vs conv1d+silu+rms_norm+sigmoid+compute_g; g float32)
+```
 
-`uv run ruff check .` / `ruff format --check .`: clean.
-`uv run python scripts/size_ratchet.py --base HEAD`: SIZE GATE OK.
-`uv run pytest -m "not gpu"`: 6 passed, 1 skipped.
+### Sibling state (GPU lock)
 
-## 6. Known open items (not fixed this round)
+Lock was free for every t789 run. Sibling t784 (QMV lane, dist-g4e):
+`build_g4e3.log` shows the `ced8c58` wheel build completed 12:23 UTC
+(sha256 `d85065b3...` recorded) — no GPU process of theirs was active at
+check time; no wall-clock remainder visible.
 
-- MINOR-2 (review): `fast.h` kv_append doc wording ("non-row-contiguous
-  inputs" → "inputs not satisfying the kernel's stride layout"). Left as-is
-  to keep the branch's fast.h byte-identical to the verified wheel; one-line
-  doc fix for the next round.
-- NIT-1: uint4 row-base alignment not gated (pre-existing; misaligned vector
-  loads are legal on AMD). NIT-2: harness H==1 corner (unreachable in the
-  current suite). NIT-3: AGENTS.md ROCm 7.7 vs guest ROCm 10.1 (profile
-  drift).
-- HIP teardown exit-hang after the suite (results complete before the hang;
-  runs use the timeout wrapper + early kill on the completion marker).
+## 4. Files
+
+- `scripts/build-wheel.sh` — pin verification (this PR)
+- `scripts/t789-run.sh`, `scripts/t789_config.py`, `scripts/t789_gen.py`,
+  `scripts/t789_kernels.py` — gate harness (kept in-repo for re-run; all
+  skip-safe off-GPU)
+- `REPORT.md` — this report
