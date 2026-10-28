@@ -8,6 +8,7 @@
 #include "mlx/backend/rocm/kernel_utils.hpp"
 #include "mlx/backend/rocm/quantized/quantized.h"
 #include "mlx/backend/rocm/quantized/qmv_tiled_kernel.hip"
+#include "mlx/backend/rocm/quantized/qmv_lx_kernel.hip"
 #include "mlx/primitives.h"
 
 #include <hip/hip_bfloat16.h>
@@ -4023,6 +4024,61 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     return;
   }
 
+  // K1: int8-activation v_dot4 QMV with x staged in LDS (opt-in: MLX_QMV_LX).
+  // A/B against the wide default: MLX_QMV_LX=1 -> 32 cols/block, =16 -> 16.
+  // 4/8-bit affine decode (M<=8); replaces the f32-FMA wide loop with
+  // in-block int8 quant + __builtin_amdgcn_sudot4 + LDS x.
+  static const char* lx_env = std::getenv("MLX_QMV_LX");
+  if (lx_env != nullptr && (bits_ == 4 || bits_ == 8) &&
+      mode_ == QuantizationMode::Affine && has_bias && transpose_ &&
+      batch_count == 1 && non_batched && M >= 1 && M <= 8 &&
+      (K % 32 == 0) && (K % group_size_ == 0) &&
+      (group_size_ == 32 || group_size_ == 64 || group_size_ == 128) &&
+      (x.dtype() == bfloat16 || x.dtype() == float16 || x.dtype() == float32) &&
+      host_warp == 32) {
+    int lx_cols = (lx_env[0] == '1' && lx_env[1] == '6') ? 16 : 32;
+#define LAUNCH_LX(TT, ST, GS, BV, C)                                          \
+  do {                                                                       \
+    dim3 lblock(32, C);                                                      \
+    dim3 lgrid((N + C - 1) / C, M);                                          \
+    size_t lds = (size_t)K + (size_t)(K / GS) * 4 +                         \
+        (size_t)(K / (128 / BV)) * 4;                                        \
+    enc.add_kernel_node(                                                     \
+        &rocm::qmv_lx_kernel<TT, ST, GS, BV, C>, lgrid, lblock,              \
+        (uint32_t)lds, (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr,       \
+        (const ST*)biases_ptr, (TT*)out_ptr, M, N, K, has_bias);            \
+  } while (0)
+#define LAUNCH_LX_GS(TT, ST, BV)                                             \
+  do {                                                                       \
+    if (group_size_ == 32) {                                                 \
+      if (lx_cols == 16) { LAUNCH_LX(TT, ST, 32, BV, 16); }                  \
+      else { LAUNCH_LX(TT, ST, 32, BV, 32); }                               \
+    } else if (group_size_ == 64) {                                         \
+      if (lx_cols == 16) { LAUNCH_LX(TT, ST, 64, BV, 16); }                 \
+      else { LAUNCH_LX(TT, ST, 64, BV, 32); }                              \
+    } else {                                                                 \
+      if (lx_cols == 16) { LAUNCH_LX(TT, ST, 128, BV, 16); }                \
+      else { LAUNCH_LX(TT, ST, 128, BV, 32); }                             \
+    }                                                                        \
+  } while (0)
+    if (x.dtype() == bfloat16) {
+      if (bits_ == 4) { LAUNCH_LX_GS(hip_bfloat16, hip_bfloat16, 4); }
+      else { LAUNCH_LX_GS(hip_bfloat16, hip_bfloat16, 8); }
+    } else if (x.dtype() == float16) {
+      if (bits_ == 4) { LAUNCH_LX_GS(__half, __half, 4); }
+      else { LAUNCH_LX_GS(__half, __half, 8); }
+    } else {
+      // f32 x (the affine quantized_matmul op promotes x to scales dtype):
+      // the K1 math is dtype-generic (x staged as int8 in LDS), so f32
+      // instantiates directly.
+      if (bits_ == 4) { LAUNCH_LX_GS(float, float, 4); }
+      else { LAUNCH_LX_GS(float, float, 8); }
+    }
+#undef LAUNCH_LX_GS
+#undef LAUNCH_LX
+    return;
+  }
+
   // Dense wide-load (128-bit / uint4) QMV decode path (4-bit affine). DEFAULT ON
   // (opt out with MLX_QMV_NO_WIDE): +14-20% on dense decode, never regresses.
   // Replaces qmv_tiled for decode; ~175 vs ~108 GB/s.
@@ -4121,8 +4177,13 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   // other widths would match nothing here and leave `out` uninitialized.
   // Restrict to 4/8-bit; 2/5/6-bit fall through to the warp-shared QMV kernel.
   bool tiled_bits_supported = (bits_ == 4 || bits_ == 8);
+  // The tiled kernel is only instantiated for bf16/f16 x; the inner dispatch
+  // matches nothing else, but the block returns regardless — an f32 x here
+  // would launch NO kernel and leave `out` stale (N=12288 bug: gfx1201
+  // tile_n=24 divides 12288, so the gate matched and returned with no launch).
+  bool tiled_x_dtype_ok = (x.dtype() == bfloat16 || x.dtype() == float16);
   // tile_n can be 4 on low-CU gfx1152 — still a valid tiled path.
-  if (use_tiled && tiled_bits_supported && use_fast_qmv &&
+  if (use_tiled && tiled_bits_supported && tiled_x_dtype_ok && use_fast_qmv &&
       !can_use_batched_qmv && tile_n >= 4 &&
       mode_ == QuantizationMode::Affine) {
     {
