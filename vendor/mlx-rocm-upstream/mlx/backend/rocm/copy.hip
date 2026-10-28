@@ -4,6 +4,7 @@
 #include "mlx/backend/rocm/copy/copy.hpp"
 #include "mlx/backend/rocm/allocator.h"
 #include "mlx/backend/rocm/kernel_utils.hpp"
+#include "mlx/fast_primitives.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -204,5 +205,153 @@ void reshape_gpu(const array& in, array& out, Stream s) {
     shared_buffer_reshape(in, out_strides, out);
   }
 }
+
+namespace rocm {
+
+// K2: batched KV append — writes the new keys AND values into the
+// pre-allocated cache buffers at `offset` in a single launch.
+// Keys/values are [B, H, T, D] with T=1 (decode); treated as 2D
+// [B*H, D] with per-row strides. The dst base is advanced by
+// offset * cache_t_stride.
+template <typename T, int VEC>
+__global__ void kv_append_kernel(
+    const T* __restrict__ k, const T* __restrict__ v,
+    T* __restrict__ dk, T* __restrict__ dv,
+    int64_t k_row_stride, int64_t v_row_stride,
+    int64_t dk_row_stride, int64_t dv_row_stride,
+    int64_t n_rows, int64_t d) {
+  int64_t nvec = n_rows * (d / VEC);
+  int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= 2 * nvec) {
+    return;
+  }
+  bool is_v = (i >= nvec);
+  int64_t j = is_v ? (i - nvec) : i;
+  int64_t row = j / (d / VEC);
+  int64_t col = (j % (d / VEC)) * VEC;
+  const T* src = is_v ? (v + row * v_row_stride + col) : (k + row * k_row_stride + col);
+  T* dst = is_v ? (dv + row * dv_row_stride + col) : (dk + row * dk_row_stride + col);
+  // K2 review NIT-9: both VEC==8 (8 x 16-bit) and VEC==4 (4 x 32-bit) are
+  // 16-byte uint4 copies; VEC only affects addressing, so a single block.
+  uint4 val = *reinterpret_cast<const uint4*>(src);
+  *reinterpret_cast<uint4*>(dst) = val;
+}
+
+// Scalar fallback for head dims not divisible by the vector width.
+template <typename T>
+__global__ void kv_append_scalar_kernel(
+    const T* __restrict__ k, const T* __restrict__ v,
+    T* __restrict__ dk, T* __restrict__ dv,
+    int64_t k_row_stride, int64_t v_row_stride,
+    int64_t dk_row_stride, int64_t dv_row_stride,
+    int64_t n_rows, int64_t d) {
+  int64_t total = 2 * n_rows * d;
+  int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= total) {
+    return;
+  }
+  bool is_v = (i >= n_rows * d);
+  int64_t j = is_v ? (i - n_rows * d) : i;
+  int64_t row = j / d;
+  int64_t col = j % d;
+  const T* src = is_v ? (v + row * v_row_stride + col) : (k + row * k_row_stride + col);
+  T* dst = is_v ? (dv + row * dv_row_stride + col) : (dk + row * dk_row_stride + col);
+  *dst = *src;
+}
+
+} // namespace rocm
+
+namespace fast {
+
+bool KVAppend::use_fallback(Stream s) {
+  return s.device == Device::cpu;
+}
+
+void KVAppend::eval_gpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  auto& s = stream();
+  auto& encoder = rocm::get_command_encoder(s);
+
+  const array& k = inputs[0];
+  const array& v = inputs[1];
+  const array& ck = inputs[2];
+  const array& cv = inputs[3];
+  array& ok = outputs[0];
+  array& ov = outputs[1];
+
+  // In-place: the outputs share the cache buffers.
+  ok.copy_shared_buffer(ck);
+  ov.copy_shared_buffer(cv);
+
+  if (k.size() == 0) {
+    return;
+  }
+
+  int64_t B = k.shape(0);
+  int64_t H = k.shape(1);
+  int64_t D = k.shape(3);
+  int64_t n_rows = B * H;
+
+  // Decode: T=1, so the [B*H, D] rows are addressed via the H stride.
+  int64_t k_row_stride = k.strides()[1];
+  int64_t v_row_stride = v.strides()[1];
+  int64_t dk_row_stride = ck.strides()[1];
+  int64_t dv_row_stride = cv.strides()[1];
+  // Advance the dst base to the write offset (T stride * offset).
+  int64_t dk_base = offset_ * ck.strides()[2];
+  int64_t dv_base = offset_ * cv.strides()[2];
+
+  encoder.set_input_array(k);
+  encoder.set_input_array(v);
+  encoder.set_output_array(ok);
+  encoder.set_output_array(ov);
+
+  constexpr int BLOCK = 256;
+  auto launch = [&](auto tag) {
+    using DT = decltype(tag);
+    constexpr int VEC = sizeof(DT) == 2 ? 8 : 4;
+    if (D % VEC == 0) {
+      int64_t nvec = n_rows * (D / VEC);
+      int64_t total = 2 * nvec;
+      int nblocks = (total + BLOCK - 1) / BLOCK;
+      if constexpr (sizeof(DT) == 2) {
+        encoder.add_kernel_node(
+            &rocm::kv_append_kernel<DT, 8>,
+            dim3(nblocks), dim3(BLOCK), 0,
+            gpu_ptr<DT>(k), gpu_ptr<DT>(v),
+            gpu_ptr<DT>(ok) + dk_base, gpu_ptr<DT>(ov) + dv_base,
+            k_row_stride, v_row_stride, dk_row_stride, dv_row_stride,
+            n_rows, D);
+      } else {
+        encoder.add_kernel_node(
+            &rocm::kv_append_kernel<DT, 4>,
+            dim3(nblocks), dim3(BLOCK), 0,
+            gpu_ptr<DT>(k), gpu_ptr<DT>(v),
+            gpu_ptr<DT>(ok) + dk_base, gpu_ptr<DT>(ov) + dv_base,
+            k_row_stride, v_row_stride, dk_row_stride, dv_row_stride,
+            n_rows, D);
+      }
+    } else {
+      int64_t total = 2 * n_rows * D;
+      int nblocks = (total + BLOCK - 1) / BLOCK;
+      encoder.add_kernel_node(
+          &rocm::kv_append_scalar_kernel<DT>,
+          dim3(nblocks), dim3(BLOCK), 0,
+          gpu_ptr<DT>(k), gpu_ptr<DT>(v),
+          gpu_ptr<DT>(ok) + dk_base, gpu_ptr<DT>(ov) + dv_base,
+          k_row_stride, v_row_stride, dk_row_stride, dv_row_stride,
+          n_rows, D);
+    }
+  };
+  switch (k.dtype()) {
+    case float32: launch(float{}); break;
+    case float16: launch(__half{}); break;
+    case bfloat16: launch(hip_bfloat16{}); break;
+    default: throw std::runtime_error("Unsupported type for kv_append");
+  }
+}
+
+} // namespace fast
 
 } // namespace mlx::core

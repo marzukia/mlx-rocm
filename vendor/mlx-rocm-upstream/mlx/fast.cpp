@@ -120,6 +120,197 @@ array rms_norm(
   return fallback({x, passed_weight})[0];
 }
 
+array rms_norm_residual(
+    const array& x,
+    const array& residual,
+    const array& weight,
+    float eps,
+    StreamOrDevice s_) {
+  if (x.ndim() == 0) {
+    throw std::invalid_argument(
+        "[rms_norm_residual] Input must have at least 1 dimension.");
+  }
+  if (residual.shape() != x.shape()) {
+    throw std::invalid_argument(
+        "[rms_norm_residual] residual must have the same shape as x.");
+  }
+  if (weight.ndim() != 1) {
+    throw std::invalid_argument(
+        "[rms_norm_residual] weight must have 1 dimension.");
+  }
+  if (weight.size() != x.shape(-1)) {
+    throw std::invalid_argument(
+        "[rms_norm_residual] weight must match the last dim of x.");
+  }
+
+  auto out_type = result_type(x, weight);
+  if (!issubdtype(out_type, floating)) {
+    std::ostringstream msg;
+    msg << "[rms_norm_residual] Received unsupported type " << out_type << ".";
+    throw std::invalid_argument(msg.str());
+  }
+
+  auto s = to_stream(s_);
+  auto fallback =
+      [eps, out_type, s](const std::vector<array>& inputs) {
+        auto x = astype(inputs[0], float32, s);
+        x = add(x, astype(inputs[1], float32, s), s);
+        x = multiply(
+            x,
+            rsqrt(
+                add(mean(square(x, s), -1, /* keepdims */ true, s),
+                    array(eps, float32),
+                    s),
+                s),
+            s);
+        x = astype(x, out_type, s);
+        x = multiply(x, inputs[2], s);
+        return std::vector<array>{x};
+      };
+
+  if (!RMSNormResidual::use_fallback(s)) {
+    return array(
+        x.shape(),
+        out_type,
+        std::make_shared<RMSNormResidual>(s, fallback, eps),
+        {astype(x, out_type, s), astype(residual, out_type, s),
+         astype(weight, out_type, s)});
+  }
+  return fallback({x, residual, weight})[0];
+}
+
+std::vector<array> kv_append(
+    const array& keys,
+    const array& values,
+    const array& cache_keys,
+    const array& cache_values,
+    int64_t offset,
+    StreamOrDevice s_) {
+  if (keys.ndim() != 4 || values.ndim() != 4) {
+    throw std::invalid_argument(
+        "[kv_append] keys/values must be 4D [B, H, T, D].");
+  }
+  if (keys.shape() != values.shape()) {
+    throw std::invalid_argument(
+        "[kv_append] keys and values must have the same shape.");
+  }
+  if (cache_keys.ndim() != 4 || cache_values.ndim() != 4) {
+    throw std::invalid_argument(
+        "[kv_append] caches must be 4D [B, H, T, D].");
+  }
+  if (keys.shape(0) != cache_keys.shape(0) ||
+      keys.shape(1) != cache_keys.shape(1) ||
+      keys.shape(3) != cache_keys.shape(3) ||
+      values.shape(0) != cache_values.shape(0) ||
+      values.shape(1) != cache_values.shape(1) ||
+      values.shape(3) != cache_values.shape(3)) {
+    throw std::invalid_argument(
+        "[kv_append] cache shapes must match keys/values on B, H, D.");
+  }
+  // K2 review MAJOR-3 (round 4): the fast kernel writes cv at
+  // offset * cache_values strides[2] with no bounds check, so a smaller-T
+  // cache_values would be written out of bounds. Validate up front.
+  if (cache_keys.shape(2) != cache_values.shape(2)) {
+    throw std::invalid_argument(
+        "[kv_append] cache_keys and cache_values must have the same "
+        "T (shape(2)).");
+  }
+  if (keys.shape(2) != 1) {
+    throw std::invalid_argument(
+        "[kv_append] only supports T=1 (decode); use slice_update for prefill.");
+  }
+  if (offset < 0 || offset + keys.shape(2) > cache_keys.shape(2)) {
+    throw std::invalid_argument(
+        "[kv_append] offset out of range for the cache.");
+  }
+  // K2 review MAJOR-4: the GPU kernel is templated on keys/values dtype and
+  // writes into the cache buffers, so a dtype mismatch (e.g. f32 keys into a
+  // bf16 cache) would write the wrong element size — silent memory
+  // corruption. Validate up front and error cleanly.
+  if (keys.dtype() != cache_keys.dtype()) {
+    throw std::invalid_argument(
+        "[kv_append] keys dtype must match cache_keys dtype.");
+  }
+  if (values.dtype() != cache_values.dtype()) {
+    throw std::invalid_argument(
+        "[kv_append] values dtype must match cache_values dtype.");
+  }
+  // K2 review MAJOR-2 (round 4): the fast kernel is single-dtype (one T
+  // for all four pointers, dispatch on keys dtype only), so a mixed
+  // keys/values dtype pair (each matching its own cache) would be read
+  // with the wrong element size — silent corruption. Validate up front.
+  if (keys.dtype() != values.dtype()) {
+    throw std::invalid_argument(
+        "[kv_append] keys and values must have the same dtype (the fast "
+        "kernel is single-dtype).");
+  }
+
+  auto s = to_stream(s_);
+  auto fallback = [offset, s](const std::vector<array>& inputs) {
+    // K2 review MAJOR-3: start/stop of 0,0 for B/H/D normalized to empty
+    // (size-0) slices, so the [B,H,1,D] update always threw. Use the full dim
+    // sizes for B/H/D and [offset, offset+T) for T.
+    auto start = Shape{(int)0, (int)0, (int)offset, (int)0};
+    auto stop = Shape{
+        (int)inputs[2].shape(0),
+        (int)inputs[2].shape(1),
+        (int)(offset + inputs[0].shape(2)),
+        (int)inputs[2].shape(3)};
+    auto strides = Shape{(int)1, (int)1, (int)1, (int)1};
+    auto ok = slice_update(inputs[2], inputs[0], start, stop, strides, s);
+    auto ov = slice_update(inputs[3], inputs[1], start, stop, strides, s);
+    return std::vector<array>{ok, ov};
+  };
+
+  // K2 review MAJOR-5 (re-review MAJOR-A, fix round 3): the fast GPU kernel
+  // treats [B,H,1,D] as 2D [B*H, D] rows addressed via strides[1] and
+  // advances the dst base by offset * cache strides[2]. Its exact stride
+  // requirements, per array, are:
+  //   - strides[3] == 1 (or D == 1): unit-stride rows
+  //   - strides[0] == H * strides[1] (or B == 1): the B*H row flattening
+  // The T stride is never used (T == 1, only t == 0 is read), so a
+  // non-row-contiguous T view is fine for the kernel. The row_contiguous
+  // flag alone is insufficient: its size-1 allowance skips the H-stride
+  // check when H == 1, leaving strides[1] unconstrained while the kernel
+  // uses it as the B-row stride (e.g. a [2,1,1,8] view of a transposed
+  // [1,2,8] buffer has strides (8,16,1,1), is row_contiguous, but the
+  // kernel reads row b at b*16 instead of b*8). Check the kernel's
+  // requirements directly and route everything else to the slice_update
+  // fallback (arbitrary strides).
+  //
+  // Layout metadata is only trustworthy once the array is materialized:
+  // an unscheduled graph node carries the C-default strides from
+  // ArrayDesc::init() (and all-true default flags), not the true view
+  // strides, while the kernel reads the input's strides at eval time
+  // (after materialization). Checking the stale metadata would dispatch
+  // the fast kernel for a transposed view (e.g. [2,2,1,8] strides
+  // (8,16,1,1) of a transposed [1,2,8] buffer) and misaddress the B
+  // rows. This matches the verify harness's _row_contiguous numpy-bridge
+  // check, which materializes before reading strides: both reject the
+  // view.
+  auto kernel_layout_ok = [](const array& a) {
+    if (a.status() == array::Status::unscheduled) {
+      return false;
+    }
+    const auto& sh = a.shape();
+    const auto& st = a.strides();
+    int64_t B = sh[0], H = sh[1], D = sh[3];
+    return (st[3] == 1 || D == 1) && (st[0] == H * st[1] || B == 1);
+  };
+  bool standard_layout =
+      kernel_layout_ok(keys) && kernel_layout_ok(values) &&
+      kernel_layout_ok(cache_keys) && kernel_layout_ok(cache_values);
+
+  if (!KVAppend::use_fallback(s) && standard_layout) {
+    return array::make_arrays(
+        {cache_keys.shape(), cache_values.shape()},
+        {cache_keys.dtype(), cache_values.dtype()},
+        std::make_shared<KVAppend>(s, fallback, offset),
+        {keys, values, cache_keys, cache_values});
+  }
+  return fallback({keys, values, cache_keys, cache_values});
+}
+
 std::vector<array> RMSNorm::vjp(
     const std::vector<array>& primals,
     const std::vector<array>& cotangents,
@@ -180,6 +371,17 @@ std::vector<array> RMSNorm::vjp(
 bool RMSNorm::is_equivalent(const Primitive& other) const {
   const RMSNorm& a_other = static_cast<const RMSNorm&>(other);
   return eps_ == a_other.eps_;
+}
+
+bool RMSNormResidual::is_equivalent(const Primitive& other) const {
+  const RMSNormResidual& a_other =
+      static_cast<const RMSNormResidual&>(other);
+  return eps_ == a_other.eps_;
+}
+
+bool KVAppend::is_equivalent(const Primitive& other) const {
+  const KVAppend& a_other = static_cast<const KVAppend&>(other);
+  return offset_ == a_other.offset_;
 }
 
 bool RMSNormVJP::is_equivalent(const Primitive& other) const {
