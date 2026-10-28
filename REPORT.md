@@ -146,3 +146,120 @@ check time; no wall-clock remainder visible.
   `scripts/t789_kernels.py` — gate harness (kept in-repo for re-run; all
   skip-safe off-GPU)
 - `REPORT.md` — this report
+
+# t771: Speed bench on the fixed gdn wheel (dist-g4d @75ca881)
+
+MTP-ON 100 tok/s lane. Measured the fixed wheel (t761: gdn_prep launcher fix,
+14 kernel-arg host `Data*` ptrs passed as device ptrs; fix commit `75ca881`).
+G1/G2 had already PASSed on dist-g4d (no-fault, maxdiff 0.0 vs reference,
+fused==unfused). This run is the first speed measurement on the fixed wheel.
+
+## Verdict (gates, operational order 2026-10-28)
+
+| Gate | Result |
+|---|---|
+| 1. Lossless (G4, m2 vs m0, #8 harness) | **FAIL** — first divergent step **149** (1-based), 865/1024 tokens differ |
+| 2. Beat AR (64.94 pre-fix baseline) | MTP 64.34 vs AR 69.65 → **FAIL** (-7.6% vs AR) |
+| 3. Enable MTP default | **OFF** (gate 1 failed; gate 2 failed) |
+
+Lane goal 100 tok/s decode: **not reached**. AR moved to 69.65 tok/s; MTP K=1
+M=2 is 64.34 tok/s @ 76.0% accept — the gdn fix did **not** close the MTP gap.
+
+## Phase 1 — pre-stage + verify (all PASS)
+
+- SSH chain: `ssh -J andryo@100.91.94.56 neonvm@192.168.122.234` (guest neonvm).
+- Build clone: `git -C /mnt/models/mlx-clone-g4 log --oneline -1`
+  → `75ca881 t761: fix gdn_prep launcher - data_shared_ptr().get() is a host Data*, not a device pointer`
+- Wheel identity (venv `/mnt/models/venv-g4`, python3.12):
+  `mlx-0.32.3.dev20261028+75ca881` (+ `mlx_lm-0.32.2`) — matches the fixed
+  clone ref. `import mlx.core` OK under `LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib`.
+- Lock: `flock -w 10 /mnt/models/gpu-bench.lock -c true` → free (no GPU siblings).
+- Model-load smoke (flock, 10 tokens, Qwen3.5 GDN-hybrid 9B 4bit
+  `/mnt/models/qwen3-9b-mlx`): `SMOKE-OK n=10 dt=1.53`, no fault,
+  gfx1201 bound.
+
+## Phase 2 — bench (flock, fresh process per run, 3 repeats, median)
+
+Harness: repo `bench/mtp-bench3.py` (AR = `MLX_MTP=0`, MTP K=1 M=2 =
+`MLX_MTP=2`), 1024 tokens greedy, smartphone prompt, run via new runner
+`bench/bench-g4d.sh` (copied to guest `/mnt/models/tmp/bench-g4d/`):
+
+```
+flock -w 300 /mnt/models/gpu-bench.lock env MLX_MTP=<0|2> \
+  /mnt/models/venv-g4/bin/python /mnt/models/tmp/bench-g4d/mtp-bench3.py
+```
+
+| Config | n | min | **median** | max | accept |
+|---|---|---|---|---|---|
+| AR (`MLX_MTP=0`) | 3 | 69.31 | **69.65** | 69.75 | — |
+| MTP K=1 M=2 (`MLX_MTP=2`) | 3 | 63.92 | **64.34** | 64.46 | 389/512 = 76.0% |
+
+Raw lines (identical accept across all 3 m2 repeats):
+
+```
+MTP=0 LOAD=2.76 GEN=14.68 TOKS=1024 TOKS_S=69.75 ACCEPTED=0/0
+MTP=0 LOAD=2.78 GEN=14.70 TOKS=1024 TOKS_S=69.65 ACCEPTED=0/0
+MTP=0 LOAD=2.78 GEN=14.78 TOKS=1024 TOKS_S=69.31 ACCEPTED=0/0
+MTP=2 LOAD=2.77 GEN=16.02 TOKS=1024 TOKS_S=63.92 ACCEPTED=389/512
+MTP=2 LOAD=2.79 GEN=15.89 TOKS=1024 TOKS_S=64.46 ACCEPTED=389/512
+MTP=2 LOAD=2.79 GEN=15.92 TOKS=1024 TOKS_S=64.34 ACCEPTED=389/512
+```
+
+**AR delta vs pre-fix (dist-g4c @96a1677): 69.65 vs 64.94 → +4.71 tok/s (+7.2%).**
+The gdn fix changed the base path (gdn_prep runs on every target forward,
+including AR). Pre-fix numbers are delta-only, not current.
+
+MTP vs AR on the fixed wheel: 64.34 vs 69.65 → **-5.31 tok/s (-7.6%)**.
+Pre-fix the gap was -1.8% (63.8 vs 64.94); the fix widened it. Accept rate
+unchanged (76.0% vs 76% pre-fix).
+
+MTP K=2 check: **not run** — conditional on (b) >= AR; 64.34 < 69.65.
+
+## Phase 3 — G4 lossless gate (#8 harness, vacuity-guarded)
+
+`GATE-LIVE` (all compared streams non-empty, 1024 tokens each).
+
+| Compare | Status |
+|---|---|
+| G4-M2-M0 (m2a vs m0a, exact) | **FAIL** first_div=149 match=159 diff=865 of 1024 |
+| M2-A-B, M2-B-C (m2 determinism) | MATCH 1024/1024 |
+| M0-A-B, M0-B-C (m0 determinism) | MATCH 1024/1024 |
+
+First divergent step: **149** (1-based). Tokens 145-160:
+
+```
+m0 (AR): 4779,11,321,5090,24296,13,271,794,357,13,561,717,383,29900,318,4272
+m2 (MTP): 4779,11,321,5090,33443,51010,82,13,271,794,357,13,561,717,383,29900
+```
+
+m2 inserts 2 extra tokens (`51010, 82`) at 150-151 before re-syncing at 271 —
+a state-advance/rollback mismatch in the MTP verify path (reject path:
+GDN save/restore + KV trim + re-forward). Both paths are run-to-run
+deterministic, so this is systematic, not noise.
+
+**G4 verdict: FAIL (lossless-only; drift at step 149).**
+
+Note for follow-up (not diagnosed here): the harness `save_gdn` zero-copy
+save (`conv, ssm, lengths` per GDN layer) predates the fix; if the fixed
+gdn_prep uses an additional state buffer, the MTP rollback would silently
+miss it. The pre-fix t612 run reported m2 byte-identical to m0, so the
+divergence is specific to the fixed wheel's state layout/path.
+
+## Phase 4 — harness change
+
+`bench/bench-g4d.sh` (new): parameterized runner (venv/harness/out overridable,
+defaults to venv-g4), 3 repeats per config with median, conditional K=2, and
+the PR #8 vacuity-guarded lossless gate (same `cmp_streams` helper as
+`bench4.sh`/`bench5.sh`). No changes to `mtp-bench3.py`/`mtp-bench5.py`.
+
+## Exact commands (repro)
+
+```
+ssh -J andryo@100.91.94.56 neonvm@192.168.122.234
+git -C /mnt/models/mlx-clone-g4 log --oneline -1        # 75ca881
+ls /mnt/models/venv-g4/lib/python3.12/site-packages/ | grep mlx
+flock -w 10 /mnt/models/gpu-bench.lock -c true          # LOCK-FREE
+# smoke (10 tokens, flock -w 240): venv-g4 python, load + 10x argmax step
+scp bench/{mtp-bench3.py,mtp-bench5.py,bench-g4d.sh} neonvm@...:/mnt/models/tmp/bench-g4d/
+bash /mnt/models/tmp/bench-g4d/bench-g4d.sh            # 6 runs + gate (K2 not run)
+```
