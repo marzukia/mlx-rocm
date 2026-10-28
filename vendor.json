@@ -1,10 +1,10 @@
 {
   "note": "Pinned vendor source for the ROCm backend. primary = adopted base; fallback = the the upstream base head if primary does not build clean on ROCm 10.1 (docs/plan.md, open question 1). ROCm 10.1 is the only verified toolchain (guest userland, core at /opt/rocm/core-10.1); 6.4 (early probe) and 7.7 (original target) are historical.",
   "primary": {
-    "fork": "https://github.com/a maintainer of the ROCm backend/mlx",
-    "ref": "the vendor ref",
-    "sha": "the pinned base sha",
-    "comment": "ADOPTED (MVP, 2026-10-25): vendored at vendor/mlx-rocm-upstream/ (byte-verified vs this sha). Newer forward-merge: GatedDeltaUpdate fallback + mxfp8 prefill GEMM + gfx1200/RDNA4 fixes. Validated on the neon gfx1201 guest (ROCm 10.1 userland — the only verified toolchain; the 6.4 probe and 7.7 target are historical): bf16 GEMM PASS (0.0078), fp8 probe PASS (0.0057, e4m3 reference fixed in the MVP)."
+    "fork": "https://github.com/lifeofpiboy/mlx",
+    "ref": "tail-fusion-gdn",
+    "sha": "75ca881",
+    "comment": "t761 (2026-10-28): GDN tail fusion (gdn_prep + gdn_norm_gated) on the g1 lineage (fa18fbf base: g1 graph-decode diagnostics + a7d1e7f sync fix). 75ca881 = 96a1677 (fbb7dc9 fusion fast paths + bit-exactness fixes) + launcher pointer fix (data_shared_ptr().get() is a host Data*, not a device pointer -> deterministic HSA memory fault; now gpu_ptr<T>). dist-g4d wheel; model-side S==1 guard in venv-g4 qwen3_5.py. Gates G1/G2 pass (maxdiff 0.0); bench G3/G4 pending. See reports/tail-fusion-gdn.md. Previous pin (a maintainer of the ROCm backend/mlx the vendor ref the pinned base sha, MVP 2026-10-25) remains the validated ROCm 10.1 base."
   },
   "fallback": {
     "fork": "https://github.com/the ROCm backend fork",
