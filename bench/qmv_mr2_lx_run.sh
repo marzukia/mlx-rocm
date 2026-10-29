@@ -13,8 +13,9 @@
 # (c) CONFIG: printed + asserted per run (doc rule 6) — the CONFIG lines
 #     carry the wheel version + MLX_* env; the parser prints the kernel
 #     names actually dispatched; this runner asserts the expected kernel
-#     family per shape (and the template instantiation from the full
-#     symbol name when rocprofv3 provides it).
+#     family per shape + the template instantiation from the full symbol
+#     name (mangled Lb0/Lb1 or demangled — non-vacuous on this
+#     toolchain's mangled names; t903 MINOR-2 fix).
 #
 # Usage (ON marzuki-neon):
 #   bash qmv_mr2_lx_run.sh <python>
@@ -68,26 +69,12 @@ grep -E "^CONFIG:" $T/bench0.log $T/bench1.log
 grep -E "^COMBO:" $T/parse0.log $T/parse1.log
 
 # --- gate (c): config assertions (kernel names actually dispatched) ------
-python3 - $T/combos0.json $T/combos1.json <<'EOF' || { echo "CONFIG-ASSERT-FAIL"; exit 1; }
-import json, sys
-a, b = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
-for tag, expect in (("0", a), ("1", b)):
-    for c in expect:
-        names = c["kernel_names"]
-        full = c["kernel_names_full"]
-        # down M=1 fits the MR gate (LDS 24576 <= 32768) — MR kernel;
-        # down M>=2 (LDS > 32 KB) is the per-row wide fallback for BOTH
-        # env values (the drift control).
-        wide_fallback = (c["tag"] == "down" and c["M"] >= 2)
-        want = "qmv_wide_kernel" if wide_fallback else "qmv_wide_mr_kernel"
-        assert want in names, (tag, c, names)
-        # template instantiation from the full symbol name, when present
-        for f in full:
-            if "<" in f:
-                want = ", false>" if tag == "0" else ", true>"
-                assert want in f, (tag, c["tag"], c["M"], f)
-print("CONFIG-ASSERT: PASS (kernel family per shape + template instantiation)", flush=True)
-EOF
+# The template-instantiation check is non-vacuous on the mangled names
+# rocprofv3 actually reports (mangled Lb0 = t825 path / Lb1 = hoist, or
+# demangled ", false>" / ", true>"; t903 MINOR-2 fix — the t889 check
+# was a no-op for mangled names). Proven non-vacuous offline by
+# tests/test_qmv_mr2_lx_instantiation.py.
+python3 $HERE/qmv_mr2_lx_instantiation.py $T/combos0.json $T/combos1.json || { echo "CONFIG-ASSERT-FAIL"; exit 1; }
 
 # --- gate (b) verdict ----------------------------------------------------
 python3 $HERE/qmv_mr2_lx_analyze.py $T/combos0.json $T/combos1.json > $T/gain.log 2>&1
