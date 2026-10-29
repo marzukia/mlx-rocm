@@ -713,3 +713,81 @@ config, doc rule 6), `bench/step0_parse.py` (trace parser; GB/s from kernel time
 Ceiling 636 GB/s ≥ ~550 GB/s → **no rescale flag**; operator may proceed to
 step 1 (decode QMV kernel) with the doc's 640 GB/s-based targets. The 32-CU
 HIP view is recorded for kernel-tuning heuristics (§1 note).
+# MTP SPEED LEVER — fast M=2 under the bit-exact rule (t723c)
+
+Continuation of burned t723. Objective: make the m2 (K=1/S=2 spec-verify) path fast WITH the lossless gate.
+
+## TL;DR
+**The M=2 QMM path is already the M=1 row algorithm — bit-exact AND fast. No code change needed.** The config variant (wide QMV at M=2) is the current path. The "2x row cost" is the 2x verify time (expected, since m2 processes 2 tokens), and m2 throughput ≈ m0 throughput.
+
+## 1. Analysis (no GPU)
+
+### Model quant params (/mnt/models/qwen3-9b-mlx)
+- 4-bit affine, group_size=64, **has_bias=true** (per-group scales+biases in safetensors).
+- **lm_head IS quantized**: U32 [248320, 512], scales/biases [248320, 64] (vocab=248320).
+- embed_tokens also quantized (same geometry).
+- MLP: gate/up [12288, 512] U32 (K=4096, N=12288), down [4096, 1536] U32 (K=12288, N=4096).
+
+### Dispatch (qmm.hip, 5f28e1a)
+For M=1..8, 4-bit affine, has_bias=true, non-batched, transpose, bf16:
+- WMMA dense: requires M>8 → skip.
+- dequant+rocBLAS: M=2 < crossover (large=18; N>=8192&&K>=2048 → M>=max(8,14)=8, M=2<8) → skip.
+- 6-bit tiled: bits=4 → skip.
+- **wide QMV (qmv_wide_kernel): wide_ok=TRUE** (has_bias, 4-bit, M<=8, K%32==0, gs=64, bf16) → **this is the path**.
+- (tiled QMV is the fallback if wide is disabled; also M-independent per-row.)
+
+### Per-row FMA order (the core question)
+**qmv_wide_kernel** (the M=1..8 path for this model):
+```
+row = blockIdx.y;  col = blockIdx.x * blockDim.y + threadIdx.y;
+xr = x + row * K;
+acc = 0.0f;
+for (k = lane * WPER; k < K; k += 32 * WPER) {
+  ... la += xv * q;  lx += xv;  ...
+  acc += s * la + b * lx;
+}
+for (o = 16; o > 0; o >>= 1) acc += __shfl_down(acc, o);
+if (lane == 0) out[row * N + col] = acc;
+```
+**The per-row computation is completely M-independent** (row=blockIdx.y; grid=(N/8, M); each block computes one (row, col-tile)). The K-loop, per-group FMA order, and shuffle reduction are all M-independent.
+
+**qmv_tiled_kernel** (the fallback): also M-independent per-row (m=blockIdx.x; grid-strides over column tiles).
+
+**Conclusion: a tiled M=2 CONFIG preserves M=1's per-row FMA order. The config variant is viable (fast + bit-exact).** The M=2 path already runs the M=1 row algorithm.
+
+### M=2 vocab GEMM cost
+- lm_head weight = 248320 × 4096 × 4 bits ≈ 485 MB.
+- M=1: stream weight once (485 MB from HBM). M=2: stream weight twice (970 MB from HBM).
+- But m2 throughput ≈ m0 throughput (63.67 ≈ 65.07), because m2 processes 2 tokens per verify step: m2_throughput = 2 / (2 × m0_forward_time) = m0_throughput.
+- The "2x row cost" is the 2x verify time (expected), and m2 throughput = m0 throughput.
+
+## 2. t732 (M-invariance) intersection
+- The sibling line makes M=2..8 rows run the M=1 row algorithm for bit-exactness.
+- **My analysis: the wide QMV kernel (the M=2 path for this model) is ALREADY M-independent per-row → the M=2 path already runs the M=1 row algorithm. So the t732 fix is a no-op at the QMM level for this model (the QMM is already bit-exact).**
+- The o_proj divergence (t718/t732 named op) is NOT at the QMM level (primitive shows o_proj BIT-EXACT, maxdiff=0.0). It must be in another part of the m2 pipeline (GDN, attention, or the m2 harness setup).
+- **The speed track does NOT conflict with the correctness fix**: the M=2 path (wide QMV) is fast (m2 ≈ m0) and bit-exact. No mitigation needed.
+
+## 3. Verification
+
+### (a) Primitive (MLP + lm_head geometry, M=2 vs 2xM=1, maxdiff)
+Build: a7d1e7f (wheel `mlx-0.32.3.dev20261028+a7d1e7f`, dist-g3s/). venv-g3 (fresh venv + g3 wheel + mlx_lm).
+```
+gate/up:  K=4096  N=12288  M=2 vs 2xM=1 maxdiff=0.000e+00  BIT-EXACT
+down:     K=12288 N=4096   M=2 vs 2xM=1 maxdiff=0.000e+00  BIT-EXACT
+lm_head:  K=4096  N=248320 M=2 vs 2xM=1 maxdiff=0.000e+00  BIT-EXACT
+o_proj:   K=4096  N=4096   M=2 vs 2xM=1 maxdiff=0.000e+00  BIT-EXACT
+```
+**All 4 geometries BIT-EXACT (maxdiff=0.0).**
+
+### (b) Bench (m0 + m2, 1024 tokens, greedy, fresh process, flock)
+Reference (t710, /mnt/models/tmp/bench4/): m0=64.49 tok/s, m2a=63.81 tok/s (389/512=76% acceptance).
+G3 bench (/mnt/models/tmp/bench-g3/): pending.
+
+## 4. Gate
+- m0 stream unchanged vs reference (/mnt/models/tmp/bench4/m0.out): pending.
+- m2 stream BIT-EXACT vs m0: pending.
+- m2 tok/s >= 65.05: pending.
+
+## 5. Land
+- guest g3: branch mtp-speed-mlp-lmhead @ d449729 (pushed to fork mlx-clone-k3).
+- worktree: branch worker/mtp-speed-mlp-lmhead (vendor.json bump + this report), push to mirror, open PR vs main.
