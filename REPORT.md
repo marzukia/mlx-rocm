@@ -1,3 +1,205 @@
+# K2 non-GEMM fusion — round-4 fix report (monky)
+
+Branch: `k2-non-gemm-fusion` (base `33b13dd`). Fixes the round-3 adversarial
+review (t535, `reviews/k2-r3-review.md`): 0 BLOCKER / 3 MAJOR / 2 MINOR / 3 NIT.
+Scope of this round: the 3 MAJORs (one-line guards in `fast.cpp`) + MINOR-1
+(report reconciliation). MINOR-2 (fast.h wording) and NITs are left open
+(see §7).
+
+## 1. The fixes
+
+All in `vendor/mlx-rocm-upstream/mlx/fast.cpp` (the kv_append gate). The
+verified wheel (t531, source `ec48eb4c`, `/mnt/models/mlx-clone-k2`) carries
+MAJOR-1; MAJOR-2/3 are new one-line checks per the review's suggested fix
+list. No other file changed (fast.h / fast_primitives.h / copy.hip /
+rms_norm.hip were already byte-identical to the wheel source — md5-verified).
+
+### MAJOR-1 — `kernel_layout_ok`: unscheduled guard (ported from the wheel)
+
+An unscheduled graph node carries the C-default strides from
+`ArrayDesc::init()` (and all-true default flags), which always pass the
+stride gate, so a non-standard lazy view was routed to the fast kernel and
+misaddressed at eval time — the r1 failure mode, open on the branch.
+
+```diff
+   // fallback (arbitrary strides).
+   //
+   // Layout metadata is only trustworthy once the array is materialized:
+   // an unscheduled graph node carries the C-default strides from
+   // ArrayDesc::init() (and all-true default flags), not the true view
+   // strides, while the kernel reads the input's strides at eval time
+   // (after materialization). Checking the stale metadata would dispatch
+   // the fast kernel for a transposed view (e.g. [2,2,1,8] strides
+   // (8,16,1,1) of a transposed [1,2,8] buffer) and misaddress the B
+   // rows. This matches the verify harness's _row_contiguous numpy-bridge
+   // check, which materializes before reading strides: both reject the
+   // view.
+   auto kernel_layout_ok = [](const array& a) {
++    if (a.status() == array::Status::unscheduled) {
++      return false;
++    }
+     const auto& sh = a.shape();
+```
+
+**Exact-port proof** — `diff` of the branch's pre-fix fast.cpp (git `33b13dd`)
+against the wheel source (`/mnt/models/mlx-clone-k2/mlx/fast.cpp`,
+`ec48eb4c`): the wheel's only delta is the comment paragraph above + the 3-line
+guard. After the port, `diff` of the branch's post-fix fast.cpp against the
+wheel source shows **only** the two new checks (MAJOR-2/3 below) — the
+guard and comment are byte-identical to the wheel:
+
+```diff
+# diff: wheel fast.cpp -> branch post-fix fast.cpp (only delta)
+209a210,217
+>   // K2 review MAJOR-3 (round 4): the fast kernel writes cv at
+>   // offset * cache_values strides[2] with no bounds check, so a smaller-T
+>   // cache_values would be written out of bounds. Validate up front.
+>   if (cache_keys.shape(2) != cache_values.shape(2)) {
+>     throw std::invalid_argument(
+>         "[kv_append] cache_keys and cache_values must have the same "
+>         "T (shape(2)).");
+>   }
+228a237,245
+>   // K2 review MAJOR-2 (round 4): the fast kernel is single-dtype (one T
+>   // for all four pointers, dispatch on keys dtype only), so a mixed
+>   // keys/values dtype pair (each matching its own cache) would be read
+>   // with the wrong element size — silent corruption. Validate up front.
+>   if (keys.dtype() != values.dtype()) {
+>     throw std::invalid_argument(
+>         "[kv_append] keys and values must have the same dtype (the fast "
+>         "kernel is single-dtype).");
+>   }
+```
+
+### MAJOR-2 — mixed k/v dtype check (new)
+
+The fast kernel is single-dtype (one `T` for all four pointers, dispatch on
+`keys.dtype()` only); a mixed keys/values pair (each matching its own cache)
+passed the pre-existing k==ck / v==cv checks and was misread with the wrong
+element size. Added before the fast path, after the existing dtype checks:
+
+```cpp
+  if (keys.dtype() != values.dtype()) {
+    throw std::invalid_argument(
+        "[kv_append] keys and values must have the same dtype (the fast "
+        "kernel is single-dtype).");
+  }
+```
+
+### MAJOR-3 — cache T-shape check (new)
+
+The fast kernel writes `cv` at `offset * cache_values strides[2]` with no
+bounds check; `cache_values.shape(2) <= offset < cache_keys.shape(2)` was an
+OOB global write (the offset range check is against `cache_keys` only).
+Added after the B/H/D cache-shape check:
+
+```cpp
+  if (cache_keys.shape(2) != cache_values.shape(2)) {
+    throw std::invalid_argument(
+        "[kv_append] cache_keys and cache_values must have the same "
+        "T (shape(2)).");
+  }
+```
+
+## 2. Rebuild (guest, /mnt/models/mlx-clone-k2)
+
+fast.cpp synced (md5-verified), then in `/mnt/models/venv-k2` PATH:
+`cmake -S . -B build/temp.../mlx.core -DCMAKE_PREFIX_PATH=/opt/rocm/core-10.1
+-DBLA_VENDOR=OpenBLAS -DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201
+-DCMAKE_BUILD_TYPE=Release` (reconfigure, 9.3s) → `cmake --build ... -j8`
+(fast.cpp recompiled, libmlx.so relinked, python extension rebuilt) →
+`pip wheel . --no-deps -w /mnt/models/dist/ --no-build-isolation` →
+force-reinstall into venv-k2. Log: `/mnt/models/tmp/k2-r4-build.log`.
+
+Wheel: `mlx-0.32.3.dev20261026+the earlier vendor base-cp312-cp312-linux_x86_64.whl`,
+`sha256=d617a1b841c324e426367c0299154c23c566d562e805046dcc130a4711e881ee`
+(supersedes `ec48eb4c`).
+
+Build log tail:
+
+```
+[ 31%] Building CXX object CMakeFiles/mlx.dir/mlx/fast.cpp.o
+[ 35%] Linking CXX shared library libmlx.so
+[ 86%] Built target mlx
+[ 92%] Building CXX object python/src/CMakeFiles/core.dir/fast.cpp.o
+[100%] Linking CXX shared module .../mlx/core.cpython-312-x86_64-linux-gnu.so
+[100%] Built target core
+BUILD_EXIT=0
+  Created wheel for mlx: filename=mlx-0.32.3.dev20261026+the earlier vendor base-cp312-cp312-linux_x86_64.whl size=21540077 sha256=d617a1b841c324e426367c0299154c23c566d562e805046dcc130a4711e881ee
+WHEEL_EXIT=0
+Successfully installed mlx-0.32.3.dev20261026+the earlier vendor base
+INSTALL_EXIT=0
+=== BUILD END Mon Oct 26 12:41:04 UTC 2026 ===
+```
+
+Install verification: installed `core.so` / `libmlx.so` md5-identical to the
+wheel; `strings libmlx.so` contains both new guard messages;
+`import mlx.core` OK in venv-k2. (Note: venv-k2's `bin/pip` shebang points at
+`/mnt/models/venv`, so the reinstall used `venv-k2/bin/python -m pip` — the
+first `pip` invocation installed into the base venv; corrected before any
+GPU run.)
+
+## 3. Suite result (this wheel, log preserved on disk)
+
+`scripts/verify-k2.py` (69 checks), venv-k2, `flock /mnt/models/gpu-bench.lock`,
+`LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib`. Full log:
+**`reports/k2-r4-suite-full.log`** (79 lines, preserved in-repo).
+
+**Verdict: 69 PASS / 0 FAIL** (`grep -c '^\[PASS\]'` = 69,
+`grep -c '^\[FAIL\]'` = 0, "all unit checks passed"). No regression vs the
+t531 run (69/0 on `ec48eb4c`): the new checks only fire on invalid input,
+and the unscheduled guard routes the same lazy suite inputs to the same
+slice_update fallback the t531 wheel used.
+
+This also resolves MINOR-1: the 69/0 evidence is now substantiated on disk —
+`reports/k2-r4-suite-full.log` is the full raw log of the suite run on the
+branch-as-committed wheel (`d617a1b8`), and `reports/k2-r2-suite-evidence.txt`
+retains the t531 session extraction for the `ec48eb4c` run.
+`reports/k2-verify-r2.md`'s sourcing note is updated accordingly.
+
+## 4. Guard-firing evidence (probe, log: `reports/k2-r4-guards.log`)
+
+`k2-r4-guards-probe.py` (5 cases, same env/lock protocol):
+
+1. **Materialized standard layout, ck buffer shared via view** (so the
+   fallback's buffer-donation cannot fake in-place):
+   `ck buffer modified at offset row: True | cv: True | rest untouched: True`
+   → **VERDICT: FAST KERNEL (in-place, correct)**. The fast path is intact
+   for scheduled inputs; the unscheduled guard is a no-op there (no
+   happy-path change — (c)).
+2. **Materialized non-contig view** (strides (8,16,1,1)): `0/256` mismatched
+   → **FALLBACK (correct)** — the stride gate rejects it (case would have
+   been misaddressed by the fast kernel).
+3. **Unscheduled non-contig view** (the suite's case, lazy at gate time):
+   `0/256` mismatched → **FALLBACK (correct)** — **MAJOR-1 guard fires**
+   (without it, C-default strides pass the gate and the fast kernel
+   misaddresses: r1's 16/256).
+4. **Mixed k/v dtype** (keys bf16 + values f32, each matching its own
+   cache): `RAISED ValueError: [kv_append] keys and values must have the
+   same dtype (the fast kernel is single-dtype).` → **MAJOR-2 guard fires**.
+5. **Cache T mismatch** (ck T=8, cv T=4, offset=5): `RAISED ValueError:
+   [kv_append] cache_keys and cache_values must have the same T (shape(2)).`
+   → **MAJOR-3 guard fires**.
+
+## 5. Host-side checks
+
+`uv run ruff check .` / `ruff format --check .`: clean.
+`uv run python scripts/size_ratchet.py --base HEAD`: SIZE GATE OK.
+`uv run pytest -m "not gpu"`: 6 passed, 1 skipped.
+
+## 6. Known open items (not fixed this round)
+
+- MINOR-2 (review): `fast.h` kv_append doc wording ("non-row-contiguous
+  inputs" → "inputs not satisfying the kernel's stride layout"). Left as-is
+  to keep the branch's fast.h byte-identical to the verified wheel; one-line
+  doc fix for the next round.
+- NIT-1: uint4 row-base alignment not gated (pre-existing; misaligned vector
+  loads are legal on AMD). NIT-2: harness H==1 corner (unreachable in the
+  current suite). NIT-3: AGENTS.md ROCm 7.7 vs guest ROCm 10.1 (profile
+  drift).
+- HIP teardown exit-hang after the suite (results complete before the hang;
+  runs use the timeout wrapper + early kill on the completion marker).
+
 # t789 — vendor-pin fix (dangling pin + silent build-wheel) — worker report
 
 Branch: `worker/t789-vendor-pin-fix` (base `origin/main` @ 64b98b8).
@@ -266,6 +468,131 @@ bash /mnt/models/tmp/bench-g4d/bench-g4d.sh            # 6 runs + gate (K2 not r
 
 ---
 
+# m6: rope_q row-invariant (MTP lossless gate G4 fix)
+
+**Status (2026-10-28 23:20Z): GPU complete. Rope fix VERIFIED (focused
+A/B + layer-3 chain row-invariant); G4 gate still FAILs at 148 - the
+remaining T-dependence is in the GDN (gated delta net) path (first
+diverging layer 4), a separate root-cause class (m3/m4 territory).
+No bench regression (AR -0.32%, MTP K=1 -0.05% vs baselines).
+
+## Problem (from m5)
+
+MTP lossless gate G4 (2-row causal verify vs 1-row AR) FAILs at token
+149. m5's A/B localized the first diverging component to `rope_q`
+(1/4096 elements, maxabs 9.766e-04 = 1-2 ULPs bf16; numeric, not
+logic). All upstream MATCH; downstream DIFFs are propagation only.
+
+Root cause class (same as m4's SDPA): `rope_q` is the fused
+`mx.fast.rope` kernel, whose ROCm implementation dispatches T-dependent
+variants — a 1D single-token kernel for T=1 (AR) and a batched kernel
+for T>1 (verify) — that can differ by 1 ULP on the same logical row
+(same input, same position, different kernel schedule).
+
+## Fix
+
+`patches/m6-ropeq-rowinvariant.diff` (applied by
+`scripts/apply-m6-patch.py`, idempotent, `.bak-t866` backup per the
+t718c convention):
+
+- New `RowInvariantRoPE` module in `qwen3_next.py`: the same rotation
+  computed with plain elementwise ops — inv_freqs as an fp32 constant
+  (`base ** (-i/32)`, mirroring the kernel's `exp2f(-(i/32) *
+  log2(base))` as closely as the API allows), theta per row
+  (`(offset + row) * inv_freqs`), cos/sin precomputed in fp32, then
+  split/rotate/multiply/add in the model dtype (bf16). Row r depends
+  only on (row r, offset + r), so T=1 and T=2 are bit-identical per
+  row by construction.
+- Preserved exactly: partial_rotary_factor (dims=64 of 256 rotated,
+  192 passthrough bit-exact), traditional=False (pair
+  (x[i], x[i+32]) rotated by theta_i), per-row offset semantics
+  (pos = offset + row_idx), the causal string (no mask change), no
+  padding.
+- `Qwen3NextAttention.__init__`: the default (no rope_scaling) path
+  uses `RowInvariantRoPE`; non-default scaling configs keep the
+  original `initialize_rope` path (behavior unchanged).
+
+## Verification
+
+- CPU logic (guest, no GPU): row-invariance TRUE (f32 + bf16),
+  passthrough bit-exact, matches the fp64 LLaMA convention (maxdiff
+  ~7e-6 at fp32 rounding level), inv_freqs = base^(-i/32).
+- GPU focused A/B (`scripts/diag-s62-m6.py`, m5 captured tensors,
+  patched venv-g4): **M6-AB-OK** (exit 0).
+  - rope_q vs-capture T=1 (the AR path): MATCH 0/4096 - the explicit
+    rope is bit-exact with the fused 1D single-token kernel.
+  - rope_q vs-capture T=2: row 0 MATCH 0/4096; row 1 DIFF 1/4096
+    (h=10, d=38, maxabs 9.766e-04) - the documented m5 artifact: the
+    old fused T=2 kernel's row 1 is 1 ULP off from its own T=1
+    sibling, so no single explicit formula can match both kernels on
+    that element; the patched rope matches T=1 and is row-invariant.
+  - rope_q row-invariance (A row1 vs B): MATCH 0/4096.
+  - rope_k A/B/row-invariance: all MATCH (0/2048, 0/1024, 0/1024).
+  - full chain re-run (m5 Part 2, patched rope, captured inputs):
+    all 19 components row-invariant - **first diverging component:
+    NONE** (pre-patch m5: rope_q was the first; downstream DIFFs were
+    propagation only). m3 pkl cross-check validates the capture
+    (layer-3 k 0/91136; layer-4 gdn ssm 515560/524288).
+- G4 gate (`scripts/run-m6-g4.sh`, bench4 logic on venv-g4, 5 arms):
+  - vacuity-guarded (guard + ALLTOKS stream-format check: `scripts/run-m6-g4.sh` header, `bench/README.md` t638 audit).
+  - pre-patch control (fresh baselines): m0 AR 69.31 tok/s, m2a MTP
+    K=1 64.87 tok/s (ACCEPTED=389/512); M2-M0 FAIL first_div=148
+    (= @149 1-indexed, the documented divergence) - gate confirmed
+    live.
+  - post-patch: **M2-M0-LOSSLESS FAIL first_div=148** (a=33443 m2a,
+    b=24296 m0) - same position as pre-patch. Controls: M1-M0 MATCH,
+    M2-A-B MATCH, M2-B-C MATCH (M1-M2A FAIL first_div=148 - the T=2
+    verify vs the T=1 verify, same GDN cause).
+  - **Root-cause re-localization (post-patch m3 layer diff, full
+    model, S62 arm): first diverging layer = 4 (GDN conv 2059/24576,
+    ssm 515560/524288) - bit-identical to pre-patch m3** (the GDN
+    kernel is untouched by the m6 patch, as expected). Layers 0-3
+    all clean (layer-3 attn k/v 0/91136 - the rope fix verified at
+    the model level). l0 logits (after prev=279): MATCH (also
+    pre-patch - the rope T-dependence was row-1 only); l1 logits
+    (after draft=3545): DIFF 192967/248320 (maxabs 1.25e-01) -
+    bit-identical pre/post patch, i.e. the GDN T-dependence
+    dominates and the rope contribution was negligible in the
+    logits.
+  - The layer-4 conv state is a pure copy of the layer-3 input
+    vectors (shift register, no arithmetic); its 2059/24576 diff
+    proves the GDN-2 output (the layer-3 input) is T-dependent.
+    The m6 A/B control verified h3(3545) (row 1) is row-invariant
+    and the patched layer-3 block is row-invariant, so the
+    remaining diff is in h3(279) (row 0) - the GDN kernel's
+    row-0 per-token output (and intermediate state) is T-dependent
+    (the T=2 batched kernel computes row 0's output differently
+    from the T=1 single-token step, even though the final ssm
+    state matches for layers 0-2). This is the m3/m4 root-cause
+    class (GDN kernel T-dependence) - the next leg (m7) must make
+    the GDN conv/ssm path row-invariant (e.g. run the GDN layers
+    as 2xT=1 in the verify forward, or fix the T=2 kernel's row-0
+    output computation).
+- Bench (from the post-patch gate runs): AR (m0) 69.43 tok/s vs
+  baseline 69.65 (**-0.32%, within the <1% budget**; fresh pre-patch
+  control 69.31); MTP K=1 (m2a) 64.31 tok/s vs baseline 64.34
+  (**-0.05%**; fresh control 64.87, ACCEPTED=389/512). No
+  regression.
+
+## Verdict
+
+The m6 rope fix is verified: the attention path (rope) is now
+row-invariant (focused A/B M6-AB-OK; layer-3 chain first diverging
+component NONE; layer-3 attn k/v clean in the full model). The G4
+lossless gate still FAILs at token 149 (first_div=148) - the
+remaining T-dependence is in the GDN (gated delta net) layers
+(first diverging layer 4; the GDN kernel's row-0 per-token output
+is T-dependent). G4 will need the GDN path made row-invariant (m7)
+to pass bit-exact. No bench regression (AR -0.32%, MTP K=1
+-0.05% vs baselines).
+
+## Files
+
+- `patches/m6-ropeq-rowinvariant.diff` — the model patch (3 hunks:
+  import math; RowInvariantRoPE class; conditional rope init).
+- `scripts/apply-m6-patch.py` — idempotent applier + .bak-t866.
+- `scripts/diag-s62-m6.py` + `scripts/run-m6-ab.sh` — focused A/B.
+- `scripts/run-m6-g4.sh` — G4 gate + bench extraction.
 # Step 0 — in-guest streaming-read ceiling + runtime CU count
 
 Worker: piboy (2026-10-28). Source of truth: method-correction doc
