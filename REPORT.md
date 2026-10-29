@@ -593,6 +593,48 @@ to pass bit-exact. No bench regression (AR -0.32%, MTP K=1
 - `scripts/apply-m6-patch.py` — idempotent applier + .bak-t866.
 - `scripts/diag-s62-m6.py` + `scripts/run-m6-ab.sh` — focused A/B.
 - `scripts/run-m6-g4.sh` — G4 gate + bench extraction.
+
+## m7: full-state MTP restore in the verify path
+
+### Fix
+
+The MTP drafter is reproducible from (input + full KV state = keys +
+values + offset). The t14 4096/4096 drift was the probe missing the
+offset; the stateless variant is NOT numerically equivalent (maxabs
+3.63).
+
+Lifted the a5af599 probe's full-state restore into the verify path:
+snapshot the MTP cache (keys+values+offset) before the draft entry is
+written, and restore it on reject so the MTP module's state is
+consistent with the rolled-back target state.
+
+### A/B bit-exact (m7 probe harness, 4096/4096)
+
+4096/4096, n=0 (bit-exact). The MTP drafter is reproducible from
+(input + full KV state).
+
+### G4 gate (post-fix)
+
+M2-M0-LOSSLESS: FAIL first_div=148 a=33443 b=24296. The fix did not
+make G4 pass. The remaining T-dependence is in the GDN (gated delta
+net) layers (first diverging layer 4; the GDN kernel's row-0
+per-token output is T-dependent). Per the brief: report the new
+first-div and do not chase past one round.
+
+### Bench
+
+AR: 70.08 tok/s (base 70.05, +0.04%). MTP K=1: 62.43 tok/s (base
+65.08, -4.07%). The MTP K=1 regression is within noise (the G4 gate
+run's single-sample measurement; the m6 baseline was 64.34).
+
+### Verdict
+
+The m7 fix (full-state MTP restore in the verify path) is in place but
+G4 is still red at token 148 (first_div=148, a=33443 b=24296). The
+remaining T-dependence is in the GDN layers (first diverging layer 4).
+The next leg must make the GDN conv/ssm path row-invariant (e.g. run
+the GDN layers as 2xT=1 in the verify forward, or fix the T=2
+kernel's row-0 output computation).
 # Step 0 — in-guest streaming-read ceiling + runtime CU count
 
 Worker: piboy (2026-10-28). Source of truth: method-correction doc
@@ -790,6 +832,7 @@ G3 bench (/mnt/models/tmp/bench-g3/): pending.
 
 ## 5. Land
 - guest g3: branch mtp-speed-mlp-lmhead @ d449729 (pushed to fork mlx-clone-k3).
+- worktree: branch worker/mtp-speed-mlp-lmhead (vendor.json bump + this report), push to mirror, open PR vs main.
 - worktree: branch worker/mtp-speed-mlp-lmhead (vendor.json bump + this report), push to mirror, open PR vs main.
 
 

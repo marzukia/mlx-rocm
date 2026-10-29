@@ -33,6 +33,7 @@ Prints: TOKS, TOKS_S, ACCEPTED, verifies, stream.
 import os
 import time
 
+import numpy as np
 import mlx.core as mx
 from mlx_lm import load
 from mlx_lm.models.cache import KVCache
@@ -62,6 +63,38 @@ def restore_gdn(cache, saved):
         cache[i].lengths = lengths
 
 
+def save_mtp(mtp_cache):
+    """m7: snapshot the MTP module's FULL state (keys, values, AND
+    offset). The MTP block is full-attention (no GDN state), so its
+    entire state is the KV cache. The offset is load-bearing: the
+    attention uses cache.offset for the RoPE position and the k/v
+    write slot. Restoring keys/values without the offset makes the
+    next MTP call run at the wrong RoPE position and attend over a
+    stale/zero slot (t14: 4096/4096 drift, maxabs 5.452e-01;
+    a5af599: full-state restore is bit-exact, n=0/4096)."""
+    if mtp_cache is None or len(mtp_cache) == 0:
+        return None
+    c = mtp_cache[0]
+    if c.keys is None:
+        return (None, None, c.offset)
+    return (
+        np.asarray(mx.array(c.keys).astype(mx.float32)).copy(),
+        np.asarray(mx.array(c.values).astype(mx.float32)).copy(),
+        c.offset,
+    )
+
+
+def restore_mtp(mtp_cache, saved):
+    if saved is None or mtp_cache is None or len(mtp_cache) == 0:
+        return
+    keys, values, offset = saved
+    c = mtp_cache[0]
+    if keys is not None:
+        c.keys = mx.array(keys)
+        c.values = mx.array(values)
+    c.offset = offset
+
+
 def main():
     mode = os.environ.get("MLX_MTP", "0")
     assert mode in ("0", "1", "2"), mode
@@ -89,6 +122,7 @@ def main():
     accepted = 0
     verifies = 0
     t1 = time.time()
+    mtp_saved = None  # m7: FULL MTP state snapshot (keys+values+offset), taken before the draft step
     for _ in range(MAX_TOKENS):
         if draft is None:
             # Single-token step (from S_k)
@@ -97,6 +131,7 @@ def main():
                 break
             out.append(t)
             if mtp_on:
+                mtp_saved = save_mtp(mtp_cache)  # m7: snapshot BEFORE the draft entry is written
                 emb = lm.model.embed_tokens(mx.array([[t]]))
                 dh = lm.mtp(h, emb, mtp_cache)
                 draft = int(mx.argmax(lm.lm_head(dh)[0, -1]))
@@ -180,6 +215,7 @@ def main():
                 for c in cache:
                     if isinstance(c, KVCache):
                         c.trim(2)                # remove prev_token AND d from attention
+                restore_mtp(mtp_cache, mtp_saved)  # m7: restore FULL MTP state (keys+values+offset)
                 out.append(t2)
                 # Re-forward [prev_token] (S=1) -> S_{k+1}, then [t2] (S=1) -> S'';
                 # same math as the mode-1 reject path.
