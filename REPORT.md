@@ -263,3 +263,126 @@ flock -w 10 /mnt/models/gpu-bench.lock -c true          # LOCK-FREE
 scp bench/{mtp-bench3.py,mtp-bench5.py,bench-g4d.sh} neonvm@...:/mnt/models/tmp/bench-g4d/
 bash /mnt/models/tmp/bench-g4d/bench-g4d.sh            # 6 runs + gate (K2 not run)
 ```
+
+---
+
+# Step 0 — in-guest streaming-read ceiling + runtime CU count
+
+Worker: piboy (2026-10-28). Source of truth: method-correction doc
+(https://drop.cain.rocks/planky/3150ddc860c16a6d3bf769f3.html) — section 4 step 0,
+section 2 rules 1/2/6/7. No model load. All GPU time under
+`flock /mnt/models/gpu-bench.lock` (lock free at dispatch; t771 terminal).
+
+## Headline
+
+**Measured in-guest streaming-read ceiling: 636 GB/s (99.4% of the 640 GB/s spec
+peak). No partition flag: 636 ≥ ~550, so the doc's section 4 step 0 exit
+condition does NOT trigger — the guest CAN saturate the 9070 XT, and the doc's
+640 GB/s-based targets stand (rescaled table in §4 below, numerically ~unchanged
+because 636 ≈ 640).**
+
+The runtime CU count is split (doc section 1 row 4): **HIP userspace reports 32
+CUs (this is what mlx uses, `cus=32`); the KFD driver and HSA runtime report the
+full 64 CUs.** The 32-CU number is a userspace view, not a hardware partition —
+it does not throttle streaming bandwidth (636 GB/s measured).
+
+## 1. CU count — what the runtime actually reports
+
+| Layer | Command | Reports |
+|---|---|---|
+| HIP userspace (`hipGetDeviceProperties().multiProcessorCount`; the value mlx logs as `cus=`) | direct HIP query (`bench/step0_hip_cu.cu`, compiled with `/opt/rocm/core-10.1/bin/hipcc`) | **32** |
+| HSA runtime | `/opt/rocm/core-10.1/bin/rocminfo` | **64** CUs (node 1 = gfx1201 "AMD Radeon RX 9070 XT", 2 SIMDs/CU, 4 shader engines; node 0 = Ryzen 7 9700X CPU, 8 cores) |
+| KFD driver topology | `cat /sys/class/kfd/kfd/topology/nodes/1/properties` | **64** CUs (`simd_count 128`, `simd_per_cu 2`) |
+| amd-smi | `/opt/rocm/core-10.1/bin/amd-smi` | full passthrough RX 9070 XT, 16304 MB, Partition-Mode N/A, ROCm 10.1.0 |
+
+`amdgpu` module parameters: `disable_cu=(null)`, no partition mode. So the
+"32-CU vGPU partition" claim (reports/opt-gauntlet-areaB-backend.md §6) matches
+only the HIP/mx userspace view; driver + HSA see the full 64 CUs, and the
+bandwidth measurement in §2 shows no partition throttling.
+
+Note for kernel work: mlx's `cus=32` feeds kernel-tuning heuristics
+(e.g. `qmm.hip` block-count sizing). Any heuristic that assumes 32 CUs is
+under-provisioning by 2x relative to the hardware — flag for step 1.
+
+## 2. Streaming-read ceiling (doc rule 1/2: same guest, same ROCm, same flock; GB/s from rocprofv3 kernel time + bytes moved)
+
+Method: plain read-only kernel — `mx.sum` reduction (one heavy
+`all_reduce_kernel` pass that reads the whole buffer once + one tiny final
+scalar reduce) over an f32 device buffer, 3 warmup + 10 measured sums, timed by
+`rocprofv3 --kernel-trace` kernel time only. No per-op latency, no host op
+creation / `mx.eval` in the timing path (doc rule 2). rocm-bandwidth-test is not
+installed in the guest.
+
+| Pass | Buffer | Kernel (rocprofv3) | Total kernel time | GB/s min / median / max | Headline GB/s |
+|---|---|---|---|---|---|
+| 4 GiB (1,073,741,824 f32) | 4,294,967,296 B | `all_reduce_kernel` (20 dispatches) | 67.559 ms | 634.2 / 635.9 / 637.1 | 635.7 |
+| 4 GiB (repeat) | 4,294,967,296 B | `all_reduce_kernel` (20 dispatches) | 67.516 ms | 634.8 / 636.1 / 637.1 | 636.1 |
+| 2 GiB (536,870,912 f32) | 2,147,483,648 B | `all_reduce_kernel` (20 dispatches) | 33.859 ms | 631.6 / 634.7 / 636.4 | 634.2 |
+
+**Ceiling = 636 GB/s** (median of the 4 GiB passes; flat across 2–4 GiB,
+<1% spread across 3 passes). Bytes moved = buffer bytes (read) + 8 B per
+iteration (negligible partial-read/scalar-write).
+
+Effective config (doc rule 6, printed + asserted by the bench):
+`venv=venv-g4 rocm=10.1 mlx_wheel=0.32.3.dev20261028+75ca881
+buffer_bytes=4294967296 n_elements=1073741824 warmup=3 iters=10` — kernel
+names actually dispatched: `all_reduce_kernel` only (from the rocprof pass).
+
+## 3. Cross-checks
+
+| Quantity | Value | % of measured ceiling (636 GB/s) |
+|---|---|---|
+| Fleet QMV (reports/opt-gauntlet-areaB-backend.md §3: 4.6 GB/token ÷ 9.46 ms) | 486 GB/s | **76.4%** (doc §1 row 1: ~76% — confirmed; the "51% of 960" was the wrong-denominator artifact) |
+| Spec peak (256-bit GDDR6 @ 20 Gbps) | 640 GB/s | ceiling is 99.4% of spec |
+| Measured ceiling | 636 GB/s | 100% (this number is "100%" per doc rule 1) |
+
+## 4. Doc section 3 budget table, rescaled to the measured ceiling (C = 636 GB/s)
+
+GEMV floor = 4.6 GB ÷ C; realistic target = 4.6 GB ÷ (0.88·C); non-GEMM and
+launch/gap rows are not bandwidth-scaled (unchanged from the doc).
+
+| Bucket | Now | Floor (100% of 636 GB/s) | Realistic target (~88%) | Headroom |
+|---|---|---|---|---|
+| Quantized GEMV (4.6 GB weight stream) | 9.46 ms | **7.23 ms** | **8.22 ms** | **1.24 ms** |
+| Non-GEMM kernels (norms, copies, elementwise, GDN, attn) | 4.9 ms | <1 ms | ~1.5 ms | ~3.4 ms |
+| Launch / commit / Python gaps (eager, ~1,070 dispatches) | ~1.5 ms | ~0 | ~0.3 ms (graph decode) | ~1.2 ms |
+| **Total** | 15.9 ms = 63 tok/s | **7.23 ms = 138.3 tok/s** | **~10.0 ms = ~99.8 tok/s** | **~5.9 ms** |
+
+vs the doc's 640 GB/s estimates (7.2 ms / 139 tok/s, 8.2 ms, ~10 ms / ~100
+tok/s): differences <0.5% — the doc's targets stand as written. The "177 tok/s
+ceiling" (960 GB/s-derived) remains unreachable; the zero-other-cost floor is
+~138 tok/s.
+
+## 5. Repro (exact)
+
+```bash
+# lock check first
+ssh -J andryo@100.91.94.56 neonvm@192.168.122.234 'flock -w 5 /mnt/models/gpu-bench.lock -c true && echo LOCK_FREE'
+
+# deploy bench
+scp -J andryo@100.91.94.56 bench/step0_streaming_read.py bench/step0_parse.py bench/step0_run.sh neonvm@192.168.122.234:/mnt/models/tmp/
+
+# 4 GiB pass (default) — CU count + ceiling, under flock, rocprofv3 kernel time
+ssh -J andryo@100.91.94.56 neonvm@192.168.122.234 'bash /mnt/models/tmp/step0_run.sh'
+
+# 2 GiB variant
+ssh -J andryo@100.91.94.56 neonvm@192.168.122.234 'STEP0_NBYTES=$((2*1024*1024*1024)) STEP0_OUT=/mnt/models/tmp/step0_2g bash /mnt/models/tmp/step0_run.sh'
+
+# CU count (independent of the bench)
+ssh -J andryo@100.91.94.56 neonvm@192.168.122.234 '/opt/rocm/core-10.1/bin/rocminfo | grep -B1 -A4 "Marketing Name"; /opt/rocm/core-10.1/bin/amd-smi | head -14; cat /sys/class/kfd/kfd/topology/nodes/1/properties'
+
+# direct HIP CU query (the value mlx uses)
+ssh -J andryo@100.91.94.56 neonvm@192.168.122.234 'export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib; /opt/rocm/core-10.1/bin/hipcc -o /mnt/models/tmp/hipcu bench/step0_hip_cu.cu && flock -w 60 /mnt/models/gpu-bench.lock -c /mnt/models/tmp/hipcu'
+```
+
+Files: `bench/step0_run.sh` (guest-side runner: CU count + flock + rocprofv3 +
+parse), `bench/step0_streaming_read.py` (kernel script; prints/asserts effective
+config, doc rule 6), `bench/step0_parse.py` (trace parser; GB/s from kernel time
++ bytes moved, doc rule 2; prints kernel names actually dispatched),
+`bench/step0_hip_cu.cu` (direct `hipGetDeviceProperties` CU query).
+
+## 6. Exit condition (doc section 4 step 0)
+
+Ceiling 636 GB/s ≥ ~550 GB/s → **no rescale flag**; operator may proceed to
+step 1 (decode QMV kernel) with the doc's 640 GB/s-based targets. The 32-CU
+HIP view is recorded for kernel-tuning heuristics (§1 note).
