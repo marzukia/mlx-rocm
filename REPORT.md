@@ -791,3 +791,458 @@ G3 bench (/mnt/models/tmp/bench-g3/): pending.
 ## 5. Land
 - guest g3: branch mtp-speed-mlp-lmhead @ d449729 (pushed to fork mlx-clone-k3).
 - worktree: branch worker/mtp-speed-mlp-lmhead (vendor.json bump + this report), push to mirror, open PR vs main.
+
+
+# STEP 1 — Multi-row QMV investigation (marzukia/mlx-rocm)
+
+Salvaged from t784 (burned 3601/3600s mid-investigation). Resumed from
+`refs/heads/fleetwork-salvage/784` → branch `worker/step1-qmv-mr` @ 23a63c20.
+
+**Reframing (the key correction to t784):** the QMV matmul dispatches ARE in the
+rocprofv3 trace. t784 missed them because rocprofv3's `grid_size` reports total
+*work-items* (numBlocks × dimBlocks), not block count, and the symbol table
+mangles the kernel name to `copy_v` in some traces. The matmul is a real,
+measurable dispatch.
+
+## 1. cus=32 check (done first, per task)
+
+- HIP userspace reports **cus=32** (`[mlx-rocm] bound HIP device 0: gfx1201 ...
+  cus=32 warp=32 lds=64KB`); KFD/HSA see 64. `low_cu=0`, `host_WARP_SIZE=32`,
+  `native_wmma=1`.
+- This is the step-0 finding re-confirmed on the current wheel (75ca881). The
+  `MLX_ROCM_NUM_CUS` override (branch 23a63c2) exists to let the dispatch logic
+  see the true CU count; without it, arch-tuning that keys off `num_cu`
+  (e.g. `qmv_crossover_large=18` for Rdna4) sees 32, not 64.
+- For M=1 the dequant+rocBLAS crossover (threshold 18) does NOT fire, so the
+  wide/MR path is taken regardless of the CU misreport. The CU count matters for
+  block-count heuristics, not for the M≤8 QMV path selection.
+
+## 2. QMV matmul dispatch — identified + quantified
+
+Traced a single `quantized_matmul` (M=1, N=12288, K=4096, gs=64, 4-bit,
+has_bias, transposed, bf16 x) on the installed wheel (75ca881) with
+`rocprofv3 --kernel-trace --runtime-trace`.
+
+**The QMV matmul is `qmv_wide_kernel`:**
+
+| M | block grid | blocks | work-items | block (threads) | LDS | kernel time (med) |
+|---|-----------|--------|-----------|-----------------|-----|-------------------|
+| 1 | (1536, 1) | 1536  | 49152×8   | 32×8 = 256     | 0   | 36.6 µs          |
+| 2 | (1536, 2) | 3072  | 49152×16  | 32×8 = 256     | 0   | 70.4 µs          |
+| 3 | (1536, 3) | 4608  | 49152×24  | 32×8 = 256     | 0   | 103.9 µs         |
+| 4 | (1536, 4) | 6144  | 49152×32  | 32×8 = 256     | 0   | 137.6 µs         |
+
+- Dispatch count: **1 matmul kernel per `quantized_matmul`** (no graph launch;
+  no pre-pass for the wide path). The 2 `hipMemsetD32` (fillBuffer) calls that
+  appear in some traces belong to the *broken f32-scales case* (see §3), not the
+  working path.
+- Grid is **(N/8, M)** — one block-row per output row. Each block handles 8
+  weight columns; for M rows there are M×1536 blocks that **each re-read the
+  same 8 weight columns**. No weight-load amortization across rows.
+- `sharedMemBytes=0` (no LDS) on the wide kernel.
+
+### Bandwidth (kernel time, doc rule 2)
+
+Weight bytes = N·K/2 = 25,165,824 B (4-bit). Scales+biases (bf16) = 3,145,728 B.
+
+| M | med µs | GB/s (weights) | GB/s (all) | ratio vs M=1 |
+|---|--------|---------------|-----------|--------------|
+| 1 | 36.6   | 687           | 773       | 1.000        |
+| 2 | 70.4   | 357           | 402       | 1.922        |
+| 3 | 103.9  | 242           | 272       | 2.836        |
+| 4 | 137.6  | 183           | 206       | 3.754        |
+
+**The wheel's wide kernel scales ~linearly with M** (M=4 reads the weights 4×).
+It meets the M=1 bar but fails the M=2/3/4 bars — exactly the gap the MR kernel
+closes (one weight pass for up to 4 rows).
+
+## 3. Wheel bug found: f32 scales → all-zero output
+
+While tracing, a correctness anomaly surfaced:
+
+- `mx.quantize(w_f32, 64, 4)` returns **f32** scales/biases. Feeding those to
+  `quantized_matmul` returns an **all-zero** output (any_nonzero=False), and the
+  trace shows a different dispatch: a 4-block×256-thread kernel + 2
+  `hipMemsetD32` (26.2 MB and 8.4 MB) — not `qmv_wide_kernel`.
+- Casting scales/biases to **bf16** (the model's dtype) makes the same call
+  correct: `qmv_wide_kernel` dispatches, output matches the dequant-matmul
+  reference within 4-bit quantization error (maxdiff ≈ 0.03–0.06).
+- The model (qwen3-9b-mlx) loads **bf16** scales, so it is unaffected; a
+  freshly-quantized f32 tensor is not. The wide dispatch gate checks
+  `x.dtype()` but not `scales.dtype()`, and the kernel hard-codes
+  `ScaleT=hip_bfloat16` — an f32 scale buffer is misread.
+
+**Action item (out of step-1 scope, flagged):** the wide/MR gate should either
+require `scales.dtype()==x.dtype()` (bf16/fp16) or cast scales to the activation
+dtype before dispatch. The step-1 bench uses bf16 scales (the model's dtype) to
+stay on the working path.
+
+## 4. Exit-bar measurement (wheel baseline)
+
+Bars: M=1 ≥ 541 GB/s; M=2 ≤ 1.15× M=1; M=3,4 ≤ 1.3× M=1; bit-exact vs baseline.
+
+Wheel (75ca881, per-row wide kernel), kernel time:
+
+| bar | wheel result | verdict |
+|-----|--------------|---------|
+| M=1 ≥ 541 GB/s | 687 GB/s (weights) / 773 GB/s (all) | **PASS** |
+| M=2 ≤ 1.15× M=1 | 1.922× | **FAIL** |
+| M=3 ≤ 1.3× M=1 | 2.836× | **FAIL** |
+| M=4 ≤ 1.3× M=1 | 3.754× | **FAIL** |
+
+The wheel already clears the M=1 bar; it fails all three multi-row bars because
+the per-row wide kernel re-reads the weights once per row. The MR kernel
+(one weight pass for up to 4 rows, x staged in LDS, 16 cols/block) is the fix.
+
+## 5. MR kernel (branch 23a63c2) — design
+
+`qmv_wide_mr_kernel` (122 lines) + dispatch in `qmm.hip`:
+
+- Grid `(ceil(N/16), ceil(M/4))`, block `(32, 16)`, LDS `min(4,M)·K·2` bytes
+  (32 KB at K=4096, M=4). Gate: `M≤4 && LDS≤32 KB` (else fall back to the
+  per-row wide kernel for M=5..8). Opt-out `MLX_QMV_NO_MR`; cols
+  `MLX_QMV_MR_COLS` (default 16).
+- One weight pass for up to 4 rows: each warp accumulates the block's rows in
+  separate accumulators **in the exact tile order of `qmv_wide_kernel`**, so
+  every row is bit-identical to the per-row kernel (lossless gate maxdiff 0.0).
+- x is staged in LDS once per block (lever 2) instead of re-read from L2 per
+  column; 16 cols/block (lever 3) cuts tail/scheduling effects.
+- For M=1..4 the grid is (768, 1) = 768 blocks; the weights are read **once**
+  for all rows, so M=2/3/4 should run at ~M=1 time (weight-load dominated).
+
+## 6. MR kernel measurement (2026-10-28/29, branch 1e9c50e)
+
+Wheel: built on neon from `/mnt/models/mlx-clone-mr` (base 75ca881 + branch MR-kernel
+state, byte-verified identical to the repo vendor tree at 1e9c50e; qmm.o + wheel built
+after the final source fix, `qmv_wide_mr_kernel` symbols present in libmlx.so). Unpacked
+at `/mnt/models/wheel-qmv` (PYTHONPATH per the script header). Launch-verified:
+`qmv_wide_mr_kernel` dispatches for M=1 and M=2, grid (768,1) blocks for K=4096
+N=12288 (24576×16 work-items ÷ 32×16 workgroup), LDS 32768 B.
+
+Effective config (doc rule 6, printed per run): no `MLX_QMV_NO_MR`, no
+`MLX_QMV_MR_COLS` (CONFIG lines show `env={}`) → defaults: MR gate M≤4 && LDS≤32 KB,
+16 cols/block. Dispatched kernel printed per shape by the parser (`KERNELS:` lines):
+`qmv_wide_mr_kernel` for all M on gate_up/o_proj/lm_head; `qmv_wide_kernel` fallback
+on the down shape (K=12288 → LDS 96 KB > 32 KB gate, by design).
+
+GB/s = bytes moved / rocprofv3 kernel time (doc rule 2; 50 measured dispatches,
+10 warmup excluded), all-bytes basis (weights + scales + biases + x + y).
+
+### 6.1 Per-shape results (new wheel vs same-session ref run, venv-g4 wheel 75ca881)
+
+| shape | M | ref GB/s | new GB/s | new M-ratio vs M=1 | bar | verdict |
+|-------|---|----------|----------|--------------------|-----|---------|
+| gate_up 4096x12288 | 1 | 788.9 | 681.4 | 1.000 | ≥ 541 | **PASS** |
+| | 2 | 408.2 | 375.4 | 1.815 | ≤ 1.15× | **FAIL** |
+| | 3 | 285.3 | 245.0 | 2.781 | ≤ 1.3× | **FAIL** |
+| | 4 | 213.5 | 193.4 | 3.524 | ≤ 1.3× | **FAIL** |
+| down 12288x4096 (fallback wide) | 1 | 823.2 | 684.0 | 1.000 | ≥ 541 | **PASS** |
+| | 2 | 428.3 | 418.8 | 1.633 | ≤ 1.15× | **FAIL** |
+| | 3 | 303.5 | 288.3 | 2.373 | ≤ 1.3× | **FAIL** |
+| | 4 | 222.8 | 225.6 | 3.032 | ≤ 1.3× | **FAIL** |
+| o_proj 4096x4096 | 1 | 539.3 | 411.8 | 1.000 | ≥ 541 | **FAIL** |
+| | 2 | 387.8 | 272.2 | 1.513 | ≤ 1.15× | **FAIL** |
+| | 3 | 263.6 | 219.3 | 1.878 | ≤ 1.3× | **FAIL** |
+| | 4 | 203.4 | 179.9 | 2.289 | ≤ 1.3× | **FAIL** |
+| lm_head 4096x248320 | 1 | 634.5 | 632.1 | 1.000 | ≥ 541 | **PASS** |
+| | 2 | 318.4 | 461.5 | 1.370 | ≤ 1.15× | **FAIL** |
+| | 3 | 212.7 | 319.8 | 1.977 | ≤ 1.3× | **FAIL** |
+| | 4 | 159.7 | 243.6 | 2.595 | ≤ 1.3× | **FAIL** |
+
+M-ratios are within-run (new M / new M=1) — the only comparison free of cross-run
+drift. Cross-run drift is real: the down shape runs the SAME kernel (wide fallback)
+in both runs and shows 823.2 → 684.0 GB/s at M=1 (~17%, thermal/clock state; the
+ref run went first on a cold GPU). M=1 bar is judged on the §2 reference shape
+(gate_up): 681.4 GB/s **PASS** (o_proj M=1 411.8 is the one sub-541 shape).
+
+### 6.2 Correctness gates (doc rule 4)
+
+- **Bit-exact vs baseline: PASS 16/16** — every shape × M=1..4, maxdiff 0.0,
+  raw-uint16 `array_equal` True (MR kernel output is bit-identical to the per-row
+  wide kernel, as designed).
+- **AR 1024-token greedy stream (MLX_MTP=0, qwen3-9b-mlx): MATCH** — new wheel
+  `TOKS=1024 TOKS_S=62.97`, ref `TOKS=1024 TOKS_S=70.28`; ALLTOKS lines
+  byte-identical (cmp), FIRST16 identical. The ~10% tok/s drop is the M=1
+  wide→MR swap (gate_up M=1 788.9 → 681.4 GB/s) plus cross-run drift.
+
+### 6.3 Bar verdict summary
+
+| bar | result | verdict |
+|-----|--------|---------|
+| M=1 ≥ 541 GB/s (gate_up) | 681.4 GB/s | **PASS** |
+| M=2 ≤ 1.15× M=1 | 1.370× best (lm_head), 1.815× gate_up | **FAIL (all 4 shapes)** |
+| M=3 ≤ 1.3× M=1 | 1.878× best (o_proj), 2.781× gate_up | **FAIL (all 4 shapes)** |
+| M=4 ≤ 1.3× M=1 | 2.289× best (o_proj), 3.524× gate_up | **FAIL (all 4 shapes)** |
+| bit-exact vs baseline | 16/16 maxdiff 0.0 | **PASS** |
+| AR 1024-token stream | ALLTOKS identical | **PASS** |
+
+### 6.4 Root cause of the multi-row bar failures (one evidence pass, no rewrite)
+
+The MR kernel **is** dispatched for M>1 (rocprofv3: `qmv_wide_mr_kernel`, 60/60
+dispatches per shape; grid (N/16, 1) blocks, workgroup 32×16, LDS 32768 B static,
+private_segment 0 — no visible LDS spill). The failure is not dispatch, blocks, or
+spills — it is that **the kernel is compute-bound, not weight-bandwidth-bound**:
+
+- Per-call kernel time scales linearly with M; the per-row increment equals the
+  per-row dequant+MAC compute cost:
+  - gate_up (N=12288): M=1 41.6 µs/call; per-row increment 34.8 µs →
+    100.6 MFLOP / 34.8 µs ≈ **2.9 TFLOPS**.
+  - lm_head (N=248320): M=1 906 µs/call; per-row increment 336 µs →
+    2.03 GFLOP / 336 µs ≈ **6.0 TFLOPS**.
+- The one-weight-pass lever works where it can: lm_head's per-row increment fell
+  from ~898 µs (ref, re-reads 507 MB weights per row) to 336 µs (compute only).
+  But the per-row MAC work (M·N·K) still scales with M, so
+  time(M)/time(1) = (W + M·C)/(W + C) > 1.3 whenever W < (M−1)·C — at the
+  model's real shapes W ≈ C (gate_up) or W ≈ 2.7·C (lm_head), far from the
+  W ≫ M·C the "weight-load dominated" premise needs.
+- Consequence: no M≤4 scheduling fix on the current per-row-accumulator structure
+  can flatten the curve; the bars need the MAC work itself to stop scaling with M
+  (e.g. a WMMA/tile formulation that reuses loaded weight tiles across rows at the
+  instruction level, or a higher sustained dequant+MAC throughput). Follow-up run.
+
+Artifacts on the guest: `/mnt/models/tmp/qmv-mr/{ref,new}/{bitexact,trace,ar.log}`,
+run logs `ref-run.log` / `new-run.log`, wheel `/mnt/models/wheel-qmv`.
+
+## 7. MR kernel weight-reuse (dequant hoist) — measurement (2026-10-29, worker/step1-qmv-mr2 @ e144f39)
+
+Scope: build + gates + bench + report only (t825's kernel change, e144f39, was
+committed but its bench evidence was lost to the upload failure). No kernel
+redesign in this run.
+
+### 7.1 Design rationale (the hoist, e144f39)
+
+The t818 MR kernel re-dequantized the weight tile (shift+mask+cvt) for EVERY
+row m inside the k-loop, although the tile is identical across rows. e144f39
+hoists the dequant OUT of the row loop into a register array (`wn[32]` 4-bit /
+`wn[16]` 8-bit, computed once per k-tile) and MACs all M rows against it. The
+per-row math keeps the EXACT FMA order of `qmv_wide_kernel` (same chunk order,
+same inner unroll, same `acc += s*la + b*lx`), so every row must stay
+bit-identical to the per-row kernel. The intended effect: the per-row
+increment becomes the MAC only (sub-additive), not dequant+MAC.
+
+### 7.2 Build + effective config
+
+The t818 guest clone (`/mnt/models/mlx-clone-mr`) was gone, so it was
+reconstructed: fork base 75ca881b (the t818 base) + the repo vendor-tree
+overlay of exactly the three quantized files (`qmm.hip` md5 ab6bc086, new
+`qmv_wide_mr_kernel.hip` md5 2352b75c byte-matching the branch file, new
+`qmv_lx_kernel.hip`). The vendor tree's `fast.*` trio was NOT overlaid (it is
+the older the earlier vendor base base; 75ca881's `fast.h` carries `gdn_prep`, which the
+75ca881 `python/src/fast.cpp` binding requires — the first build failed on
+exactly that, then built clean). Wheel
+`mlx-0.32.3.dev20261028+75ca881b` (sha256 dc9274a4…; libmlx.so sha256
+821da604…, 24 `qmv_wide_mr` symbols, 76 `gfx1201` strings), unpacked at
+`/mnt/models/wheel-qmv` (t818 wheel backed up to `wheel-qmv-t818.bak`).
+Launch-verified: `[mlx-rocm] bound HIP device 0: gfx1201 (AMD Radeon RX 9070
+XT) cus=32`; M=2 matmul OK. No `MLX_QMV_*` env (CONFIG lines show `env={}`) →
+defaults: MR gate M≤4 && LDS≤32 KB, 16 cols/block. `qmv_wide_mr_kernel`
+dispatches for all M on gate_up/o_proj/lm_head (60/60 dispatches per shape in
+the trace); `qmv_wide_kernel` fallback on the down shape (K=12288 → LDS
+96 KB > 32 KB gate, by design).
+
+GB/s = bytes moved / rocprofv3 kernel time (50 measured dispatches, 10 warmup
+excluded), all-bytes basis; pct against the MEASURED 640 GB/s peak (method
+doc: 9070 XT = 640 GB/s, NOT 960; the t818 parse script's 636 denominator is
+superseded here). ms/token = M=1 kernel time per call (decode is M=1).
+
+### 7.3 Correctness gates (all in-run)
+
+- **Bit-exact vs per-row wide kernel: PASS 16/16** — refs regenerated with the
+  baseline wheel (venv-g4, per-row `qmv_wide_kernel`; the t818 `.npy` refs were
+  cleaned from the guest), checked with the hoist wheel: every shape × M=1..4,
+  maxdiff 0.0, raw-uint16 `array_equal` True.
+- **AR 1024-token greedy stream (MLX_MTP=0, qwen3-9b-mlx, harness prompt):
+  MATCH** — `TOKS=1024 TOKS_S=70.48`; ALLTOKS byte-identical (cmp) to BOTH the
+  per-row wheel stream (t818 `new-alltoks`) and the baseline stream
+  (`ref-alltoks`). Cross-run tok/s is drift (t818: 62.97 new / 70.28 ref);
+  stated, not gated.
+- **M=1 non-regression: PASS** — gate_up M=1 655.9 GB/s ≥ 541; M=1 stream
+  byte-identical (same cmp above).
+- **Config printed+asserted per shape** — CONFIG lines (wheel
+  0.32.3.dev20261028+75ca881b, K×N, M, env={}) in every bench log; gfx1201
+  via device probe + wheel strings (7.2).
+- Lock protocol: 2 FLOCK-FAILs (bitexact-ref, attempts 1-2, sleep 60s each —
+  sibling held the lock), logged in `flock-fails.log`; no give-ups.
+
+### 7.4 Per-shape results (in-run ratios vs M=1; hoist wheel)
+
+| shape | M | µs/call | ms/token | GB/s | pct640 | M-ratio | bar | verdict |
+|-------|---|---------|----------|------|--------|---------|-----|---------|
+| gate_up 4096x12288 | 1 | 43.2 | 0.043 | 655.9 | 102.5% | 1.000 | ≥ 541 | **PASS** |
+| | 2 | 74.8 | 0.075 | 379.2 | 59.2% | 1.732 | ≤ 1.15× | **FAIL** |
+| | 3 | 114.4 | 0.114 | 248.4 | 38.8% | 2.646 | ≤ 1.3× | **FAIL** |
+| | 4 | 142.3 | 0.142 | 199.9 | 31.2% | 3.292 | ≤ 1.3× | **FAIL** |
+| down 12288x4096 (wide fallback) | 1 | 40.9 | 0.041 | 692.3 | 108.2% | 1.000 | — | — |
+| | 2 | 64.1 | 0.064 | 442.6 | 69.2% | 1.566 | ≤ 1.15× | **FAIL** |
+| | 3 | 96.3 | 0.096 | 295.0 | 46.1% | 2.352 | ≤ 1.3× | **FAIL** |
+| | 4 | 125.8 | 0.126 | 226.0 | 35.3% | 3.073 | ≤ 1.3× | **FAIL** |
+| o_proj 4096x4096 | 1 | 23.4 | 0.023 | 404.3 | 63.2% | 1.000 | — | — |
+| | 2 | 34.9 | 0.035 | 271.2 | 42.4% | 1.494 | ≤ 1.15× | **FAIL** |
+| | 3 | 43.5 | 0.044 | 218.0 | 34.1% | 1.861 | ≤ 1.3× | **FAIL** |
+| | 4 | 53.1 | 0.053 | 179.0 | 28.0% | 2.271 | ≤ 1.3× | **FAIL** |
+| lm_head 4096x248320 | 1 | 906.0 | 0.906 | 632.0 | 98.8% | 1.000 | — | — |
+| | 2 | 1242.1 | 1.242 | 461.4 | 72.1% | 1.371 | ≤ 1.15× | **FAIL** |
+| | 3 | 1803.4 | 1.803 | 318.1 | 49.7% | 1.990 | ≤ 1.3× | **FAIL** |
+| | 4 | 2369.9 | 2.370 | 242.3 | 37.9% | 2.616 | ≤ 1.3× | **FAIL** |
+
+### 7.5 Bar verdict
+
+| bar | result (best / gate_up) | verdict |
+|-----|--------------------------|---------|
+| M=1 ≥ 541 GB/s (gate_up) | 655.9 GB/s | **PASS** |
+| M=2 ≤ 1.15× | 1.371× (lm_head) / 1.732× | **FAIL (all 4 shapes)** |
+| M=3 ≤ 1.3× | 1.861× (o_proj) / 2.646× | **FAIL (all 4 shapes)** |
+| M=4 ≤ 1.3× | 2.271× (o_proj) / 3.292× | **FAIL (all 4 shapes)** |
+| bit-exact vs per-row wide kernel | 16/16 maxdiff 0.0 | **PASS** |
+| AR 1024-token stream | byte-identical (both refs) | **PASS** |
+
+### 7.6 The hoist is codegen-neutral — per-row increment + counter evidence
+
+Measured per-row increment (in-run, (t(M=4)−t(M=1))/3) vs t818:
+
+| shape | t818 µs/row | t835 µs/row | Δ |
+|-------|-------------|-------------|---|
+| gate_up (MR) | 34.8 | 33.0 | −5.2% |
+| o_proj (MR) | 9.95 | 9.91 | −0.4% |
+| lm_head (MR) | 486.4 | 488.0 | +0.3% |
+| down (wide, unchanged — drift control) | 30.5 | 28.3 | −7.1% |
+
+The hoist changed the per-row cost by ≤7% — within the drift band set by the
+unchanged wide kernel (−7.1%; cross-run M=1 baselines moved 0-19% between the
+t818 and t835 sessions, so only increments are comparable). Effective per-row MAC throughput: gate_up
+100.66 MFLOP / 33.0 µs ≈ 3.05 TFLOPS; lm_head 2037 MFLOP / 488 µs ≈ 4.17
+TFLOPS. The bars need ≤5.6 µs/row (M=2) and ≤4.3 µs/row (M=4) on gate_up —
+6-8× below the measured increment.
+
+Why: the dequant expression `(wp[q] >> (BITS·j)) & mask` depends ONLY on
+`wp[k]`, which is invariant across the m-loop — so hipcc was ALREADY
+CSE-ing it out of the row loop in the t818 kernel. The explicit register
+array produces the same codegen; the per-row cost is the MAC itself
+(M·N·K FMA + x/y traffic), which scales linearly with M by construction.
+
+rocprofv3 `--pmc` counter evidence (per dispatch, new wheel, o_proj +
+gate_up; CU_NUM=64):
+
+| shape | M | kernel ns | SQ_BUSY_CYCLES | GRBM_GUI_ACTIVE | busy% | SQ_WAVES |
+|-------|---|-----------|----------------|-----------------|-------|---------|
+| o_proj | 1 | 25 760 | 86 707 | 86 707 | 100.0% | 128 |
+| o_proj | 4 | 57 120 | 166 113 | 166 113 | 100.0% | 128 |
+| gate_up | 1 | 65 241 | 185 996 | 186 369 | 99.8% | 384 |
+| gate_up | 4 | 156 202 | 412 087 | 413 980 | 99.5% | 384 |
+
+The compute units are active for 99.5-100% of the kernel's runtime at every
+M — the kernel is compute-bound, not weight-bandwidth-bound. SQ_WAVES is
+CONSTANT in M (each wave already processes all M rows); what scales with M is
+the per-wave MAC work. Dispatch config unchanged from t818 (workgroup 32×16,
+LDS 32768 B, private_segment 0 — no spill; 60/60 dispatches per shape).
+(Supported counters on this rocprofv3/gfx1201: SQ_WAVES, SQ_BUSY_CYCLES,
+GRBM_GUI_ACTIVE, CU_NUM; SQ_INSTS_VALU / TA_TA_BUSY / GL2C_* report 0.)
+
+**Verdict: bars still fail — STOP (per scope).** The per-row increment is the
+MAC work; flattening the curve needs the MAC itself to stop scaling with M
+(a tile/WMMA formulation that reuses the loaded weight tile across rows at
+the instruction level, per §6.4) — a second kernel design, NOT started in
+this run.
+
+Artifacts on the guest: `/mnt/models/tmp/qmv-mr/{ref,new}/` (bitexact, 16
+bench logs + traces, ar.log, config.log, gpuinfo.log, flock-fails.log),
+`/mnt/models/tmp/qmv-mr/pmc-mr-{4096,12288}-M{1,4}/` (PMC traces), build log
+`/mnt/models/t835-build2.log`, wheel `/mnt/models/wheel-qmv` (t818 wheel at
+`/mnt/models/wheel-qmv-t818.bak`).
+
+## 8. t852 LX hoist A/B — verify + measure (2026-10-29, worker/qmv-tile-wmma @ 01c1013, t889 salvage)
+
+The t852 lever (method doc section 6.4: column-invariant per-row x-chunk-sum
+hoisted to a double-buffered 1 KB LDS buffer, in-k `__syncthreads`; t881
+draft, t889 design/build, this run = verify + measure). A/B toggle:
+`MLX_QMV_MR_LX` (1 = hoist, 0 = t825 path — the t835 MR2 kernel; each
+instantiation compiles only its m-loop path via `if constexpr`).
+
+### 8.1 Build + effective config
+
+- Source: the 01c1013 vendor tree (MR2 lineage merge + t852 hoist + the
+  dispatch fix — LXHOIST is a template parameter, selected at runtime).
+  Applier round-trip replay verified: MR2-lineage base (md5-verified:
+  `qmv_wide_mr_kernel.hip` 2352b75c, `qmm.hip` ab6bc086) +
+  `patches/qmv-mr-lxhoist.diff` → byte-identical to the committed vendor
+  tree (b05f379b / 0fdec793).
+- Wheel built on marzuki-neon (ROCm 10.1, gfx1201, RX 9070 XT) in
+  `/mnt/models/mlx-clone-mr` (incremental; `qmm.o` recompiled for the
+  dispatch fix, 0 errors), `.so` swapped into `/mnt/models/venv-t889`
+  (md5 4b51625c matches the build output). Wheel
+  0.32.3.dev20261028+75ca881b.
+- Bench: one fresh process per env (t835 convention), 10 warmup + 50 reps,
+  `rocprofv3 --kernel-trace` kernel time (doc rule 2), under
+  `flock /mnt/models/gpu-bench.lock`. Config printed + asserted per run:
+  wheel + MLX_* env in every CONFIG line; kernel family per shape and the
+  template instantiation (`, true>` / `, false>` from the full symbol name)
+  asserted by the runner (CONFIG-ASSERT: PASS).
+
+### 8.2 Lossless gate (doc rule 4) — PASS
+
+Bit-exact vs the per-row `qmv_wide_kernel` at identical inputs (seed 42 per
+shape, bf16 x, 4-bit affine gs 64 with bias, bf16 scales/biases; ref run
+`MLX_QMV_NO_MR=1`, check run `MLX_QMV_MR_LX=1`, same wheel): **16/16
+combos (4 shapes x M=1..4) maxdiff 0.0, raw-uint16 `array_equal` True**.
+The hoist's FADD chain is the exact t825 per-row lx order, so the value is
+bit-identical by construction; the gate confirms it end-to-end.
+
+### 8.3 A/B measurement — GAIN-GATE FAIL (the hoist is a loss)
+
+Per-combo kernel-time gain, LX=1 vs LX=0 (per-call µs = 50-rep sum / 50):
+
+| shape | M | µs/call LX0 | µs/call LX1 | gain% | GB/s LX0 | GB/s LX1 |
+|-------|---|-------------|-------------|-------|----------|----------|
+| gate_up 4096x12288 | 1 | 43.4 | 54.5 | −25.6 | 652.7 | 519.6 |
+| | 2 | 76.4 | 89.8 | −17.6 | 371.6 | 316.0 |
+| | 3 | 98.0 | 109.5 | −11.8 | 289.9 | 259.4 |
+| | 4 | 124.7 | 145.5 | −16.7 | 228.2 | 195.4 |
+| o_proj 4096x4096 | 1 | 17.7 | 23.2 | −31.0 | 533.5 | 407.2 |
+| | 2 | 31.3 | 32.1 | −2.6 | 302.4 | 294.9 |
+| | 3 | 38.4 | 40.1 | −4.4 | 247.0 | 236.6 |
+| | 4 | 45.4 | 51.8 | −14.1 | 209.3 | 183.5 |
+| lm_head 4096x248320 | 1 | 905.3 | 911.8 | −0.7 | 632.5 | 628.1 |
+| | 2 | 1209.0 | 1430.7 | −18.3 | 474.0 | 400.6 |
+| | 3 | 1796.8 | 2075.0 | −15.5 | 319.3 | 276.5 |
+| | 4 | 2373.0 | 2795.9 | −17.8 | 241.9 | 205.4 |
+
+Drift control (down 12288x4096 M=2..4 — per-row `qmv_wide_kernel` for BOTH
+env values, env-invariant): −0.03% / −0.50% / +0.41% — session drift
+negligible, so the negative gains are real, not drift.
+
+**GAIN-GATE: FAIL — min −31.00%, mean −14.68%, 0/12 combos ≥ 3%** (method
+doc section 2: gain >= 3% to count). M=1 is hit hardest (mean −19.1%);
+M=2..4 −10.6..−16.2%.
+
+Baseline consistency: the LX=0 (t825 path) numbers match the t835 section
+7.4 measurement (same kernel, prior session) within the documented cross-run
+drift band (0-19%; section 6.1) — gate_up M=1 43.4 vs 43.2 µs/call,
+lm_head M=1 905.3 vs 906.0 — confirming the A/B baseline IS the t835 MR2
+baseline; the in-run A/B (control-stable) is the valid gate measurement.
+
+### 8.4 Why the hoist loses
+
+The kernel is compute-bound (section 7.6: 99.5-100% CU active, SQ_WAVES
+constant in M). The t825 path computes the per-row lx inline (16-column
+redundancy, 32-term FADD chain per row per k-tile) with NO in-k barrier.
+The hoist replaces that with one computation per (row, k-tile) + an
+`__syncthreads` per k-iteration + a 1 KB double-buffered LDS write/read
+round-trip. On this card the barrier + LDS traffic serialize the wavefronts
+more than the eliminated FADDs cost — the redundancy was cheap (the FADDs
+pipeline behind the MAC work), the barrier is not. The loss is worst at M=1
+(the barrier is paid for 1 row's worth of work) and shrinks with M (more
+MAC work per barrier), consistent with the measured −19% (M=1) → −10.6%
+(M=3) gradient.
+
+**Verdict: the section 6.4 lever (t852 LX hoist) is LOSSLESS (16/16
+bit-exact) but does NOT meet the >= 3% gain gate — it is a 0.7-31%
+performance loss on gfx1201. The t825 path (LX=0) remains the best measured
+multi-row QMV configuration; the M=2..4 bars (section 7.5) still FAIL.**
+Follow-up flag: the dispatch default is `MLX_QMV_MR_LX=1` (hoist on) — with
+this measurement the default should flip to 0 (or the hoist instantiation
+dropped) before the MR path is used in a serve config.
+
+Artifacts on the guest: `/mnt/models/tmp/qmv-mr2-lx/` (bitexact ref/check
+logs + .npy refs, bench0/1 logs, rocprofv3 traces, parse/combos/gain logs),
+build log `/mnt/models/t889-build.log`, wheel `.so` in
+`/mnt/models/venv-t889` (build dir `/mnt/models/mlx-clone-mr`).

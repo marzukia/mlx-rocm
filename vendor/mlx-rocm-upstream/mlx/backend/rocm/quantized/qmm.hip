@@ -9,6 +9,16 @@
 #include "mlx/backend/rocm/quantized/quantized.h"
 #include "mlx/backend/rocm/quantized/qmv_tiled_kernel.hip"
 #include "mlx/backend/rocm/quantized/qmv_lx_kernel.hip"
+// Forward-declare load_scale_value (defined below in namespace rocm) so the
+// MR kernel template (included next) can name-lookup it. Two-phase lookup:
+// a raw-value template is not found by ADL, so it must be declared before the
+// template definition. Kept at file scope (before namespace mlx::core) so the
+// MR kernel's own namespace wrapper resolves to ::mlx::core::rocm.
+namespace mlx::core::rocm {
+template <typename ScaleT, int GROUP_SIZE, bool AFFINE>
+__device__ inline float load_scale_value(ScaleT raw);
+}
+#include "mlx/backend/rocm/quantized/qmv_wide_mr_kernel.hip"
 #include "mlx/primitives.h"
 
 #include <hip/hip_bfloat16.h>
@@ -678,6 +688,14 @@ inline rocm::HWInfo detect_rocm_hw_info(rocm::Device& d) {
     hw.tier = (props.warpSize == 32) ? RocmQmvArchTier::Rdna2
                                     : RocmQmvArchTier::Cdna;
     hw.num_cus = props.multiProcessorCount;
+    // The guest's HIP userspace can under-report CUs (vGPU: HIP says 32,
+    // KFD/HSA say 64 — step 0, 2026-10-28). An under-count 2x
+    // under-provisions the CU-sized persistent grids (tiled QMV, WMMA
+    // prefill, 6-bit tiled). Override with MLX_ROCM_NUM_CUS; the raw and
+    // effective values are logged below.
+    int env_cus = parse_non_negative_int_env("MLX_ROCM_NUM_CUS", 0);
+    if (env_cus > 0)
+      hw.num_cus = env_cus;
     hw.max_threads_per_cu = props.maxThreadsPerMultiProcessor;
     hw.shared_mem_per_cu = props.sharedMemPerBlock;
     hw.l2_cache_bytes = props.l2CacheSize;
@@ -731,10 +749,12 @@ inline rocm::HWInfo detect_rocm_hw_info(rocm::Device& d) {
       }
     }
     fprintf(stderr,
-            "[mlx-rocm] %s native_wmma=%d cus=%d warp=%d low_cu=%d host_WARP_SIZE=%d\n",
+            "[mlx-rocm] %s native_wmma=%d cus=%d (reported=%d) warp=%d "
+            "low_cu=%d host_WARP_SIZE=%d\n",
             arch_name ? arch_name : "?",
             (int)hw.has_native_wmma,
             hw.num_cus,
+            props.multiProcessorCount,
             hw.warp_size,
             (int)hw.is_low_cu_igpu,
             (int)WARP_SIZE);
@@ -4095,8 +4115,28 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     if (host_warp != 32) {
       // fall through to tiled / warp-shared
     } else {
-    dim3 wblock(32, wcols);
-    dim3 wgrid((N + wcols - 1) / wcols, M);
+      // Multi-row wide (M<=4): one weight pass for up to 4 rows (levers
+      // 1+2+3: shared weight tile, x staged in LDS once per block, 16
+      // cols/block). Bit-identical per row to qmv_wide_kernel (same tile
+      // order). Opt out: MLX_QMV_NO_MR; cols: MLX_QMV_MR_COLS.
+      static bool use_mr_qmv = (std::getenv("MLX_QMV_NO_MR") == nullptr);
+      static int mr_cols_env = parse_non_negative_int_env("MLX_QMV_MR_COLS", 0);
+      // t889: A/B toggle for the t852 LX hoist (default 1 = hoist on;
+      // 0 = t825 path — the same kernel without the in-k barrier).
+      static int mr_lx_env = parse_non_negative_int_env("MLX_QMV_MR_LX", 1);
+      int mcols = (mr_cols_env >= 8) ? mr_cols_env : 16;
+      size_t mr_lds = (size_t)std::min(4, M) * (size_t)K * 2;
+      bool mr_ok = use_mr_qmv && (M <= 4) && (mr_lds <= 32768);
+      // t852: the MR kernel's in-k-loop __syncthreads (LX hoist) requires
+      // uniform k-iteration counts across lanes: K % (32 * WPER) == 0
+      // (K % 1024 == 0 for 4-bit, K % 512 == 0 for 8-bit). Shapes that do
+      // not satisfy it (or MLX_QMV_MR_LX=0) run the t825 path
+      // (LXHOIST = false) — the MR dispatch gate itself is unchanged.
+      bool lxhoist = (mr_lx_env != 0) &&
+          (K % ((bits_ == 4) ? 1024 : 512) == 0);
+      if (!mr_ok) {
+        dim3 wblock(32, wcols);
+        dim3 wgrid((N + wcols - 1) / wcols, M);
 #define LAUNCH_QMV_WIDE(TT, ST, GS, BV)                                      \
   enc.add_kernel_node(                                                       \
       &rocm::qmv_wide_kernel<TT, ST, GS, BV>, wgrid, wblock, 0u,             \
@@ -4108,17 +4148,54 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     else if (group_size_ == 64) { LAUNCH_QMV_WIDE(TT, ST, 64, BV); }        \
     else { LAUNCH_QMV_WIDE(TT, ST, 128, BV); }                              \
   } while (0)
-    if (x.dtype() == bfloat16) {
-      if (bits_ == 4) { LAUNCH_QMV_WIDE_GS(hip_bfloat16, hip_bfloat16, 4); }
-      else { LAUNCH_QMV_WIDE_GS(hip_bfloat16, hip_bfloat16, 8); }
-    } else {
-      if (bits_ == 4) { LAUNCH_QMV_WIDE_GS(__half, __half, 4); }
-      else { LAUNCH_QMV_WIDE_GS(__half, __half, 8); }
-    }
+        if (x.dtype() == bfloat16) {
+          if (bits_ == 4) { LAUNCH_QMV_WIDE_GS(hip_bfloat16, hip_bfloat16, 4); }
+          else { LAUNCH_QMV_WIDE_GS(hip_bfloat16, hip_bfloat16, 8); }
+        } else {
+          if (bits_ == 4) { LAUNCH_QMV_WIDE_GS(__half, __half, 4); }
+          else { LAUNCH_QMV_WIDE_GS(__half, __half, 8); }
+        }
 #undef LAUNCH_QMV_WIDE_GS
 #undef LAUNCH_QMV_WIDE
-    return;
-    } // host_warp == 32
+        return;
+      }
+      dim3 mrblock(32, mcols);
+      dim3 mrgrid((N + mcols - 1) / mcols, (M + 3) / 4);
+#define LAUNCH_QMV_WIDE_MR(TT, ST, GS, BV, LX)                               \
+  enc.add_kernel_node(                                                      \
+      &rocm::qmv_wide_mr_kernel<TT, ST, GS, BV, LX>, mrgrid, mrblock,     \
+      (uint32_t)mr_lds, (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr,     \
+      (const ST*)biases_ptr, (TT*)out_ptr, M, N, K, has_bias)
+#define LAUNCH_QMV_WIDE_MR_GS(TT, ST, BV, LX)                               \
+  do {                                                                      \
+    if (group_size_ == 32) { LAUNCH_QMV_WIDE_MR(TT, ST, 32, BV, LX); }     \
+    else if (group_size_ == 64) { LAUNCH_QMV_WIDE_MR(TT, ST, 64, BV, LX); } \
+    else { LAUNCH_QMV_WIDE_MR(TT, ST, 128, BV, LX); }                      \
+  } while (0)
+      // LXHOIST is a template parameter (compile-time), so the runtime
+      // lxhoist value selects between the two instantiations (true = t852
+      // hoist, false = t825 path).
+      if (x.dtype() == bfloat16) {
+        if (bits_ == 4) {
+          if (lxhoist) { LAUNCH_QMV_WIDE_MR_GS(hip_bfloat16, hip_bfloat16, 4, true); }
+          else { LAUNCH_QMV_WIDE_MR_GS(hip_bfloat16, hip_bfloat16, 4, false); }
+        } else {
+          if (lxhoist) { LAUNCH_QMV_WIDE_MR_GS(hip_bfloat16, hip_bfloat16, 8, true); }
+          else { LAUNCH_QMV_WIDE_MR_GS(hip_bfloat16, hip_bfloat16, 8, false); }
+        }
+      } else {
+        if (bits_ == 4) {
+          if (lxhoist) { LAUNCH_QMV_WIDE_MR_GS(__half, __half, 4, true); }
+          else { LAUNCH_QMV_WIDE_MR_GS(__half, __half, 4, false); }
+        } else {
+          if (lxhoist) { LAUNCH_QMV_WIDE_MR_GS(__half, __half, 8, true); }
+          else { LAUNCH_QMV_WIDE_MR_GS(__half, __half, 8, false); }
+        }
+      }
+#undef LAUNCH_QMV_WIDE_MR_GS
+#undef LAUNCH_QMV_WIDE_MR
+      return;
+    }
   }
 
   // int8 integer-dot QMV (4-bit affine, small-M decode). Quantize activation to
