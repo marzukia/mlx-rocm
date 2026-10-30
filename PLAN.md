@@ -2,6 +2,42 @@
 
 Living plan. Full research report: [docs/plan.md](docs/plan.md) (an earlier research pass, 2026-10-25).
 
+## Phase 3 — Lever 1: lossless compressed 4bit weight stream + in-CU decoder (t1039 re-dispatch, 2026-10-31)
+
+Goal: byte-identical greedy ALLTOKS vs uncompressed AR at ctx=14 and ctx=29K; A/B bench for GB/token + tok/s. Baseline anchor: 5.95 GB/token, 100.0 tok/s @93% (595.2 GB/s of 640).
+
+### Format spec draft v0 (commit gate: step 0)
+
+- **Unit:** per-tensor. One **shared canonical Huffman codebook** over the 16 4bit code values (signed int4), table = 16 lengths x 4 bits = 8 bytes + 4-byte checksum, stored once per tensor (negligible: 250 tensors).
+- **Huffman vs ANS — Huffman. Justification:** with a 16-symbol alphabet ANS buys <=0.1 bits/code (3.74 vs 3.71) at the cost of per-symbol state + renormalization that serializes in-CU decoding; canonical Huffman decodes in one prefix pass with a 16-entry table in registers — the 0.1 bit gap is <3% of the total win and the decoder ALU is what this lever bets on.
+- **Measured E[L] (t1023 per-tensor histograms):** per-tensor shared = 3.713 bits/code (range 3.62–3.75); global = 3.737; raw = 4.0. A per-group (64-code) codebook would need 8+ bytes of table per 64 codes = 1 bit/code overhead — it cancels the win, hence shared-per-tensor.
+- **Group size:** 64 (== quantization group; one decoded group == one qmv K-tile FMA chunk). Groups are NOT byte-aligned in the stream (no 15-bit/chunk padding). Row starts = per-row **u32 cumulative row-start table** (absolute stream bit offset per row; 4B/row, 7.7MB model total — a block reads one u32, no prefix sum; max value 4.7e9 bits < 2^32). Overhead ≈ 0.007 bits/code — negligible. (Model facts: all 4bit tensors K=4096 except down_proj K=12288; U32 [N, K/8] packed layout; 250 tensors.)
+- **Losslessness by construction:** decode reconstructs the exact 4bit code values; the existing dequant (scale/bias from the safetensors side data, untouched) runs on the decoded tile → bit-identical results. Greedy ALLTOKS gate at ctx=14 and ctx=29K vs uncompressed AR (fresh process per path, discarded warm pass, steady window skip=56).
+
+### Per-token byte budget (t1023 accounting, re-anchored at E=3.713)
+
+| item | current (GB/token) | compressed (GB/token) |
+|------|-------------------|-----------------------|
+| 4bit codes (4.476 @ 4.0 bits) | 4.476 | 4.155 (3.713 bits) |
+| scale/bias | 0.560 | 0.560 |
+| bf16 other (off qmv path) | 0.913 | 0.913 |
+| row-length table | 0 | 0.008 |
+| **total** | **5.95** | **5.63** |
+
+Projection @93% (595.2 GB/s): 5.95 → 100.0; 5.63 → **105.8 tok/s** (full stream). qmv-path only (codes+scale/bias = 4.72 vs 5.04 GB): 118.2 → **126.2 tok/s**. (t1023 anchored at raw H=3.706 → 108.0; per-tensor E[L]=3.713 lands at 105.8.)
+
+### Kernel design
+- qmv wide path (per WORKSTATE: row=blockIdx.y, grid=(N/8, M)): each (m, n) block owns one compressed weight row (≤5.7KB at K=12288). Block start: read its row's start bit offset from the L2-resident table; load the row's compressed bytes into LDS; cooperative sequential decode (warp lanes split each 64-code group 2-codes/lane, shfl-passed bit positions, 16-entry canonical codebook in registers) → decoded 4bit codes in LDS (≤6KB at K=12288; both fit the 64KB LDS budget); the EXISTING FMA loop then reads the decoded uint4 tile from LDS instead of global — identical FMA order, identical code values → lossless.
+- Fallback: separate decode pass writing unpacked per-layer scratch (≤3.2MB/layer, L2-resident) for small tiles or if inline decode ALU is measured to hurt; qmv then reads the scratch.
+- Env flag `MLX_ROCM_ENTROPY=1` selects the compressed path; default path + CI untouched. Compressed streams shipped as a side file (`*.ent4`) next to the safetensors; loader picks it up when the flag is set. Scale/bias tensors stay raw (unchanged).
+
+### Work items (in order, commit after each verified step)
+1. Offline compressor (CPU): safetensors → per-tensor codebook + compressed stream + side table; in-tree format spec doc (docs/entropy4.md). FIRST commit.
+2. Loader + in-CU decoder in the 4bit qmv path (vendor patch), `MLX_ROCM_ENTROPY=1`.
+3. Lossless gate: ALLTOKS byte-identical @ ctx=14 and ctx=29K vs uncompressed AR.
+4. A/B bench under flock: GB/token + tok/s + delta vs 5.95/100.0.
+5. Leak rule on new/changed files (repo public). 6. CI green. 7. Push branch `phase3-entropy-compress` to mirror + fork (no PR). 8. EXIT after push; REPORT-entropy.md in-tree.
+
 ## Definition of minimum
 
 qmlx-serve runs a 9B-class dense Qwen3 on the build VM (RX 9070 XT / gfx1201, ROCm 10.1),
