@@ -35,7 +35,8 @@ import mlx.core as mx
 from mlx_lm import load
 from mlx_lm.models.cache import KVCache
 
-MODEL = os.environ.get("GD_MODEL", "/mnt/models/qwen3-9b-mlx")
+MODELS = os.environ.get("MODELS", "/models")
+MODEL = os.environ.get("GD_MODEL", f"{MODELS}/qwen3-9b-mlx")
 TARGET = int(os.environ.get("T29K_TARGET", "14"))
 MAX_TOKENS = int(os.environ.get("T14_MAX_TOKENS", "256"))
 SKIP = int(os.environ.get("T14_SKIP", "56"))

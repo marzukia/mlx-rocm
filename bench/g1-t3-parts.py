@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Un-sandwiched per-component timing: T=1 fwd, S=3 fwd, K=2 draft step.
 Forces eval of the actual outputs (like the real decode loop)."""
+import os
 import time
 
 import mlx.core as mx
 from mlx_lm import load
 from mlx_lm.models.cache import KVCache
+MODELS = os.environ.get("MODELS", "/models")
 
-MODEL = "/mnt/models/qwen3-9b-mlx"
+MODEL = f"{MODELS}/qwen3-9b-mlx"
 PROMPT = "Explain in great detail how a modern smartphone works, from the hardware components to the operating system, covering every subsystem. Be exhaustive."
 
 model, tok = load(MODEL)

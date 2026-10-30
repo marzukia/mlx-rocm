@@ -1,11 +1,13 @@
+import os
 import pickle
 import numpy as np
 import mlx.core as mx
+MODELS = os.environ.get("MODELS", "/models")
 
 def npf(a):
     return np.asarray(mx.array(a).astype(mx.float32)).copy() if a is not None else None
 
-with open("/mnt/models/tmp/an earlier run/cap-m7-s62.pkl", "rb") as f:
+with open(f"{MODELS}/tmp/an earlier run/cap-m7-s62.pkl", "rb") as f:
     c = pickle.load(f)
 
 for i in [0, 1, 2, 4]:

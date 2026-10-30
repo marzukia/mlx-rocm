@@ -1,6 +1,7 @@
 #!/bin/bash
 # K2 bench runner (guest side).
 # usage: k2-bench.sh <venv> <model> <max_tokens> <n_runs> <tag>
+MODELS="${MODELS:-/models}"
 V=$1; M=$2; T=$3; N=$4; TAG=$5
 PY=$V/bin/python
 for i in $(seq 1 10); do
@@ -21,5 +22,5 @@ else:
   echo "gpu busy (util=${U}%), sleeping 90s (attempt $i/10)"
   sleep 90
 done
-cd /mnt/models
+cd $MODELS
 LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib $PY gauntlet/bench.py "$M" "$T" "$N" "$TAG"

@@ -11,9 +11,10 @@
 # 6. bench: 29K prompt (t29k.py AR unmodified; an earlier run warm harness K=1/K=2)
 # 7. K=2 byte-identical @ 29K (512 tokens, warmoff)
 set -u
-PY=/mnt/models/tmp/t29k/venv-m8/bin/python
-D=/mnt/models/tmp/an earlier run
-LOCK=/mnt/models/gpu-bench.lock
+MODELS="${MODELS:-/models}"
+PY=$MODELS/tmp/t29k/venv-m8/bin/python
+D=$MODELS/tmp/an earlier run
+LOCK=$MODELS/gpu-bench.lock
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib:/opt/rocm/lib
 LDP="env LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
 run() { # $1=tag $2...=cmd
@@ -24,7 +25,7 @@ run() { # $1=tag $2...=cmd
 
 echo "START $(date -u +%FT%TZ)" >> $D/run.log
 $PY -c "import mlx.core as mx; print('IMPORT-OK', mx.__file__)" >> $D/import.log 2>&1
-sha256sum /mnt/models/tmp/t29k/venv-m8/lib/python3.12/site-packages/mlx/lib/libmlx.so >> $D/import.log
+sha256sum $MODELS/tmp/t29k/venv-m8/lib/python3.12/site-packages/mlx/lib/libmlx.so >> $D/import.log
 free -g >> $D/import.log
 
 # 1) gate (a)
@@ -40,6 +41,8 @@ for arm in "m0 MLX_MTP=0" "m1 MLX_MTP=1" "m2a MLX_MTP=2" "m2b MLX_MTP=2" "m2c ML
   echo "rc=$? $1 $(date -u +%T)" >> $D/run.log
 done
 python3 - <<'EOF' >> $D/gate.log 2>&1
+import os
+MODELS = os.environ.get("MODELS", "/models")
 import subprocess
 
 def get_stream(p):
@@ -62,7 +65,7 @@ def cmp(name, a, b):
     else:
         print(f"{name}: MATCH n={n}")
 
-D = "/mnt/models/tmp/an earlier run"
+D = f"{MODELS}/tmp/an earlier run"
 s0 = get_stream(f"{D}/m0.out")
 s1 = get_stream(f"{D}/m1.out")
 sa = get_stream(f"{D}/m2a.out")
@@ -84,6 +87,8 @@ echo "rc=$? ar2048 $(date -u +%T)" >> $D/run.log
 flock -w 3600 $LOCK env MLX_MTP=3 MTP_MAX_TOKENS=1024 $PY $D/mtp-bench5.py > $D/m3-14tok.out 2>&1
 echo "rc=$? m3-14tok $(date -u +%T)" >> $D/run.log
 python3 - <<'EOF' >> $D/k2-14tok-gate.log 2>&1
+import os
+MODELS = os.environ.get("MODELS", "/models")
 def toks(p):
     with open(p) as f:
         for line in f:
@@ -91,8 +96,8 @@ def toks(p):
                 return line.split(None, 1)[1].split()
     return []
 
-ar = toks("/mnt/models/tmp/an earlier run/ar2048.out")
-m3 = toks("/mnt/models/tmp/an earlier run/m3-14tok.out")
+ar = toks(f"{MODELS}/tmp/an earlier run/ar2048.out")
+m3 = toks(f"{MODELS}/tmp/an earlier run/m3-14tok.out")
 n = len(m3)
 ok = ar[:n] == m3
 first = next((i for i in range(min(len(ar), n)) if ar[i] != m3[i]), None)
@@ -107,7 +112,7 @@ for m in 0 2 3; do
 done
 
 # 6) bench @ 29K (AR = t29k.py UNMODIFIED; K=1/K=2 = an earlier run warm harness)
-flock -w 3600 $LOCK $LDP $PY /mnt/models/tmp/t29k/t29k.py > $D/ar29k-an earlier run.out 2>&1
+flock -w 3600 $LOCK $LDP $PY $MODELS/tmp/t29k/t29k.py > $D/ar29k-an earlier run.out 2>&1
 echo "rc=$? ar29k-an earlier run $(date -u +%T)" >> $D/run.log
 for m in 2 3; do
   flock -w 3600 $LOCK env MLX_MTP=$m T29K_TARGET=29000 T14_MAX_TOKENS=256 $PY $D/an earlier run-warm-mtp-bench.py > $D/bench29k-m$m.out 2>&1
@@ -120,6 +125,8 @@ echo "rc=$? ar29k512 $(date -u +%T)" >> $D/run.log
 flock -w 3600 $LOCK env MLX_MTP=3 T29K_TARGET=29000 T14_MAX_TOKENS=512 T14_WARM=0 $PY $D/an earlier run-warm-mtp-bench.py > $D/m3-29k512.out 2>&1
 echo "rc=$? m3-29k512 $(date -u +%T)" >> $D/run.log
 python3 - <<'EOF' >> $D/k2-29k-gate.log 2>&1
+import os
+MODELS = os.environ.get("MODELS", "/models")
 def toks(p):
     with open(p) as f:
         for line in f:
@@ -127,8 +134,8 @@ def toks(p):
                 return line.split(None, 1)[1].split()
     return []
 
-ar = toks("/mnt/models/tmp/an earlier run/ar29k512.out")
-m3 = toks("/mnt/models/tmp/an earlier run/m3-29k512.out")
+ar = toks(f"{MODELS}/tmp/an earlier run/ar29k512.out")
+m3 = toks(f"{MODELS}/tmp/an earlier run/m3-29k512.out")
 n = min(len(ar), len(m3))
 ok = ar[:n] == m3[:n]
 first = next((i for i in range(n) if ar[i] != m3[i]), None)

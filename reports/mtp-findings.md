@@ -42,7 +42,7 @@ Status: numpy reference BUILT but NOT validated. E3/E4 ground-truth experiments 
 - np-rca-np.py: numpy trunk+MTP (modes: track/e1/mtp/e3/e4), bf16 shards, f32 math, layer-by-layer < 12GB
 - np-rca-mlx-l0.py / -norms.py / -perlayer.py / -mtpnorms.py / -normconv.py: mlx-side probes
 - Guest: ssh -o BatchMode=yes -J operator@<tailnet-ip> the build VM@<guest-ip>
-  (scripts also live in /tmp on the guest; HF shards /mnt/models/hf-qwen3-9b/, mlx venv /mnt/models/venv-a,
-  4bit model /mnt/models/qwen3-9b-mlx, mtp file model-mtp.safetensors 973MB f32)
+  (scripts also live in /tmp on the guest; HF shards /models/hf-qwen3-9b/, mlx venv /models/venv-a,
+  4bit model /models/qwen3-9b-mlx, mtp file model-mtp.safetensors 973MB f32)
 - E2 mlx reference: t1=271('\n\n') t2=8160('Here'); target top8: [(8160,18.88),(248068,18.38),(760,16.25),...]
 - numpy prompt top8 (unvalidated port): [(220,10.44),...] (pre +1-fix)

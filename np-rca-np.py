@@ -16,8 +16,9 @@ import json
 import time
 
 import numpy as np
+MODELS = os.environ.get("MODELS", "/models")
 
-HF = "/mnt/models/hf-qwen3-9b"
+HF = f"{MODELS}/hf-qwen3-9b"
 IDX = HF + "/model.safetensors.index.json"
 
 # ---------------- config (from text_config) ----------------

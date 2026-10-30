@@ -1,11 +1,12 @@
 #!/bin/bash
 # m5 ab: in-model chain A/B + direct re-run row-invariance (no model load).
-cd /mnt/models/tmp/an earlier run
+MODELS="${MODELS:-/models}"
+cd $MODELS/tmp/an earlier run
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib:/opt/rocm/lib
-PY=/mnt/models/venv-d/bin/python
+PY=$MODELS/venv-d/bin/python
 export MODE=ab
 for attempt in 1 2 3 4 5 6; do
-  flock -w 300 /mnt/models/gpu-bench.lock -c "$PY diag-s62-m5.py > diag-m5-ab.log 2>&1; echo \$? > m5-ab-rc"
+  flock -w 300 $MODELS/gpu-bench.lock -c "$PY diag-s62-m5.py > diag-m5-ab.log 2>&1; echo \$? > m5-ab-rc"
   rc=$?
   if [ $rc -eq 1 ]; then
     echo "FLOCK-FAIL attempt=$attempt $(date -u +%T), sleep 60" >> m5-run.log

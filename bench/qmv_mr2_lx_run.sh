@@ -20,14 +20,15 @@
 # Usage (ON the build VM):
 #   bash qmv_mr2_lx_run.sh <python>
 #     python: interpreter with the wheel under test on its path
-#            (venv-d python + PYTHONPATH=/mnt/models/wheel-qmv2)
+#            (venv-d python + PYTHONPATH=$MODELS/wheel-qmv2)
 set -uo pipefail
+MODELS="${MODELS:-/models}"
 PY=$1
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib
 ROCPROF=/opt/rocm/core-10.1/bin/rocprofv3
-T=/mnt/models/tmp/qmv-mr2-lx
+T=$MODELS/tmp/qmv-mr2-lx
 HERE=$(cd "$(dirname "$0")" && pwd)
-LOCK=/mnt/models/gpu-bench.lock
+LOCK=$MODELS/gpu-bench.lock
 WARMUP=10
 REPS=50
 mkdir -p $T

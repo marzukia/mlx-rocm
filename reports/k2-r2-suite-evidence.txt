@@ -224,4 +224,4 @@ all unit checks passed
 
 all unit checks passed
     PID STAT     ELAPSED CMD
- 208046 Sl         04:18 /mnt/models/venv-k2/bin/python /mnt/models/mlx-clone-k2/verify-k2.py
+ 208046 Sl         04:18 /models/venv-k2/bin/python /models/mlx-clone-k2/verify-k2.py

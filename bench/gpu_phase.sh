@@ -5,12 +5,13 @@
 #
 # Usage: bash an earlier run_gpu_phase.sh <new-wheel-dir>
 set -uo pipefail
+MODELS="${MODELS:-/models}"
 WHEELNW=$1
-T=/mnt/models/tmp/qmv-mr
-H=/mnt/models/tmp/qmv-mr-harness
-LOCK=/mnt/models/gpu-bench.lock
+T=$MODELS/tmp/qmv-mr
+H=$MODELS/tmp/qmv-mr-harness
+LOCK=$MODELS/gpu-bench.lock
 FL=$T/flock-fails.log
-PYG4=/mnt/models/venv-d/bin/python
+PYG4=$MODELS/venv-d/bin/python
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib
 ROCPROF=/opt/rocm/core-10.1/bin/rocprofv3
 WARMUP=10
@@ -79,16 +80,16 @@ done
 
 # --- gate 2/3: AR 1024-token greedy stream (MLX_MTP=0) -------------------
 PYTHONPATH=$WHEELNW try_locked ar \
-  "MLX_MTP=0 MTP_MODEL=/mnt/models/qwen3-9b-mlx timeout 900 $PYG4 $H/mtp-bench3.py" \
+  "MLX_MTP=0 MTP_MODEL=$MODELS/qwen3-9b-mlx timeout 900 $PYG4 $H/mtp-bench3.py" \
   > $T/new/ar.log 2>&1 || { echo "GATE2-AR-FAIL"; exit 1; }
 grep -E "^MTP=|^FIRST16:" $T/new/ar.log
 
 # --- gate 2/3: stream comparison vs per-row wheel stream + baseline ------
 grep "^ALLTOKS:" $T/new/ar.log > $T/new/alltoks
-cmp $T/new/alltoks /mnt/models/tmp/new-alltoks \
+cmp $T/new/alltoks $MODELS/tmp/new-alltoks \
   && echo "AR-CMP vs per-row wheel stream (an earlier run new-alltoks): IDENTICAL" \
   || echo "AR-CMP vs per-row wheel stream: DIFFER"
-cmp $T/new/alltoks /mnt/models/tmp/ref-alltoks \
+cmp $T/new/alltoks $MODELS/tmp/ref-alltoks \
   && echo "AR-CMP vs baseline stream (ref-alltoks): IDENTICAL" \
   || echo "AR-CMP vs baseline stream: DIFFER"
 

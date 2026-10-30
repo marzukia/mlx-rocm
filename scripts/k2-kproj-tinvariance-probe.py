@@ -34,7 +34,9 @@ import mlx.core as mx
 import numpy as np
 from mlx_lm import load
 
-MODEL = os.environ.get("MTP_MODEL", "/mnt/models/qwen3-9b-mlx")
+MODELS = os.environ.get("MODELS", "/models")
+
+MODEL = os.environ.get("MTP_MODEL", f"{MODELS}/qwen3-9b-mlx")
 TRIALS = 20
 SEED = 20261030
 

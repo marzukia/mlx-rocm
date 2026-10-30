@@ -12,14 +12,15 @@
 #
 # Usage:
 #   bash bench5.sh                          # full bench (GPU, under flock) + lossless gate
-#   BENCH5_OUT=/mnt/models/tmp/bench5 bash bench5.sh check
+#   BENCH5_OUT=$MODELS/tmp/bench5 bash bench5.sh check
 #                                          # no-GPU: lossless gate on saved streams only
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib
-PY=/mnt/models/venv-a/bin/python
-OUT=${BENCH5_OUT:-/mnt/models/tmp/bench5}
+MODELS="${MODELS:-/models}"
+PY=$MODELS/venv-a/bin/python
+OUT=${BENCH5_OUT:-$MODELS/tmp/bench5}
 mkdir -p $OUT
-LOCK=/mnt/models/gpu-bench.lock
+LOCK=$MODELS/gpu-bench.lock
 
 # --- lossless gate (vacuity-guarded) ------------------------------------------
 # mtp-bench5.py prints exactly:  MTP=...  /  FIRST16: ...  /  ALLTOKS: <toks>  /  TEXT: ...

@@ -10,7 +10,9 @@ import time
 import mlx.core as mx
 from mlx_lm import load
 
-MODEL = os.environ.get("RUN_789_MODEL", "/mnt/models/qwen3-9b-mlx")
+MODELS = os.environ.get("MODELS", "/models")
+
+MODEL = os.environ.get("RUN_789_MODEL", f"{MODELS}/qwen3-9b-mlx")
 PROMPT = (
     "Explain in great detail how a modern smartphone works, from the "
     "hardware components to the operating system, covering every "

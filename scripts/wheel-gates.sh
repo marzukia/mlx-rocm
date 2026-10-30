@@ -8,11 +8,12 @@
 set -u
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib
-OUT=${RUN_789_OUT:-/mnt/models/tmp/bench-an earlier run-out}
+MODELS="${MODELS:-/models}"
+OUT=${RUN_789_OUT:-$MODELS/tmp/bench-an earlier run-out}
 mkdir -p $OUT
-LOCK=/mnt/models/gpu-bench.lock
-PY=/mnt/models/venv-an earlier run/bin/python
-D=/mnt/models/tmp/bench-an earlier run
+LOCK=$MODELS/gpu-bench.lock
+PY=$MODELS/venv-an earlier run/bin/python
+D=$MODELS/tmp/bench-an earlier run
 
 get_stream() { grep "^ALLTOKS:" "$1" 2>/dev/null | cut -d' ' -f2-; }
 
@@ -70,7 +71,7 @@ grep -q "TOKS=1024" $OUT/g1-fused.out && ! grep -qE "HSA|fault|Aborted|core dump
 
 # G2: fused vs m0 reference + fused vs unfused (same wheel)
 run g2-unfused MLX_GDN_TAIL_FUSION=0 || fail=1
-cmp_streams G2-FUSED-VS-M0-REF $OUT/g1-fused.out /mnt/models/tmp/bench4/m0.out || fail=1
+cmp_streams G2-FUSED-VS-M0-REF $OUT/g1-fused.out $MODELS/tmp/bench4/m0.out || fail=1
 cmp_streams G2-FUSED-VS-UNFUSED $OUT/g1-fused.out $OUT/g2-unfused.out || fail=1
 
 # an earlier run primitive gates on the same wheel

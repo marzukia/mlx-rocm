@@ -5,7 +5,7 @@ bit-identical to the base: the fix removed the one-warp-per-row decode fast
 path from RMSNorm::eval_gpu, so plain rms_norm always uses the block kernel.
 
 Run the SAME script in the fixed wheel (venv-k2) and the baseline wheel
-(/mnt/models/venv) and diff the sha256 lines:
+($MODELS/venv) and diff the sha256 lines:
   - non-decode shapes (n_rows>64 or axis>8192): both wheels use the block
     kernel -> must be bit-identical (fix changed nothing there).
   - decode shapes (n_rows<=64, axis<=8192): the pre-fix wheel used the warp
@@ -16,11 +16,13 @@ Deterministic: fixed seeds, no GPU nondeterminism (single-kernel ops).
 """
 
 import hashlib
+import os
 
 import mlx.core as mx
 import numpy as np
 
 # (shape, note): decode = old fast path eligible; block = always block kernel
+MODELS = os.environ.get("MODELS", "/models")
 CASES = [
     ((1, 4096), "decode"),
     ((32, 128), "decode"),

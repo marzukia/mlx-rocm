@@ -15,8 +15,8 @@ lines with no `=`).
   mlx uses). Prints/asserts effective config (doc rule 6).
   `bash step0_run.sh` (env: STEP0_NBYTES / STEP0_WARMUP / STEP0_ITERS / STEP0_OUT).
 
-Run on the build VM (all GPU work under `flock /mnt/models/gpu-bench.lock`):
+Run on the build VM (all GPU work under `flock /models/gpu-bench.lock`):
 `bash bench5.sh` (full bench + lossless gate) or
-`BENCH5_OUT=/mnt/models/tmp/bench5 bash bench5.sh check` (no-GPU gate on saved
+`BENCH5_OUT=/models/tmp/bench5 bash bench5.sh check` (no-GPU gate on saved
 streams; same `check` mode for `bench4.sh`). Vacuity guard: any empty compared
 stream -> `STATUS=VACUOUS` + exit 1; `MATCH` only on a non-empty full-length compare.

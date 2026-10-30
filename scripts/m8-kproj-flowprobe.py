@@ -35,7 +35,9 @@ import numpy as np
 from mlx_lm import load
 from mlx_lm.models.cache import KVCache
 
-MODEL = os.environ.get("MTP_MODEL", "/mnt/models/qwen3-9b-mlx")
+MODELS = os.environ.get("MODELS", "/models")
+
+MODEL = os.environ.get("MTP_MODEL", f"{MODELS}/qwen3-9b-mlx")
 PROMPT = (
     "Explain in great detail how a modern smartphone works, from the "
     "hardware components to the operating system, covering every "

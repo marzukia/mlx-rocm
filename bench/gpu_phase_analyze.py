@@ -9,10 +9,13 @@ peak (method doc: 9070 XT = 640 GB/s, NOT 960), and bar verdicts
 """
 
 import glob
+import os
 import re
 import sys
 
-d = sys.argv[1] if len(sys.argv) > 1 else "/mnt/models/tmp/qmv-mr/new"
+MODELS = os.environ.get("MODELS", "/models")
+
+d = sys.argv[1] if len(sys.argv) > 1 else f"{MODELS}/tmp/qmv-mr/new"
 reps = 50
 
 rows = {}

@@ -1,4 +1,5 @@
 import os
+MODELS = os.environ.get("MODELS", "/models")
 os.environ["LD_LIBRARY_PATH"] = "/opt/rocm/core-10.1/lib"
 import numpy as np
 import mlx.core as mx
@@ -8,7 +9,7 @@ spec = importlib.util.spec_from_file_location("nprca", "/tmp/np-rca-np.py")
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 r = m.ShardReader()
-model, tok = load("/mnt/models/qwen3-9b-mlx/")
+model, tok = load(f"{MODELS}/qwen3-9b-mlx/")
 
 def cmp(name, hf, mlxw):
     mlxw = np.array(mlxw.astype(mx.float32))

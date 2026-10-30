@@ -1,9 +1,9 @@
 # m3: per-layer FULL-STATE diff at S62 — T=2 verify vs 2×T=1 (m2-vs-m0 mtp divergence)
 
 Date: 2026-10-29 (UTC). Run on the build VM (RX 9070 XT / gfx1201, ROCm 10.1 guest,
-venv-d, model `/mnt/models/qwen3-9b-mlx`). Script: `scripts/diag-s62-layerdiff.py`
-(MODE=m3), guest log `/mnt/models/tmp/an earlier run/diag-m3.log`, captures
-`/mnt/models/tmp/an earlier run/cap-m3-s62.pkl`.
+venv-d, model `/models/qwen3-9b-mlx`). Script: `scripts/diag-s62-layerdiff.py`
+(MODE=m3), guest log `/models/tmp/an earlier run/diag-m3.log`, captures
+`/models/tmp/an earlier run/cap-m3-s62.pkl`.
 
 ## What m3 does
 

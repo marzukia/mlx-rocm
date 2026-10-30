@@ -1,12 +1,13 @@
 import os
+MODELS = os.environ.get("MODELS", "/models")
 os.environ["LD_LIBRARY_PATH"] = "/opt/rocm/core-10.1/lib"
 import json, struct, glob
 import numpy as np
 import mlx.core as mx
 from mlx_lm import load
 
-D = "/mnt/models/qwen3-9b-mlx/"
-HF = "/mnt/models/hf-qwen3-9b/"
+D = f"{MODELS}/qwen3-9b-mlx/"
+HF = f"{MODELS}/hf-qwen3-9b/"
 
 def read_st(path, keys):
     with open(path, "rb") as fh:

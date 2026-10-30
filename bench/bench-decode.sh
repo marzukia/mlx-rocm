@@ -17,11 +17,12 @@
 # Env overrides: BENCH_PY (venv python), BENCH_HDIR (harness dir), BENCH_OUT.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib
-PY=${BENCH_PY:-/mnt/models/venv-d/bin/python}
-H=${BENCH_HDIR:-/mnt/models/tmp/bench-decode}
-OUT=${BENCH_OUT:-/mnt/models/tmp/bench-decode-out}
+MODELS="${MODELS:-/models}"
+PY=${BENCH_PY:-$MODELS/venv-d/bin/python}
+H=${BENCH_HDIR:-$MODELS/tmp/bench-decode}
+OUT=${BENCH_OUT:-$MODELS/tmp/bench-decode-out}
 mkdir -p $OUT
-LOCK=/mnt/models/gpu-bench.lock
+LOCK=$MODELS/gpu-bench.lock
 
 flock -w 10 $LOCK -c true || { echo "LOCK-BUSY"; exit 3; }
 

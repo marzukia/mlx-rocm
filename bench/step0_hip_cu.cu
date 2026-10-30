@@ -3,7 +3,7 @@
 //
 // Build + run (guest, under flock):
 //   /opt/rocm/core-10.1/bin/hipcc -o hipcu step0_hip_cu.cu
-//   flock -w 60 /mnt/models/gpu-bench.lock -c ./hipcu
+//   flock -w 60 /models/gpu-bench.lock -c ./hipcu
 #include <hip/hip_runtime.h>
 #include <cstdio>
 

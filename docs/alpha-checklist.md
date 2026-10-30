@@ -50,7 +50,7 @@ is still mid-flight (an earlier run RUN 9: wheel build #5 in progress, 2026-10-2
 | Item | Status | Evidence | Effort |
 |---|---|---|---|
 | Documented supported set | **PARTIAL** | The *plan* defines the set: Qwen3-0.6B (bf16 + 8bit, Phase 0 smoke — `scripts/smoke.py`), 9B-class dense Qwen3 (Phase 1 minimum — PLAN.md "Definition of minimum"), 27B+/122B-hybrid + MoE (Phase 2, deferred). But there is no user-facing "supported models" list, no per-model status (which are validated on gfx1201, which are expected-to-work, which are known-broken), and no hardware/ROCm compatibility statement. | 0.5 pd (one table, filled as validation lands) |
-| Conversion recipes | **TODO** | No documented recipe for getting a model into the wheel (e.g. `mlx_lm.convert` to 4bit qmm, HuggingFace `*-mlx` refs). The k2 bench report references `qwen3-9b-mlx` / `qwen3-06b-mlx` model dirs on the guest (`/mnt/models/`) without saying how they were produced. | 0.5 pd |
+| Conversion recipes | **TODO** | No documented recipe for getting a model into the wheel (e.g. `mlx_lm.convert` to 4bit qmm, HuggingFace `*-mlx` refs). The k2 bench report references `qwen3-9b-mlx` / `qwen3-06b-mlx` model dirs on the guest (`/models/`) without saying how they were produced. | 0.5 pd |
 
 ## 6. Quantisation
 

@@ -23,7 +23,7 @@ as a delta over that pin:
 The delta was committed for the fork as `1051504`
 ("rocm/qmv: K1 v_dot4 int8-activation QMV + N=12288 stale-output fix") in
 the guest worktree `/tmp/mlx-k1-push` (the build VM, a `git worktree` of
-`/mnt/models/mlx-clone-k1` at `the earlier vendor base`). The push to `materton/mlx`
+`/models/mlx-clone-k1` at `the earlier vendor base`). The push to `materton/mlx`
 failed 2026-10-26: the guest clone has no credentials (bare https remote,
 no netrc/gh), and `the fork user>` — the only token available — has no push
 access to `materton/mlx` (403). The commit is ready to push once creds
@@ -41,7 +41,7 @@ Until the fork re-pin lands, a standard pinned build
 `vendor.json`) does NOT contain the N=12288 fix or the K1 kernel. It needs
 the 2-file overlay above applied to the clone before building
 (`MLX_VENDOR_DIR` pointing at a pre-overlay clone, or the guest
-`/mnt/models/venv-k1` build which already carries it). The vendored tree in
+`/models/venv-k1` build which already carries it). The vendored tree in
 this repo IS the overlay: `vendor/mlx-rocm-upstream/` = pinned tree + delta
 (curated subset of the fork; `CMakeLists.upstream.txt` / `LICENSE.upstream`
 are the fork's `CMakeLists.txt` / `LICENSE` renamed, `README.md` is the

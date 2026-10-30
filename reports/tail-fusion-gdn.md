@@ -97,7 +97,7 @@ accumulation; silu = `Multiply{}(x, Sigmoid{}(x))` op-struct reuse.
   inputs → maxdiff 0.0
 - [x] G2 fused T=1 layer forward: TAIL_FUSION=1 vs =0 → maxdiff 0
 - [ ] G3 1024-token T=1 bench, TAIL_FUSION=1 → tok/s ≥100, stream bit-exact vs
-  m0 (`/mnt/models/tmp/bench4/m0.out`, 64.49 tok/s non-fused reference) —
+  m0 (`/models/tmp/bench4/m0.out`, 64.49 tok/s non-fused reference) —
   **PENDING (next run)**
 - [ ] G4 TAIL_FUSION=0 vs =1 → streams identical (toggle is a no-op when off) —
   **PENDING (next run, with G3)**

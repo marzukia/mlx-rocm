@@ -31,6 +31,6 @@ Continuation of burned an earlier run (07:33Z). Orchestrator-verified state (07:
 - Speed track does NOT conflict with the correctness fix: the M=2 path (wide QMV) is fast (m2 ≈ m0) and bit-exact. No mitigation needed.
 
 ## Gate (pending bench)
-- m0 stream unchanged vs reference (/mnt/models/tmp/bench4/m0.out)
+- m0 stream unchanged vs reference (/models/tmp/bench4/m0.out)
 - m2 stream BIT-EXACT vs m0
 - m2 tok/s >= 65.05

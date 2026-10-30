@@ -2,7 +2,7 @@
 
 Branch: k2-non-gemm-fusion (fix r3 = cd1b6cd). Guest: the build VM, gfx1201
 (RX 9070 XT), ROCm 10.1 (core-10.1 libs), venv-k2.
-Protocol: flock /mnt/models/gpu-bench.lock (short-wait poll; another lane may
+Protocol: flock /models/gpu-bench.lock (short-wait poll; another lane may
 hold it), LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib, timeout wraps (suite 900 /
 probe 600) because both processes hang at exit on HIP teardown (results are
 complete before the hang).
@@ -41,14 +41,14 @@ materializes before reading strides: both reject the view.
 
 - Guest: the build VM <guest-ip> (via jump operator@<tailnet-ip>),
   gfx1201 (AMD Radeon RX 9070 XT), ROCm 10.1.
-- Wheel: /mnt/models/mlx-clone-k2/dist/mlx-0.32.3.dev20261026+the earlier vendor base-...whl,
-  sha256 prefix ec48eb4c — the prior run's rebuild from /mnt/models/mlx-clone-k2
+- Wheel: /models/mlx-clone-k2/dist/mlx-0.32.3.dev20261026+the earlier vendor base-...whl,
+  sha256 prefix ec48eb4c — the prior run's rebuild from /models/mlx-clone-k2
   (cd1b6cd + the unscheduled-materialization guard, section 1), force-installed
-  in /mnt/models/venv-k2.
+  in /models/venv-k2.
 - Verification (this run): `import mlx.core` OK in venv-k2; installed package
   file-for-file identical to the ec48eb4c wheel (34/34 .py/.so files hash-match,
   0 mismatch) → no rebuild needed.
-- Harness: /mnt/models/mlx-clone-k2/verify-k2.py md5-identical to
+- Harness: /models/mlx-clone-k2/verify-k2.py md5-identical to
   k2-non-gemm-fusion:scripts/verify-k2.py; k2-identity-probe.py identical
   modulo ruff formatting (import sort + line wrap).
 

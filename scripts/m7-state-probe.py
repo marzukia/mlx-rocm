@@ -4,8 +4,9 @@ import pickle
 import mlx.core as mx
 from mlx_lm import load
 from mlx_lm.models.cache import KVCache, ArraysCache
+MODELS = os.environ.get("MODELS", "/models")
 
-MODEL = os.environ.get("MTP_MODEL", "/mnt/models/qwen3-9b-mlx")
+MODEL = os.environ.get("MTP_MODEL", f"{MODELS}/qwen3-9b-mlx")
 PROMPT = "The capital of France is"
 
 def npf(a):

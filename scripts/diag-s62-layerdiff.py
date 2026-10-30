@@ -47,7 +47,9 @@ import numpy as np
 from mlx_lm import load
 from mlx_lm.models.cache import ArraysCache, KVCache
 
-MODEL = os.environ.get("MTP_MODEL", "/mnt/models/qwen3-9b-mlx")
+MODELS = os.environ.get("MODELS", "/models")
+
+MODEL = os.environ.get("MTP_MODEL", f"{MODELS}/qwen3-9b-mlx")
 PROMPT = (
     "Explain in great detail how a modern smartphone works, from the "
     "hardware components to the operating system, covering every "
@@ -56,7 +58,7 @@ PROMPT = (
 MAX_TOKENS = int(os.environ.get("DIAG_MAX", "160"))
 EOS = 248044
 MODE = os.environ.get("MODE", "m3")
-D = os.environ.get("CAP_DIR", "/mnt/models/tmp/an earlier run")
+D = os.environ.get("CAP_DIR", f"{MODELS}/tmp/an earlier run")
 S62_PREV = 279
 S62_DRAFT = 3545
 EXPECT_N_OUT = 61

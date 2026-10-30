@@ -5,7 +5,7 @@ final phase; its bench script passed the mode as a positional arg while the prob
 MLX_MTP — all four of its final runs silently ran mode 0; re-run here with the correct interface).
 
 ## Protocol
-- Model /mnt/models/qwen3-9b-mlx (4bit, model-mtp.safetensors = fixed norms file), venv-a,
+- Model /models/qwen3-9b-mlx (4bit, model-mtp.safetensors = fixed norms file), venv-a,
   LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib, greedy, MAX_TOKENS=1024, fresh process per run,
   flock gpu-bench.lock. Prompt: "Explain in great detail how a modern smartphone works..."
   (1024 tokens generated; the fruits prompt EOSes at 149 and undersells MTP).
@@ -50,5 +50,5 @@ incl. reject-path GDN restore + KV trim + re-forward).
 
 ## Assets
 - Guest /tmp: mtp-bench3.py (probe, smartphone prompt, MAX_TOKENS=1024, env MLX_MTP),
-  bench4.sh (clean runner), outputs /mnt/models/tmp/bench4/ (full streams).
+  bench4.sh (clean runner), outputs /models/tmp/bench4/ (full streams).
 - Inline AR/MTP reference runs (fruits 149-tok + smartphone 1024-tok) in <operator> channel 2026-10-27.

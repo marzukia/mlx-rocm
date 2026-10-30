@@ -8,8 +8,8 @@
 - **Wheel**: venv-k1 `mlx 0.32.3.dev20261026+the earlier vendor base` — libmlx.so already carries
   submitter's verified fix (worktree head `99cddb5`, branch base); no rebuild.
 - **Env for every guest python**: `LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib`,
-  `/mnt/models/venv-k1/bin/python`.
-- **GPU serialization**: `flock /mnt/models/gpu-bench.lock` (short-wait poll,
+  `/models/venv-k1/bin/python`.
+- **GPU serialization**: `flock /models/gpu-bench.lock` (short-wait poll,
   re-poll if held >300s). One holder at a time; each config ran alone.
 - **Shapes** (decode-relevant, as used by the QMV probes): T=1, batch=1, M=1,
   K=4096, group_size=64, bits=4, f32 x (the affine `quantized_matmul` op runs
@@ -75,15 +75,15 @@ known exit-time HIP teardown hang; never waits beyond the timeout).
 ```sh
 # upload (from worktree)
 scp -J operator@<tailnet-ip> scripts/k1_bench.py scripts/k1bench_run.sh \
-    the build VM@<guest-ip>:/mnt/models/tmp/
+    the build VM@<guest-ip>:/models/tmp/
 
 # one per config (baseline, k1-16, k1-32), run sequentially
 ssh -J operator@<tailnet-ip> the build VM@<guest-ip> \
-    'timeout 570 sh /mnt/models/tmp/k1bench_run.sh baseline'
+    'timeout 570 sh /models/tmp/k1bench_run.sh baseline'
 ssh -J operator@<tailnet-ip> the build VM@<guest-ip> \
-    'timeout 570 sh /mnt/models/tmp/k1bench_run.sh k1-16'
+    'timeout 570 sh /models/tmp/k1bench_run.sh k1-16'
 ssh -J operator@<tailnet-ip> the build VM@<guest-ip> \
-    'timeout 570 sh /mnt/models/tmp/k1bench_run.sh k1-32'
+    'timeout 570 sh /models/tmp/k1bench_run.sh k1-32'
 
-# results land in /mnt/models/tmp/k1bench_{baseline,k1-16,k1-32}.out
+# results land in /models/tmp/k1bench_{baseline,k1-16,k1-32}.out
 ```

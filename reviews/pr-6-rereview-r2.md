@@ -19,13 +19,13 @@ required elements present and consistent across both:
 1. Exact delta commit: `1051504` ("rocm/qmv: K1 v_dot4 int8-activation QMV + N=12288
    stale-output fix") — named in doc and PR body.
 2. Exact guest location: `/tmp/mlx-k1-push` on the build VM, a `git worktree` of
-   `/mnt/models/mlx-clone-k1` at `the earlier vendor base` — named in doc and PR body.
+   `/models/mlx-clone-k1` at `the earlier vendor base` — named in doc and PR body.
 3. Exact ready-to-push command: `cd /tmp/mlx-k1-push && git push origin HEAD:the vendor ref`
    (doc, fenced block; PR body states the commit is "ready to push").
 4. Concrete build consequence: standard pinned build (`scripts/build-wheel.sh` cloning
    `materton/mlx` @ `the pinned base sha` per `vendor.json`) does NOT contain the N=12288 fix or
    the K1 kernel; it needs the 2-file overlay — `qmm.hip` + `qmv_lx_kernel.hip` — applied
-   before building (or use the guest `/mnt/models/venv-k1` build which already carries it).
+   before building (or use the guest `/models/venv-k1` build which already carries it).
    Re-pin procedure stated: set `vendor.json` primary.sha to the pushed sha in a PR.
 
 Fork push itself: not verifiable from host (no push creds for the fork user>; guest clone has

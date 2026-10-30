@@ -1,6 +1,8 @@
+import os
 import pickle
 import numpy as np
 import mlx.core as mx
+MODELS = os.environ.get("MODELS", "/models")
 
 def npf(a):
     return np.asarray(mx.array(a).astype(mx.float32)).copy() if a is not None else None
@@ -25,7 +27,7 @@ print("normalize_qk vs manual: q n=%d/%d maxabs=%.3e | k n=%d/%d maxabs=%.3e" % 
     np.count_nonzero(dk != 0), dk.size, np.abs(dk).max()))
 
 # ---- 2. pkl: layer 4 row 0 ----
-with open("/mnt/models/tmp/an earlier run/cap-m7-s62.pkl", "rb") as f:
+with open(f"{MODELS}/tmp/an earlier run/cap-m7-s62.pkl", "rb") as f:
     c = pickle.load(f)
 ca = c["gdnA"][4]
 cb = c["gdnB"]["4_1"]

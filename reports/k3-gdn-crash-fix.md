@@ -8,11 +8,11 @@ benches (separate 1200 s phase-2 run).
 ## Guest environment note
 
 All GPU work ran on **the build VM** (<guest-ip> via `operator@<tailnet-ip>`
-jumphost) under `flock /mnt/models/gpu-bench.lock`. ROCm 10.1, RX 9070 XT
+jumphost) under `flock /models/gpu-bench.lock`. ROCm 10.1, RX 9070 XT
 (gfx1201). **The guest runs a 32-CU partition of the 54-CU card** (HIP bind log:
 `cus=32 warp=32 lds=64KB`) — every timing/occupancy observation from this guest
-is partition-scaled, not whole-card. Build tree `/mnt/models/mlx-clone-k3`,
-venv `/mnt/models/venv-k3`.
+is partition-scaled, not whole-card. Build tree `/models/mlx-clone-k3`,
+venv `/models/venv-k3`.
 
 ## 1. The crash and backtrace status
 
@@ -90,7 +90,7 @@ behavior change when unset).
 ## 4. Verification
 
 New wheel built on the guest (incremental, 2 files + relink), installed in
-`venv-k3` (note: `venv-k3/bin/pip` has its prefix pointed at `/mnt/models/venv`,
+`venv-k3` (note: `venv-k3/bin/pip` has its prefix pointed at `/models/venv`,
 so the .so files were copied directly into `venv-k3` site-packages; verified by
 md5 + `nm | grep shadow_chunked_copy`).
 
@@ -141,5 +141,5 @@ match the Python fallback and f32 reference within bf16 tolerance.**
 - Bounded stream leak in `shadow_chunked_copy` (documented above); a shared
   persistent stream would remove it but changes concurrency semantics — revisit
   in phase 2 if stream counts ever matter.
-- `venv-k3/bin/pip` prefix points at `/mnt/models/venv`; wheel installs there
+- `venv-k3/bin/pip` prefix points at `/models/venv`; wheel installs there
   land in the wrong venv. Use direct .so copy (as done here) or fix the venv.

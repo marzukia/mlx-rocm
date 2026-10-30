@@ -23,10 +23,11 @@
 export PATH=/opt/rocm/bin:/opt/rocm/core-10.1/bin:/opt/rocm/lib:/opt/rocm/core-10.1/lib:$PATH
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib:/opt/rocm/lib
 
-OUT=${M6_OUT:-/mnt/models/tmp/an earlier run}
+MODELS="${MODELS:-/models}"
+OUT=${M6_OUT:-$MODELS/tmp/an earlier run}
 mkdir -p $OUT
-LOCK=/mnt/models/gpu-bench.lock
-PY=/mnt/models/venv-d/bin/python
+LOCK=$MODELS/gpu-bench.lock
+PY=$MODELS/venv-d/bin/python
 BENCH=$OUT/mtp-bench3.py
 
 get_stream() {

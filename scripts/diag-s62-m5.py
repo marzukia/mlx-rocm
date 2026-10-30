@@ -15,7 +15,7 @@ BOTH variants:
   variant B: two T=1 forwards        [[279]] then [[3545]]
 
 The layer-3 block (qwen3_5.DecoderLayer, full_attention; the an earlier runc-patched
-venv model, /mnt/models/venv-d; linear layers are 4-bit quantized, group 64):
+venv model, $MODELS/venv-d; linear layers are 4-bit quantized, group 64):
 
   x   = block input (the GDN-2 block output / residual stream)
   r   = self_attn(input_layernorm(x), mask, cache)
@@ -79,8 +79,9 @@ import mlx.nn as mnn
 import numpy as np
 from mlx_lm import load
 from mlx_lm.models.cache import ArraysCache, KVCache
+MODELS = os.environ.get("MODELS", "/models")
 
-MODEL = os.environ.get("MTP_MODEL", "/mnt/models/qwen3-9b-mlx")
+MODEL = os.environ.get("MTP_MODEL", f"{MODELS}/qwen3-9b-mlx")
 PROMPT = (
     "Explain in great detail how a modern smartphone works, from the "
     "hardware components to the operating system, covering every "
@@ -90,11 +91,11 @@ MAX_TOKENS = int(os.environ.get("DIAG_MAX", "160"))
 EOS = 248044
 MODE = os.environ.get("MODE", "ab")
 SPEC = os.environ.get("SPEC", "")
-D = os.environ.get("CAP_DIR", "/mnt/models/tmp/an earlier run")
+D = os.environ.get("CAP_DIR", f"{MODELS}/tmp/an earlier run")
 M3_PKL = os.path.join(D, "cap-m3-s62.pkl")
 M4_PKL = os.path.join(D, "cap-m4-sdpa.pkl")
 M5_PKL = os.path.join(D, "cap-m5-s62.pkl")
-PY = os.environ.get("PY", "/mnt/models/venv-d/bin/python")
+PY = os.environ.get("PY", f"{MODELS}/venv-d/bin/python")
 ROCPROF = os.environ.get("ROCPROF", "/opt/rocm/core-10.1/bin/rocprofv3")
 S62_PREV = 279
 S62_DRAFT = 3545

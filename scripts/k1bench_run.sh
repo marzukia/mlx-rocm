@@ -4,21 +4,22 @@
 # python wrapped in `timeout 900`; results print before the known
 # exit-time HIP teardown hang, so we kill the process group as soon
 # as all 5 N lines land. NEVER waits beyond the timeout.
+MODELS="${MODELS:-/models}"
 CFG=$1
-cd /mnt/models/tmp
+cd $MODELS/tmp
 rm -f k1bench_$CFG.out
 i=0
 while :; do
   i=$((i+1))
-  if flock -w 300 /mnt/models/gpu-bench.lock -c true; then
+  if flock -w 300 $MODELS/gpu-bench.lock -c true; then
     break
   fi
   echo "lock held >300s (poll $i), re-polling"
 done
 # hold the lock for the whole bench (fd 9)
-exec 9>>/mnt/models/gpu-bench.lock
+exec 9>>$MODELS/gpu-bench.lock
 flock -x 9
-setsid sh -c "LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib timeout -s KILL 900 /mnt/models/venv-k1/bin/python k1_bench.py $CFG > k1bench_$CFG.out 2>&1" &
+setsid sh -c "LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib timeout -s KILL 900 $MODELS/venv-k1/bin/python k1_bench.py $CFG > k1bench_$CFG.out 2>&1" &
 pid=$!
 ok=0
 for i in $(seq 1 190); do

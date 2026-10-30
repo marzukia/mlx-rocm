@@ -9,7 +9,7 @@ Scope of this round: the 3 MAJORs (one-line guards in `fast.cpp`) + MINOR-1
 ## 1. The fixes
 
 All in `vendor/mlx-rocm-upstream/mlx/fast.cpp` (the kv_append gate). The
-verified wheel (an earlier run, source `ec48eb4c`, `/mnt/models/mlx-clone-k2`) carries
+verified wheel (an earlier run, source `ec48eb4c`, `/models/mlx-clone-k2`) carries
 MAJOR-1; MAJOR-2/3 are new one-line checks per the review's suggested fix
 list. No other file changed (fast.h / fast_primitives.h / copy.hip /
 rms_norm.hip were already byte-identical to the wheel source — md5-verified).
@@ -42,7 +42,7 @@ misaddressed at eval time — the r1 failure mode, open on the branch.
 ```
 
 **Exact-port proof** — `diff` of the branch's pre-fix fast.cpp (git `33b13dd`)
-against the wheel source (`/mnt/models/mlx-clone-k2/mlx/fast.cpp`,
+against the wheel source (`/models/mlx-clone-k2/mlx/fast.cpp`,
 `ec48eb4c`): the wheel's only delta is the comment paragraph above + the 3-line
 guard. After the port, `diff` of the branch's post-fix fast.cpp against the
 wheel source shows **only** the two new checks (MAJOR-2/3 below) — the
@@ -101,15 +101,15 @@ Added after the B/H/D cache-shape check:
   }
 ```
 
-## 2. Rebuild (guest, /mnt/models/mlx-clone-k2)
+## 2. Rebuild (guest, /models/mlx-clone-k2)
 
-fast.cpp synced (md5-verified), then in `/mnt/models/venv-k2` PATH:
+fast.cpp synced (md5-verified), then in `/models/venv-k2` PATH:
 `cmake -S . -B build/temp.../mlx.core -DCMAKE_PREFIX_PATH=/opt/rocm/core-10.1
 -DBLA_VENDOR=OpenBLAS -DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201
 -DCMAKE_BUILD_TYPE=Release` (reconfigure, 9.3s) → `cmake --build ... -j8`
 (fast.cpp recompiled, libmlx.so relinked, python extension rebuilt) →
-`pip wheel . --no-deps -w /mnt/models/dist/ --no-build-isolation` →
-force-reinstall into venv-k2. Log: `/mnt/models/tmp/k2-r4-build.log`.
+`pip wheel . --no-deps -w /models/dist/ --no-build-isolation` →
+force-reinstall into venv-k2. Log: `/models/tmp/k2-r4-build.log`.
 
 Wheel: `mlx-0.32.3.dev20261026+the earlier vendor base-cp312-cp312-linux_x86_64.whl`,
 `sha256=d617a1b841c324e426367c0299154c23c566d562e805046dcc130a4711e881ee`
@@ -135,13 +135,13 @@ INSTALL_EXIT=0
 Install verification: installed `core.so` / `libmlx.so` md5-identical to the
 wheel; `strings libmlx.so` contains both new guard messages;
 `import mlx.core` OK in venv-k2. (Note: venv-k2's `bin/pip` shebang points at
-`/mnt/models/venv`, so the reinstall used `venv-k2/bin/python -m pip` — the
+`/models/venv`, so the reinstall used `venv-k2/bin/python -m pip` — the
 first `pip` invocation installed into the base venv; corrected before any
 GPU run.)
 
 ## 3. Suite result (this wheel, log preserved on disk)
 
-`scripts/verify-k2.py` (69 checks), venv-k2, `flock /mnt/models/gpu-bench.lock`,
+`scripts/verify-k2.py` (69 checks), venv-k2, `flock /models/gpu-bench.lock`,
 `LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib`. Full log:
 **`reports/k2-r4-suite-full.log`** (79 lines, preserved in-repo).
 
@@ -212,7 +212,7 @@ decode T=1 launcher pointer write"): `vendor.json` pinned
 
 ## 1. Push the pin (part 1)
 
-- `75ca881` recovered from the an earlier run build clone (`/mnt/models/mlx-clone-g4`;
+- `75ca881` recovered from the an earlier run build clone (`/models/mlx-clone-g4`;
   the task text said g1, but g4 is the clone that carries it — g1's HEAD is
   `1641333`). Fetched into a local repo, then:
 
@@ -270,16 +270,16 @@ No other change to the script (clone/fetch/install flow untouched).
 
 ## 3. G1/G2 on a wheel built from the landed ref (part 3)
 
-Built on the build VM (guest, ROCm 10.1, gfx1201) under `flock /mnt/models/gpu-bench.lock`:
+Built on the build VM (guest, ROCm 10.1, gfx1201) under `flock /models/gpu-bench.lock`:
 
 - Fresh clone of `the vendor fork` @ `tail-fusion-gdn` →
-  `/mnt/models/mlx-clone-an earlier run`; `git rev-parse HEAD` =
+  `/models/mlx-clone-an earlier run`; `git rev-parse HEAD` =
   `75ca881b2e82f7b4069c8564a203792aa16d8a29` (the pinned commit, from the
   fork — not the guest build clone).
-- `MLX_VENDOR_DIR=/mnt/models/mlx-clone-an earlier run bash scripts/build-wheel.sh`
+- `MLX_VENDOR_DIR=/models/mlx-clone-an earlier run bash scripts/build-wheel.sh`
   (with the new verification — it printed `vendor checkout verified` and
-  proceeded) → `/mnt/models/dist-an earlier run/mlx-0.32.3.dev20261028+75ca881-cp312-...whl`.
-- Installed into a scratch venv (`/mnt/models/venv-an earlier run`, python 3.12.3;
+  proceeded) → `/models/dist-an earlier run/mlx-0.32.3.dev20261028+75ca881-cp312-...whl`.
+- Installed into a scratch venv (`/models/venv-an earlier run`, python 3.12.3;
   `venv-d` untouched). The scratch venv mirrors venv-d's mlx_lm model
   files: `qwen3_5.py` (S==1-guarded fused branch) **and** `gated_delta.py`
   (K3 patch: non-fused GDN update routes through
@@ -370,25 +370,25 @@ M=2 is 64.34 tok/s @ 76.0% accept — the gdn fix did **not** close the MTP gap.
 ## Phase 1 — pre-stage + verify (all PASS)
 
 - SSH chain: `ssh -J operator@<tailnet-ip> the build VM@<guest-ip>` (guest the build VM).
-- Build clone: `git -C /mnt/models/mlx-clone-g4 log --oneline -1`
+- Build clone: `git -C /models/mlx-clone-g4 log --oneline -1`
   → `75ca881 an earlier run: fix gdn_prep launcher - data_shared_ptr().get() is a host Data*, not a device pointer`
-- Wheel identity (venv `/mnt/models/venv-d`, python3.12):
+- Wheel identity (venv `/models/venv-d`, python3.12):
   `mlx-0.32.3.dev20261028+75ca881` (+ `mlx_lm-0.32.2`) — matches the fixed
   clone ref. `import mlx.core` OK under `LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib`.
-- Lock: `flock -w 10 /mnt/models/gpu-bench.lock -c true` → free (no GPU siblings).
+- Lock: `flock -w 10 /models/gpu-bench.lock -c true` → free (no GPU siblings).
 - Model-load smoke (flock, 10 tokens, Qwen3.5 GDN-hybrid 9B 4bit
-  `/mnt/models/qwen3-9b-mlx`): `SMOKE-OK n=10 dt=1.53`, no fault,
+  `/models/qwen3-9b-mlx`): `SMOKE-OK n=10 dt=1.53`, no fault,
   gfx1201 bound.
 
 ## Phase 2 — bench (flock, fresh process per run, 3 repeats, median)
 
 Harness: repo `bench/mtp-bench3.py` (AR = `MLX_MTP=0`, MTP K=1 M=2 =
 `MLX_MTP=2`), 1024 tokens greedy, smartphone prompt, run via new runner
-`bench/bench-decode.sh` (copied to guest `/mnt/models/tmp/bench-decode/`):
+`bench/bench-decode.sh` (copied to guest `/models/tmp/bench-decode/`):
 
 ```
-flock -w 300 /mnt/models/gpu-bench.lock env MLX_MTP=<0|2> \
-  /mnt/models/venv-d/bin/python /mnt/models/tmp/bench-decode/mtp-bench3.py
+flock -w 300 /models/gpu-bench.lock env MLX_MTP=<0|2> \
+  /models/venv-d/bin/python /models/tmp/bench-decode/mtp-bench3.py
 ```
 
 | Config | n | min | **median** | max | accept |
@@ -458,12 +458,12 @@ the PR #8 vacuity-guarded lossless gate (same `cmp_streams` helper as
 
 ```
 ssh -J operator@<tailnet-ip> the build VM@<guest-ip>
-git -C /mnt/models/mlx-clone-g4 log --oneline -1        # 75ca881
-ls /mnt/models/venv-d/lib/python3.12/site-packages/ | grep mlx
-flock -w 10 /mnt/models/gpu-bench.lock -c true          # LOCK-FREE
+git -C /models/mlx-clone-g4 log --oneline -1        # 75ca881
+ls /models/venv-d/lib/python3.12/site-packages/ | grep mlx
+flock -w 10 /models/gpu-bench.lock -c true          # LOCK-FREE
 # smoke (10 tokens, flock -w 240): venv-d python, load + 10x argmax step
-scp bench/{mtp-bench3.py,mtp-bench5.py,bench-decode.sh} the build VM@...:/mnt/models/tmp/bench-decode/
-bash /mnt/models/tmp/bench-decode/bench-decode.sh            # 6 runs + gate (K2 not run)
+scp bench/{mtp-bench3.py,mtp-bench5.py,bench-decode.sh} the build VM@...:/models/tmp/bench-decode/
+bash /models/tmp/bench-decode/bench-decode.sh            # 6 runs + gate (K2 not run)
 ```
 
 ---
@@ -639,7 +639,7 @@ kernel's row-0 output computation).
 Worker: <operator> (2026-10-28). Source of truth: method-correction doc
 (https://drop.<host>/planky/3150ddc860c16a6d3bf769f3.html) — section 4 step 0,
 section 2 rules 1/2/6/7. No model load. All GPU time under
-`flock /mnt/models/gpu-bench.lock` (lock free at dispatch; an earlier run terminal).
+`flock /models/gpu-bench.lock` (lock free at dispatch; an earlier run terminal).
 
 ## Headline
 
@@ -725,22 +725,22 @@ ceiling" (960 GB/s-derived) remains unreachable; the zero-other-cost floor is
 
 ```bash
 # lock check first
-ssh -J operator@<tailnet-ip> the build VM@<guest-ip> 'flock -w 5 /mnt/models/gpu-bench.lock -c true && echo LOCK_FREE'
+ssh -J operator@<tailnet-ip> the build VM@<guest-ip> 'flock -w 5 /models/gpu-bench.lock -c true && echo LOCK_FREE'
 
 # deploy bench
-scp -J operator@<tailnet-ip> bench/step0_streaming_read.py bench/step0_parse.py bench/step0_run.sh the build VM@<guest-ip>:/mnt/models/tmp/
+scp -J operator@<tailnet-ip> bench/step0_streaming_read.py bench/step0_parse.py bench/step0_run.sh the build VM@<guest-ip>:/models/tmp/
 
 # 4 GiB pass (default) — CU count + ceiling, under flock, rocprofv3 kernel time
-ssh -J operator@<tailnet-ip> the build VM@<guest-ip> 'bash /mnt/models/tmp/step0_run.sh'
+ssh -J operator@<tailnet-ip> the build VM@<guest-ip> 'bash /models/tmp/step0_run.sh'
 
 # 2 GiB variant
-ssh -J operator@<tailnet-ip> the build VM@<guest-ip> 'STEP0_NBYTES=$((2*1024*1024*1024)) STEP0_OUT=/mnt/models/tmp/step0_2g bash /mnt/models/tmp/step0_run.sh'
+ssh -J operator@<tailnet-ip> the build VM@<guest-ip> 'STEP0_NBYTES=$((2*1024*1024*1024)) STEP0_OUT=/models/tmp/step0_2g bash /models/tmp/step0_run.sh'
 
 # CU count (independent of the bench)
 ssh -J operator@<tailnet-ip> the build VM@<guest-ip> '/opt/rocm/core-10.1/bin/rocminfo | grep -B1 -A4 "Marketing Name"; /opt/rocm/core-10.1/bin/amd-smi | head -14; cat /sys/class/kfd/kfd/topology/nodes/1/properties'
 
 # direct HIP CU query (the value mlx uses)
-ssh -J operator@<tailnet-ip> the build VM@<guest-ip> 'export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib; /opt/rocm/core-10.1/bin/hipcc -o /mnt/models/tmp/hipcu bench/step0_hip_cu.cu && flock -w 60 /mnt/models/gpu-bench.lock -c /mnt/models/tmp/hipcu'
+ssh -J operator@<tailnet-ip> the build VM@<guest-ip> 'export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib; /opt/rocm/core-10.1/bin/hipcc -o /models/tmp/hipcu bench/step0_hip_cu.cu && flock -w 60 /models/gpu-bench.lock -c /models/tmp/hipcu'
 ```
 
 Files: `bench/step0_run.sh` (guest-side runner: CU count + flock + rocprofv3 +
@@ -763,7 +763,7 @@ Continuation of burned an earlier run. Objective: make the m2 (K=1/S=2 spec-veri
 
 ## 1. Analysis (no GPU)
 
-### Model quant params (/mnt/models/qwen3-9b-mlx)
+### Model quant params (/models/qwen3-9b-mlx)
 - 4-bit affine, group_size=64, **has_bias=true** (per-group scales+biases in safetensors).
 - **lm_head IS quantized**: U32 [248320, 512], scales/biases [248320, 64] (vocab=248320).
 - embed_tokens also quantized (same geometry).
@@ -821,11 +821,11 @@ o_proj:   K=4096  N=4096   M=2 vs 2xM=1 maxdiff=0.000e+00  BIT-EXACT
 **All 4 geometries BIT-EXACT (maxdiff=0.0).**
 
 ### (b) Bench (m0 + m2, 1024 tokens, greedy, fresh process, flock)
-Reference (an earlier run, /mnt/models/tmp/bench4/): m0=64.49 tok/s, m2a=63.81 tok/s (389/512=76% acceptance).
-G3 bench (/mnt/models/tmp/bench-g3/): pending.
+Reference (an earlier run, /models/tmp/bench4/): m0=64.49 tok/s, m2a=63.81 tok/s (389/512=76% acceptance).
+G3 bench (/models/tmp/bench-g3/): pending.
 
 ## 4. Gate
-- m0 stream unchanged vs reference (/mnt/models/tmp/bench4/m0.out): pending.
+- m0 stream unchanged vs reference (/models/tmp/bench4/m0.out): pending.
 - m2 stream BIT-EXACT vs m0: pending.
 - m2 tok/s >= 65.05: pending.
 
@@ -954,10 +954,10 @@ the per-row wide kernel re-reads the weights once per row. The MR kernel
 
 ## 6. MR kernel measurement (2026-10-28/29, branch 1e9c50e)
 
-Wheel: built on the build VM from `/mnt/models/mlx-clone-mr` (base 75ca881 + branch MR-kernel
+Wheel: built on the build VM from `/models/mlx-clone-mr` (base 75ca881 + branch MR-kernel
 state, byte-verified identical to the repo vendor tree at 1e9c50e; qmm.o + wheel built
 after the final source fix, `qmv_wide_mr_kernel` symbols present in libmlx.so). Unpacked
-at `/mnt/models/wheel-qmv` (PYTHONPATH per the script header). Launch-verified:
+at `/models/wheel-qmv` (PYTHONPATH per the script header). Launch-verified:
 `qmv_wide_mr_kernel` dispatches for M=1 and M=2, grid (768,1) blocks for K=4096
 N=12288 (24576×16 work-items ÷ 32×16 workgroup), LDS 32768 B.
 
@@ -1042,8 +1042,8 @@ spills — it is that **the kernel is compute-bound, not weight-bandwidth-bound*
   (e.g. a WMMA/tile formulation that reuses loaded weight tiles across rows at the
   instruction level, or a higher sustained dequant+MAC throughput). Follow-up run.
 
-Artifacts on the guest: `/mnt/models/tmp/qmv-mr/{ref,new}/{bitexact,trace,ar.log}`,
-run logs `ref-run.log` / `new-run.log`, wheel `/mnt/models/wheel-qmv`.
+Artifacts on the guest: `/models/tmp/qmv-mr/{ref,new}/{bitexact,trace,ar.log}`,
+run logs `ref-run.log` / `new-run.log`, wheel `/models/wheel-qmv`.
 
 ## 7. MR kernel weight-reuse (dequant hoist) — measurement (2026-10-29, worker/step1-qmv-mr2 @ e144f39)
 
@@ -1064,7 +1064,7 @@ increment becomes the MAC only (sub-additive), not dequant+MAC.
 
 ### 7.2 Build + effective config
 
-The an earlier run guest clone (`/mnt/models/mlx-clone-mr`) was gone, so it was
+The an earlier run guest clone (`/models/mlx-clone-mr`) was gone, so it was
 reconstructed: fork base 75ca881b (the an earlier run base) + the repo vendor-tree
 overlay of exactly the three quantized files (`qmm.hip` md5 ab6bc086, new
 `qmv_wide_mr_kernel.hip` md5 2352b75c byte-matching the branch file, new
@@ -1074,7 +1074,7 @@ the older the earlier vendor base base; 75ca881's `fast.h` carries `gdn_prep`, w
 exactly that, then built clean). Wheel
 `mlx-0.32.3.dev20261028+75ca881b` (sha256 dc9274a4…; libmlx.so sha256
 821da604…, 24 `qmv_wide_mr` symbols, 76 `gfx1201` strings), unpacked at
-`/mnt/models/wheel-qmv` (an earlier run wheel backed up to `wheel-qmv-an earlier run.bak`).
+`/models/wheel-qmv` (an earlier run wheel backed up to `wheel-qmv-an earlier run.bak`).
 Launch-verified: `[mlx-rocm] bound HIP device 0: gfx1201 (AMD Radeon RX 9070
 XT) cus=32`; M=2 matmul OK. No `MLX_QMV_*` env (CONFIG lines show `env={}`) →
 defaults: MR gate M≤4 && LDS≤32 KB, 16 cols/block. `qmv_wide_mr_kernel`
@@ -1186,11 +1186,11 @@ MAC work; flattening the curve needs the MAC itself to stop scaling with M
 the instruction level, per §6.4) — a second kernel design, NOT started in
 this run.
 
-Artifacts on the guest: `/mnt/models/tmp/qmv-mr/{ref,new}/` (bitexact, 16
+Artifacts on the guest: `/models/tmp/qmv-mr/{ref,new}/` (bitexact, 16
 bench logs + traces, ar.log, config.log, gpuinfo.log, flock-fails.log),
-`/mnt/models/tmp/qmv-mr/pmc-mr-{4096,12288}-M{1,4}/` (PMC traces), build log
-`/mnt/models/an earlier run-build2.log`, wheel `/mnt/models/wheel-qmv` (an earlier run wheel at
-`/mnt/models/wheel-qmv-an earlier run.bak`).
+`/models/tmp/qmv-mr/pmc-mr-{4096,12288}-M{1,4}/` (PMC traces), build log
+`/models/an earlier run-build2.log`, wheel `/models/wheel-qmv` (an earlier run wheel at
+`/models/wheel-qmv-an earlier run.bak`).
 
 ## 8. an earlier run LX hoist A/B — verify + measure (2026-10-29, worker/qmv-tile-wmma @ 01c1013, an earlier run salvage)
 
@@ -1209,13 +1209,13 @@ instantiation compiles only its m-loop path via `if constexpr`).
   `patches/qmv-mr-lxhoist.diff` → byte-identical to the committed vendor
   tree (b05f379b / 0fdec793).
 - Wheel built on the build VM (ROCm 10.1, gfx1201, RX 9070 XT) in
-  `/mnt/models/mlx-clone-mr` (incremental; `qmm.o` recompiled for the
-  dispatch fix, 0 errors), `.so` swapped into `/mnt/models/venv-an earlier run`
+  `/models/mlx-clone-mr` (incremental; `qmm.o` recompiled for the
+  dispatch fix, 0 errors), `.so` swapped into `/models/venv-an earlier run`
   (md5 4b51625c matches the build output). Wheel
   0.32.3.dev20261028+75ca881b.
 - Bench: one fresh process per env (an earlier run convention), 10 warmup + 50 reps,
   `rocprofv3 --kernel-trace` kernel time (doc rule 2), under
-  `flock /mnt/models/gpu-bench.lock`. Config printed + asserted per run:
+  `flock /models/gpu-bench.lock`. Config printed + asserted per run:
   wheel + MLX_* env in every CONFIG line; kernel family per shape and the
   template instantiation (`, true>` / `, false>` from the full symbol name)
   asserted by the runner (CONFIG-ASSERT: PASS).
@@ -1284,10 +1284,10 @@ Follow-up flag: the dispatch default is `MLX_QMV_MR_LX=1` (hoist on) — with
 this measurement the default should flip to 0 (or the hoist instantiation
 dropped) before the MR path is used in a serve config.
 
-Artifacts on the guest: `/mnt/models/tmp/qmv-mr2-lx/` (bitexact ref/check
+Artifacts on the guest: `/models/tmp/qmv-mr2-lx/` (bitexact ref/check
 logs + .npy refs, bench0/1 logs, rocprofv3 traces, parse/combos/gain logs),
-build log `/mnt/models/an earlier run-build.log`, wheel `.so` in
-`/mnt/models/venv-an earlier run` (build dir `/mnt/models/mlx-clone-mr`).
+build log `/models/an earlier run-build.log`, wheel `.so` in
+`/models/venv-an earlier run` (build dir `/models/mlx-clone-mr`).
 
 ## m8: full-state audit + T-dependence patch (an earlier run)
 
@@ -1497,8 +1497,8 @@ TOKS_S AR / MTP K=1 / K=2 (baselines AR 69.65, MTP K=1 64.34).
 ### P3 final results (one-round-max: first_div MOVED - report + end)
 
 **Patch + rebuild:** `patches/m8-sdpa1pass-single-kernel.diff` applied to a
-clean clone at `75ca881b` (`/mnt/models/tmp/mlx-m8`); wheel built
-(`/mnt/models/tmp/mlx-m8/dist-m8/mlx-0.32.3.dev20261029+75ca881b-...whl`)
+clean clone at `75ca881b` (`/models/tmp/mlx-m8`); wheel built
+(`/models/tmp/mlx-m8/dist-m8/mlx-0.32.3.dev20261029+75ca881b-...whl`)
 and installed (`.so` sha256 `b651be0a...`; pre-m8 backup
 `/tmp/libmlx.so.pre-m8` = `90cf8214...`, restored at the end).
 
@@ -1640,21 +1640,21 @@ CPU/Metal paths; only the ROCm GPU dispatch changes.
 
 ### Build
 
-Fresh guest clone `/mnt/models/tmp/mlx-m8r2` from `75ca881b` (the m8
+Fresh guest clone `/models/tmp/mlx-m8r2` from `75ca881b` (the m8
 wheel's base - not the vendor.json primary the earlier vendor base; `rope.hip` is
 byte-identical between the two, so the patch applies to both). Both
 patches in the working tree: `patches/m8-sdpa1pass-single-kernel.diff`
 (P3) + `patches/m8-rope-single.diff` (this round). Wheel:
-`/mnt/models/tmp/mlx-m8r2/dist-m8r2/mlx-0.32.3.dev20261029+75ca881b-...whl`
+`/models/tmp/mlx-m8r2/dist-m8r2/mlx-0.32.3.dev20261029+75ca881b-...whl`
 (.so md5 `06044ea9b888...`; pre-m8r2 venv backup
-`/mnt/models/tmp/libmlx.so.pre-m8r2` = the baseline `90cf8214`-era
+`/models/tmp/libmlx.so.pre-m8r2` = the baseline `90cf8214`-era
 .so, `af07d9069267...`).
 
-(Note: `/mnt/models/venv-d/bin/pip` is a script with a shebang to
+(Note: `/models/venv-d/bin/pip` is a script with a shebang to
 **venv-a** - installing "with venv-d pip" silently lands in venv-a.
-Use `/mnt/models/venv-d/bin/python -m pip`.)
+Use `/models/venv-d/bin/python -m pip`.)
 
-### Verification (all on the m8r2 .so, /mnt/models/qwen3-9b-mlx 4bit)
+### Verification (all on the m8r2 .so, /models/qwen3-9b-mlx 4bit)
 
 **1. Direct kernel T-invariance (20 random trials, f32, D=256 partial
 rope dims=64, base 1e7):** T=2 row1 (pos 74) vs T=1 row0 (pos 74),
@@ -1735,12 +1735,12 @@ harness docstring; row-invariance itself is MATCH n=4096.
   T=2 into 2xT=1) if a future value-specific case surfaces.
 - venv-d was restored to the pre-m8r2 baseline .so at the end
   (backup convention per P3); the m8r2 wheel stays at
-  /mnt/models/tmp/mlx-m8r2/dist-m8r2/ for re-install
-  (`/mnt/models/venv-d/bin/python -m pip install --force-reinstall
+  /models/tmp/mlx-m8r2/dist-m8r2/ for re-install
+  (`/models/venv-d/bin/python -m pip install --force-reinstall
   --no-deps`), and the pre-m8r2 baseline backup is at
-  /mnt/models/tmp/libmlx.so.pre-m8r2. Evidence logs on the guest:
+  /models/tmp/libmlx.so.pre-m8r2. Evidence logs on the guest:
   /tmp/flowprobe-m8r2.txt, /tmp/state-trace-m8r2.txt,
-  /mnt/models/tmp/g4m8r2/ (g4 arms + m3 K=2 + m0-2k + ab.log).
+  /models/tmp/g4m8r2/ (g4 arms + m3 K=2 + m0-2k + ab.log).
 
 ---
 
@@ -1796,7 +1796,7 @@ Hermetic gates on the rebased tree: `uv run pytest -m "not gpu"` 12 passed + 1 s
 800/885 ≤ budgets 949/904); `scripts/m8-kproj-flowprobe.py` ruff clean (other m7/m8
 script reds = the pre-existing set, unchanged).
 
-## Guest re-verify (the build VM, fresh build /mnt/models/tmp/mlx-m8rebase)
+## Guest re-verify (the build VM, fresh build /models/tmp/mlx-m8rebase)
 
 - Fresh vendor clone @ pin `75ca881b2e82f7b4069c8564a203792aa16d8a29` (full sha verified
   against the m8r2 clone); the two post-rebase patch files applied; patched
@@ -1808,7 +1808,7 @@ script reds = the pre-existing set, unchanged).
   (never venv-a). venv-d's `qwen3_next.py` already carries the RowInvariantRoPE patch
   (required by the A/B gate). Lock: FREE at start; per-job `flock` hold; FREE at end.
   No HSA faults in any log. venv-d .so restored to baseline (`af07d906…`) afterwards.
-- Evidence: `/mnt/models/tmp/m8rebase-ev/` (direct-kernels.out, flowprobe.out,
+- Evidence: `/models/tmp/m8rebase-ev/` (direct-kernels.out, flowprobe.out,
   state-trace-run1/2.out, g4/, ab/).
 
 | Gate | Expect (an earlier run) | Measured (fresh rebuild) |

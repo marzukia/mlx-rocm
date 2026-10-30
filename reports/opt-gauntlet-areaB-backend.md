@@ -2,7 +2,7 @@
 
 **Scope:** read-only analysis of the vendored ROCm backend (`vendor/mlx-rocm-upstream` @
 the pinned base sha = upstream `the vendor ref`), the built guest wheel
-(`mlx-0.32.3.dev20261026+the earlier vendor base`, built 04:11 from `/mnt/models/mlx-clone`), and
+(`mlx-0.32.3.dev20261026+the earlier vendor base`, built 04:11 from `/models/mlx-clone`), and
 kernel-level timing on the guest (RX 9070 XT, gfx1201, ROCm 10.1, **32-CU vGPU
 partition** — `cus=32` in the boot log; full card is 54 CU).
 
@@ -92,7 +92,7 @@ keys"). Deltas vs upstream = only the local patches:
 | an earlier run cand-B: per-chunk stream separation (create→async→sync→destroy per chunk) | allocator.cpp | Same hang, stronger workaround. Adds ~stream create/destroy per chunk. |
 | ROCm 6.4 compat shims (16-bit `atomicCAS` in hip_atomic_compat, naive_gemm, kernel_utils, load, reduce_utils) | 5 files, ~16 lines | None. |
 
-The guest wheel (`/mnt/models/mlx-clone`, 7 files / +133 lines vs the earlier vendor base) contains
+The guest wheel (`/models/mlx-clone`, 7 files / +133 lines vs the earlier vendor base) contains
 exactly these — **both patches are active in the built wheel**. Guest runs ROCm
 10.1 (not 7.7); the KFD hang is a 7.7-era bug, the patches are harmless
 workarounds there.
@@ -150,7 +150,7 @@ commit** (~1,050 extra commits/token). KV is pre-allocated and flat
 
 ## 4. Patch status + per-step cost (cand-A + an earlier run in the wheel)
 
-Both patches are **active** in the built wheel (verified in `/mnt/models/mlx-clone`:
+Both patches are **active** in the built wheel (verified in `/models/mlx-clone`:
 `has_gpu_contents` in allocator.h, `chunked_copy_stream_separated` in allocator.cpp).
 
 Per decode step the only touched path is the token-id readout:
@@ -225,4 +225,4 @@ A/B it with `MLX_GRAPH_DECODE=0` as the kill switch.
 - Source: `vendor/mlx-rocm-upstream/mlx/backend/rocm/{matmul.cpp, gemms/hipblaslt_gemm.cpp,
   gemms/gemv.hip, quantized/qmm.hip, device.cpp, eval.cpp, allocator.cpp, host_stage.cpp}`;
   patches on branch `an earlier run-salvage-candA` (bd061d6, 37e2834, d82ce84); guest build tree
-  `/mnt/models/mlx-clone` (the earlier vendor base + 7 files / +133 lines).
+  `/models/mlx-clone` (the earlier vendor base + 7 files / +133 lines).

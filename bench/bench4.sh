@@ -11,13 +11,14 @@
 #
 # Usage:
 #   bash bench4.sh                          # full bench (GPU, under flock) + lossless gate
-#   BENCH4_OUT=/mnt/models/tmp/bench4 bash bench4.sh check
+#   BENCH4_OUT=$MODELS/tmp/bench4 bash bench4.sh check
 #                                          # no-GPU: lossless gate on saved streams only
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MODELS="${MODELS:-/models}"
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib
-OUT=${BENCH4_OUT:-/mnt/models/tmp/bench4}
+OUT=${BENCH4_OUT:-$MODELS/tmp/bench4}
 mkdir -p $OUT
-LOCK=/mnt/models/gpu-bench.lock
+LOCK=$MODELS/gpu-bench.lock
 
 # --- lossless gate (vacuity-guarded; same helper as bench5.sh) -----------------
 # mtp-bench3.py prints exactly:  MTP=...  /  FIRST16: ...  /  ALLTOKS: <toks>  /  TEXT: ...
@@ -107,11 +108,11 @@ if [ "$1" = "check" ]; then
   exit 0
 fi
 
-flock -w 900 $LOCK env MLX_MTP=0 /mnt/models/venv-a/bin/python /tmp/mtp-bench3.py > $OUT/m0.out 2>&1
-flock -w 900 $LOCK env MLX_MTP=1 /mnt/models/venv-a/bin/python /tmp/mtp-bench3.py > $OUT/m1.out 2>&1
-flock -w 900 $LOCK env MLX_MTP=2 /mnt/models/venv-a/bin/python /tmp/mtp-bench3.py > $OUT/m2a.out 2>&1
-flock -w 900 $LOCK env MLX_MTP=2 /mnt/models/venv-a/bin/python /tmp/mtp-bench3.py > $OUT/m2b.out 2>&1
-flock -w 900 $LOCK env MLX_MTP=2 /mnt/models/venv-a/bin/python /tmp/mtp-bench3.py > $OUT/m2c.out 2>&1
+flock -w 900 $LOCK env MLX_MTP=0 $MODELS/venv-a/bin/python /tmp/mtp-bench3.py > $OUT/m0.out 2>&1
+flock -w 900 $LOCK env MLX_MTP=1 $MODELS/venv-a/bin/python /tmp/mtp-bench3.py > $OUT/m1.out 2>&1
+flock -w 900 $LOCK env MLX_MTP=2 $MODELS/venv-a/bin/python /tmp/mtp-bench3.py > $OUT/m2a.out 2>&1
+flock -w 900 $LOCK env MLX_MTP=2 $MODELS/venv-a/bin/python /tmp/mtp-bench3.py > $OUT/m2b.out 2>&1
+flock -w 900 $LOCK env MLX_MTP=2 $MODELS/venv-a/bin/python /tmp/mtp-bench3.py > $OUT/m2c.out 2>&1
 
 run_gate
 

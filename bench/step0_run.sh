@@ -4,15 +4,16 @@
 #
 # Usage (ON the build VM):  bash step0_run.sh
 #   env: STEP0_NBYTES (default 4 GiB), STEP0_WARMUP (3), STEP0_ITERS (10),
-#        STEP0_OUT (default /mnt/models/tmp/step0)
+#        STEP0_OUT (default $MODELS/tmp/step0)
 #
 # Timing: rocprofv3 kernel time only (doc rule 2). GB/s = bytes moved / kernel
 # time. CU count: what the runtime reports (doc section 1 row 4).
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib
-PY=/mnt/models/venv-d/bin/python
-OUT=${STEP0_OUT:-/mnt/models/tmp/step0}
-LOCK=/mnt/models/gpu-bench.lock
+MODELS="${MODELS:-/models}"
+PY=$MODELS/venv-d/bin/python
+OUT=${STEP0_OUT:-$MODELS/tmp/step0}
+LOCK=$MODELS/gpu-bench.lock
 HERE=$(cd "$(dirname "$0")" && pwd)
 NBYTES=${STEP0_NBYTES:-$((4 * 1024 * 1024 * 1024))}
 WARMUP=${STEP0_WARMUP:-3}

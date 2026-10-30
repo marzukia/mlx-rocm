@@ -8,17 +8,18 @@
 #            new (new wheel: bitexact check + bench + AR stream)
 #   python : interpreter with the wheel under test on its path
 #
-#   e.g. bash qmv_mr_run.sh ref /mnt/models/venv-d/bin/python
-#        bash qmv_mr_run.sh new /mnt/models/venv-d/bin/python \
-#            (with PYTHONPATH=/mnt/models/wheel-qmv exported)
+#   e.g. bash qmv_mr_run.sh ref $MODELS/venv-d/bin/python
+#        bash qmv_mr_run.sh new $MODELS/venv-d/bin/python \
+#            (with PYTHONPATH=$MODELS/wheel-qmv exported)
 set -uo pipefail
+MODELS="${MODELS:-/models}"
 TAG=$1
 PY=$2
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib
 ROCPROF=/opt/rocm/core-10.1/bin/rocprofv3
-T=/mnt/models/tmp/qmv-mr/$TAG
+T=$MODELS/tmp/qmv-mr/$TAG
 HERE=$(cd "$(dirname "$0")" && pwd)
-LOCK=/mnt/models/gpu-bench.lock
+LOCK=$MODELS/gpu-bench.lock
 WARMUP=10
 REPS=50
 mkdir -p $T
@@ -50,7 +51,7 @@ for spec in "4096 12288" "12288 4096" "4096 4096" "4096 248320"; do
 done
 
 # --- AR 1024-token greedy stream (doc rule 4) + tok/s record --------------
-flock -w 900 $LOCK -c "MLX_MTP=0 MTP_MODEL=/mnt/models/qwen3-9b-mlx timeout 900 $PY $HERE/mtp-bench3.py" \
+flock -w 900 $LOCK -c "MLX_MTP=0 MTP_MODEL=$MODELS/qwen3-9b-mlx timeout 900 $PY $HERE/mtp-bench3.py" \
   > $T/ar.log 2>&1 || { echo "FLOCK-FAIL ar"; exit 1; }
 grep -E "^MTP=|^FIRST16:" $T/ar.log
 echo "ALLTOKS saved: $T/ar.log"

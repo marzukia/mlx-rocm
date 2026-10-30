@@ -1,12 +1,12 @@
 # K2: non-GEMM fusion bench (COMPLETE)
 
 Branch: k2-non-gemm-fusion. Guest: gfx1201 (RX 9070 XT), ROCm 10.1.
-Protocol: 200-tok warm decode, 16-tok warmup, fresh process, flock /mnt/models/gpu-bench.lock
+Protocol: 200-tok warm decode, 16-tok warmup, fresh process, flock /models/gpu-bench.lock
 (util <1% pre-bench), timeout-300 wrap, same runner for both arms
-(/mnt/models/mlx-clone-k2/run-bench.sh <venv> <model> 200 2 <tag>).
+(/models/mlx-clone-k2/run-bench.sh <venv> <model> 200 2 <tag>).
 A/B isolation: both venvs carry the same fused wheel (mlx-0.32.3.dev20261026+the earlier vendor base);
 ON = venv-k2 (patched mlx_lm model files, scripts/patch-models-k2.py, verified idempotent),
-OFF = pristine /mnt/models/venv (unpatched model files). The delta is the model-side fusion.
+OFF = pristine /models/venv (unpatched model files). The delta is the model-side fusion.
 
 ## 9B-4bit A/B (qwen3-9b-mlx) — from an earlier run
 

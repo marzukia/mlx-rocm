@@ -1,11 +1,12 @@
 import os
+MODELS = os.environ.get("MODELS", "/models")
 os.environ["LD_LIBRARY_PATH"] = "/opt/rocm/core-10.1/lib"
 import numpy as np
 import mlx.core as mx
 import mlx.nn as mnn
 from mlx_lm import load
 import mlx_lm.models.gated_delta as gd
-D = "/mnt/models/qwen3-9b-mlx"
+D = f"{MODELS}/qwen3-9b-mlx"
 model, tok = load(D)
 tm = model.language_model.model
 mx.eval(model.parameters())

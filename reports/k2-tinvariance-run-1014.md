@@ -1,10 +1,10 @@
 # an earlier run — K=2 k_proj T-invariance: probes, gates, bench (2026-10-30)
 
 Lane: the build VM (<tailnet-ip> / <guest-ip>, RX 9070 XT gfx1201, ROCm 10.1),
-`flock /mnt/models/gpu-bench.lock` for every GPU run.
+`flock /models/gpu-bench.lock` for every GPU run.
 Wheel: `t29k/venv-m8`, `libmlx.so` sha256[:12]=`de6de5f154c0` (m8rebase,
 an earlier run-verified; **no rebuild — the patch is python-side, .so untouched**).
-Model: `/mnt/models/qwen3-9b-mlx` (5.95GB 4bit, 32 layers, 8 full-attention
+Model: `/models/qwen3-9b-mlx` (5.95GB 4bit, 32 layers, 8 full-attention
 layers [3,7,11,15,19,23,27,31], 24 GDN layers).
 Repo: `worker/k2-kproj-tinvariance` off base `2027d51` (m8 audit #20).
 
@@ -112,9 +112,9 @@ are the main overhead), or extend K to 3-4 to raise tok/step above 2.
 ## Reproduction
 
 ```
-# on the build VM, under flock /mnt/models/gpu-bench.lock:
-PY=/mnt/models/tmp/t29k/venv-m8/bin/python
-D=/mnt/models/tmp/an earlier run   # this round's uploaded scripts + outputs
+# on the build VM, under flock /models/gpu-bench.lock:
+PY=/models/tmp/t29k/venv-m8/bin/python
+D=/models/tmp/an earlier run   # this round's uploaded scripts + outputs
 $PY $D/k2-kproj-tinvariance-probe.py        # gate (a)
 bash $D/an earlier run-run.sh                        # full: gates + bench
 ```
