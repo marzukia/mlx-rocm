@@ -1,11 +1,11 @@
 Metadata-Version: 2.4
 Name: mlx-rocm
-Version: 0.0.1
-Summary: ROCm backend for MLX (MVP): vendored mlx ROCm backend tree + minimal hipBLASLt GEMM
-Author-email: <submitter> <<submitter>@<domain>>
+Version: 0.1.0
+Summary: ROCm backend for MLX (pre-alpha): vendored mlx ROCm backend tree + hipBLASLt GEMM + QMV decode kernels, validated on AMD RDNA4 (gfx1201)
+Author-email: Submitter <submitter@example.org>
 Keywords: mlx,rocm,hip,amd,rdna4,gfx1201
-Classifier: Development Status :: 1 - Planning
-Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Development Status :: 2 - Pre-Alpha
+Classifier: License :: OSI Approved :: MIT License
 Classifier: Programming Language :: Python :: 3
 Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
 Requires-Python: >=3.11
@@ -15,11 +15,22 @@ Dynamic: license-file
 
 # mlx-rocm
 
-ROCm backend for [MLX](https://github.com/ml-explore/mlx) — **MVP skeleton** (v0.0.1).
+ROCm backend for [MLX](https://github.com/ml-explore/mlx) — **pre-alpha**
+(first public release 0.1.0).
 
-End use: run the fleet's qMLX inference stack (qmlx-serve, Qwen3.x, MTP spec
-decode, prefix/disk KV) on **the build VM** — AMD RX 9070 XT (RDNA4,
-**gfx1201** — *not* gfx110x), ROCm 6.4 userland (HIP 6.4.43484).
+Purpose: run MLX inference on AMD RDNA4 — validated on the RX 9070 XT
+(**gfx1201** — *not* gfx110x) — carrying the qMLX inference stack (qmlx-serve,
+Qwen3.x, MTP spec decode, prefix/disk KV) up to the 122B hybrid at high
+decode speed.
+
+Stage: **pre-alpha**. 0.1.0 is a public milestone of the current tree, not a
+stability promise — expect breaking changes. The **alpha cut is planned once
+decode reaches close to the card's ceiling** (122B-hybrid target: ~120 tok/s,
+byte-identical vs autoregressive).
+
+Verified toolchain: ROCm 10.1 userland on the validated guest (core at
+`/opt/rocm/core-10.1`; 6.4 was the early probe validation and 7.7 the original
+target — neither is the verified version).
 
 ## What this is
 
@@ -69,17 +80,18 @@ cmake -S . -B build && cmake --build build
 ./build/gemm_smoke host
 ```
 
-With ROCm (gfx1201 box, e.g. the build VM):
+With ROCm (gfx1201 box, e.g. the the build VM guest — see `docs/quickstart.md`):
 
 ```
-cmake -S . -B build -DMLX_ROCM_WITH_HIP=ON && cmake --build build
+cmake -S . -B build -DMLX_ROCM_WITH_HIP=ON -DCMAKE_PREFIX_PATH=/opt/rocm/core-10.1 \
+  && cmake --build build
 ./build/gemm_smoke hip        # bf16 512^3 + fp8 e4m3 probe
 ```
 
 Full `mlx` wheel from the vendored tree (next phase):
 
 ```
-CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=OpenBLAS" \
+CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=OpenBLAS -DCMAKE_PREFIX_PATH=/opt/rocm/core-10.1" \
   python setup.py bdist_wheel   # from vendor/mlx-rocm-upstream layout
 ```
 
@@ -93,22 +105,69 @@ Local: build + small host GEMM. Guest-a: `ssh` reachability + `rocm-smi`
 check, tar transfer, ROCm build, GPU GEMM + fp8 probe. Results land in
 `scripts/smoke-results/` (gitignored).
 
+## Supported models (gfx1201, ROCm 10.1 guest)
+
+| Model | Quant | Status on gfx1201 |
+|---|---|---|
+| Qwen3-0.6B | 8-bit (affine) | validated — benched 207.6–214.3 tok/s (`k2-non-gemm-fusion`) |
+| Qwen3-0.6B | bf16 | Phase 0 smoke target (`scripts/smoke.py` ladder) |
+| 9B-class dense Qwen3 | 4-bit (affine qmm) | validated — benched 55.9–57.8 tok/s A/B (`k2-non-gemm-fusion`), 63.8 tok/s with a 16-token warmup (`opt-gauntlet-areaA`) |
+| 122B hybrid (GDN + FA) | 4-bit (affine) | supported — the main workload; ~73 tok/s AR small-ctx on main, levers in flight toward ~120 |
+| 27B dense / MoE | — | not validated (a 27B load was in flight on the guest, unvalidated) |
+| MTP spec decode | 4-bit | K=2 supported, lossless (merged); slower than AR today — the active speed target |
+| non-gfx1201 archs | — | not validated (only gfx1201 is validated in this repo) |
+
+Details, in-flight items, and caveats: `docs/limitations.md`.
+
+## Converting a model
+
+`mlx_lm` (≥ 0.32) converts a HuggingFace ref to the safetensors layout the
+loader expects:
+
+```
+# bf16
+mlx_lm.convert --model Qwen/Qwen3-0.6B
+# 4-bit affine qmm (validated on gfx1201)
+mlx_lm.convert --model Qwen/Qwen3-8B --quantize --bits 4 --group-size 64
+# 8-bit (AWQ-style)
+mlx_lm.convert --model Qwen/Qwen3-8B --quantize --bits 8 --q-mode awq
+```
+
+Or use a pre-converted `mlx-community/*` ref (e.g.
+`mlx-community/Qwen3-0.6B-8bit`). **mxfp4 is the in-flight target (K4)**:
+prefill runs via the opt-in dequant→bf16 GEMM path today; there is no native
+mxfp4 kernel yet.
+
+## Status — lanes
+
+| Lane | What | Branch |
+|---|---|---|
+| K1 (QMV/GEMV bandwidth) | int8-activation QMV fix (N=12288); no bench yet | `k1-qmv-gemv-bandwidth` |
+| K2 (non-GEMM fusion) | merged (#2) | — |
+| K3 (GDN port) | merged (#3) | — |
+| K4 (MXFP4) | opt-in dequant→bf16 GEMM only; no native kernel, no dedicated branch yet | — |
+| G1 (graph decode) | pilot wiring + ROCm 10.1 `hipStreamIsCapturing` fix; symbol export / engine wiring pending | `g1-graph-decode` |
+| alpha (docs/housekeeping) | alpha-state checklist + this docs wave | `alpha-checklist` / `alpha-docs` |
+
 ## Python package
 
-`pip install`-able skeleton (`pyproject.toml`, `src/python/mlx_rocm/`):
-ctypes bindings to `libmlx_rocm.so` (host GEMM always; GPU GEMM + fp8
-probe in ROCm builds) with a pure-numpy bf16 fallback. The wheel does not
-yet bundle the full `mlx` C++ core — that is the next milestone (full
-wheel + qmlx-serve 9B validation).
+`pip install mlx-rocm` (`pyproject.toml`, `src/python/mlx_rocm/`): ctypes
+bindings to `libmlx_rocm.so` (host GEMM always; GPU GEMM + fp8 probe in ROCm
+builds) with a pure-numpy bf16 fallback. The published 0.1.0 wheel is this
+package; the full `mlx` wheel (the vendored tree with the ROCm backend,
+`scripts/build-wheel.sh`) is built and validated per workload — the 9B-class
+and 122B-hybrid serve paths are validated on the guest.
 
 ## License
 
-Apache-2.0 (MLX upstream license; see `LICENSE`).
+MIT (MLX upstream license; see `LICENSE`).
 
 ## Repo layout (scaffold)
 
 - `docs/plan.md` — the research report + phased plan (architecture, CUDA→ROCm map,
   prior art, gfx1201 findings, effort).
+- `docs/limitations.md` — what works / in flight / not supported / caveats.
+- `docs/quickstart.md` — the verified build + smoke path on a gfx1201 box.
 - `PLAN.md` — living plan (phases, current state, open questions).
 - `vendor.json` — the pinned vendor fork + ref (primary/fallback) and the build flags.
 - `scripts/build-wheel.sh` — build the `mlx` wheel with `-DMLX_BUILD_ROCM=ON` for gfx1201 (runs on the build VM).

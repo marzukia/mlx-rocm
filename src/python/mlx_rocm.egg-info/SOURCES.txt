@@ -16,6 +16,7 @@ src/python/mlx_rocm.egg-info/dependency_links.txt
 src/python/mlx_rocm.egg-info/top_level.txt
 tests/test_gates.py
 tests/test_gpu.py
+tests/test_qmv_mr2_lx_instantiation.py
 vendor/mlx-rocm-upstream/CMakeLists.upstream.txt
 vendor/mlx-rocm-upstream/LICENSE.upstream
 vendor/mlx-rocm-upstream/README.md
@@ -160,7 +161,7 @@ vendor/mlx-rocm-upstream/mlx/backend/cpu/simd/accelerate_fp16_simd.h
 vendor/mlx-rocm-upstream/mlx/backend/cpu/simd/accelerate_simd.h
 vendor/mlx-rocm-upstream/mlx/backend/cpu/simd/base_simd.h
 vendor/mlx-rocm-upstream/mlx/backend/cpu/simd/math.h
-vendor/mlx-rocm-upstream/mlx/backend/cpu/simd/the build VM_fp16_simd.h
+vendor/mlx-rocm-upstream/mlx/backend/cpu/simd/neon_fp16_simd.h
 vendor/mlx-rocm-upstream/mlx/backend/cpu/simd/simd.h
 vendor/mlx-rocm-upstream/mlx/backend/cpu/simd/type.h
 vendor/mlx-rocm-upstream/mlx/backend/cuda/CMakeLists.txt
@@ -596,6 +597,8 @@ vendor/mlx-rocm-upstream/mlx/backend/rocm/fence.cpp
 vendor/mlx-rocm-upstream/mlx/backend/rocm/flash_attention.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/flash_attention_bwd_wmma.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/flash_attention_wmma.hip
+vendor/mlx-rocm-upstream/mlx/backend/rocm/g1_hiplog.h
+vendor/mlx-rocm-upstream/mlx/backend/rocm/gated_delta_update.cpp
 vendor/mlx-rocm-upstream/mlx/backend/rocm/host_stage.cpp
 vendor/mlx-rocm-upstream/mlx/backend/rocm/indexing.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/jit_module.cpp
@@ -611,6 +614,10 @@ vendor/mlx-rocm-upstream/mlx/backend/rocm/moe_swiglu.cpp
 vendor/mlx-rocm-upstream/mlx/backend/rocm/no_rocm.cpp
 vendor/mlx-rocm-upstream/mlx/backend/rocm/primitives.cpp
 vendor/mlx-rocm-upstream/mlx/backend/rocm/primitives.hip
+vendor/mlx-rocm-upstream/mlx/backend/rocm/r4d_gdn_chunk_scan_k128_v128_c64_bf16.hip
+vendor/mlx-rocm-upstream/mlx/backend/rocm/r4d_gdn_kkt_solve_k128_c64_bf16.hip
+vendor/mlx-rocm-upstream/mlx/backend/rocm/r4d_gdn_recurrent_update_k128_v128_bf16_fp32state.hip
+vendor/mlx-rocm-upstream/mlx/backend/rocm/r4d_gdn_wmma.h
 vendor/mlx-rocm-upstream/mlx/backend/rocm/random.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/reduce.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/rms_norm.hip
@@ -669,7 +676,9 @@ vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/fp_quantize.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qdequant.hpp
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmm.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_kernel.hip
+vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_lx_kernel.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_tiled_kernel.hip
+vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_wide_mr_kernel.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/quantized.cpp
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/quantized.h
 vendor/mlx-rocm-upstream/mlx/backend/rocm/reduce/all_reduce.hip
