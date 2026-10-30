@@ -36,7 +36,7 @@ pointers name the branch/report.
 
 ## Not supported
 
-- **27B+ / 122B-hybrid / MoE** — Phase 2. A 27B load was in flight on the
+- **27B+ / 9B-hybrid / MoE** — Phase 2. A 27B load was in flight on the
   guest (an earlier run/an earlier run) but not validated.
 - **MTP spec decode** — blocked on the M3 stream-TLS fix (`There is no
   Stream(cpu, N)` in `mlx/backend/cpu/encoder.cpp`); Phase 2 at the earliest.

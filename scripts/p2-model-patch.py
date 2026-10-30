@@ -11,8 +11,8 @@ Adds:
     The F branch mirrors the chain's cache/state handling and out_proj
     exactly, so the two paths differ only in the GDN op itself.
 
-Idempotent (skips if the marker is present). Anchors are the t827
-tail-fusion qwen3_5.py from the t1012 wheel.
+Idempotent (skips if the marker is present). Anchors are the run-827
+tail-fusion qwen3_5.py from the run-1012 wheel.
 """
 
 import sys

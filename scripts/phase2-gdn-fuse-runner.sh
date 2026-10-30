@@ -17,7 +17,7 @@ BASE=$MODELS/tmp/phase2-fuse
 VENV_F=${BASE}/venv-fused
 # Both arms use the SAME build (venv-fused, which has both the chain and the
 # fused op) so the only difference is MLX_ROCM_GDN_FUSE. The earlier
-# venv-m8 (baseline t1012 wheel) vs venv-fused comparison mismatched at the
+# venv-m8 (baseline run-1012 wheel) vs venv-fused comparison mismatched at the
 # final step because the two .so BUILDS differ in codegen for the chain path
 # (accumulating by step 256); within one build chain == fused is bit-identical.
 VENV_UF=${VENV_F}

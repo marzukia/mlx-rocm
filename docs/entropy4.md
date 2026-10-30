@@ -15,7 +15,7 @@ registers. The gap is <3% of the total win; the decoder ALU is what this lever
 bets on. Per-tensor **shared** codebook: a per-group (64-code) codebook costs
 8+ bytes / 64 codes = 1 bit/code of table overhead and cancels the win.
 
-## Measured entropy (t1023 per-tensor histograms)
+## Measured entropy (run-1023 per-tensor histograms)
 
 - per-tensor shared E[L] = **3.713 bits/code** (range 3.62–3.75)
 - global codebook: 3.737; raw: 4.0
@@ -71,7 +71,7 @@ comp_bytes}]}` (tensor_info is diagnostics; the loader only needs `tensors`).
 - **Stream-end padding**: consumers (the C verifier, the GPU payload, the
   standalone kernel gate) zero-pad the per-tensor stream by 3 extra bytes —
   the 15-bit window decoder reads a 4-byte window and the last code's window
-  can extend up to 3 bytes past the content end (t1044 8ec0580).
+  can extend up to 3 bytes past the content end (run-1044 8ec0580).
 
 ### Why a u32 row-start table
 
@@ -79,7 +79,7 @@ Per-row u16 lengths overflow (a down_proj row is 12288 codes × ~3.7 bits ≈
 45k bits > 65535). A u32 cumulative table is 4 B/row = 7.7 MB for the whole
 model (≈0.007 bits/code — negligible) and gives O(1) direct row addressing.
 
-## Byte budget (per token, t1023 accounting)
+## Byte budget (per token, run-1023 accounting)
 
 | item | current | compressed |
 |------|---------|-----------|

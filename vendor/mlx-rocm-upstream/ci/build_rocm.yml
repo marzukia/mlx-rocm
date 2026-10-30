@@ -2,7 +2,7 @@ name: Build ROCm and Test
 
 on:
   push:
-    branches: [ the vendor ref ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:

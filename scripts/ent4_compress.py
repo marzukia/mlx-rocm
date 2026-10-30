@@ -105,7 +105,7 @@ def _bits_to_bytes(bits):
 
 
 def _rss_mb():
-    """Process RSS in MB (diagnostics; ported from t1044 764fc08)."""
+    """Process RSS in MB (diagnostics; ported from run-1044 764fc08)."""
     try:
         with open(f"/proc/{os.getpid()}/status") as psf:
             for line in psf:
@@ -200,7 +200,7 @@ def _main(args):
                     total = int(rb.sum())
                     # int32: max chunk cumsum = 4096 rows * 12288 codes * 15 bits
                     # = 7.5e8 < 2^31 (the global cum below stays int64).
-                    # Ported from t1044 4f4a9e1 (peak per-chunk 8 GB -> 2 GB).
+                    # Ported from run-1044 4f4a9e1 (peak per-chunk 8 GB -> 2 GB).
                     lc = cvec[cc.ravel()].astype(np.int32)
                     off = np.cumsum(lc) - lc
                     bits = np.zeros(total, dtype=np.uint8)

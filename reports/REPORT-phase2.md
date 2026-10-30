@@ -1,4 +1,4 @@
-# Phase 2 lever 3 — fused GDN decode-step kernel (continuation of t1026)
+# Phase 2 lever 3 — fused GDN decode-step kernel (continuation of run-1026)
 
 Date: 2026-10-30 (guest UTC). Worker: kernel-perf (an earlier run). Machine:
 the build VM, RX 9070 XT / gfx1201, ROCm 10.1 guest userland. Model:
@@ -77,7 +77,7 @@ Two cross-process observations that shaped the gate design:
   chain-vs-fused state-diff at the final step (256) reports
   `max_abs = max_rel = 0.000000` across all 24 layers. The earlier
   cross-process state mismatch (15–18 layers at step 256) was a **build
-  artifact** — comparing the `venv-m8` baseline (t1012 wheel) against the
+  artifact** — comparing the `venv-m8` baseline (run-1012 wheel) against the
   rebuilt `venv-fused` (75ca881 + patch); the *chain path itself* differs
   slightly between the two .so builds (codegen) and that drift accumulates by
   step 256. It is not a fused-kernel difference. The correct lossless gate
@@ -132,10 +132,6 @@ ruff format (71 files) + ruff check clean; hermetic `pytest -m "not gpu"`
 21 passed + 1 skipped; size gate OK (2 ratcheted). Leak rule clean: the
 branch diff against fa9fa30 plus every new file was grepped (tree content;
 git author fields exempt — the mandated fleet identity) with:
-`grep -RniE 'marzuki|100\.64\.[0-9]{1,3}\.[0-9]{1,3}|andryo|neonvm@|192\.168\.122\.[0-9]{1,3}|/mnt/models|\.junkyard\.sh|@ag\.mrzk\.io'`
-(the operator-handle hostnames, the 100.64/10 tailnet IPs, the andryo
-identity incl. its @-form and home dir, the neonvm@ mailbox prefix, the
-192.168.122.x libvirt-bridge IPs, the guest models root, the *.junkyard.sh
-scripts, and the ag.mrzk.io host domain) — 0 hits (the only grep matches in
-the tree are the pattern names quoted in this very list; every other
-new/changed file is clean).
+a full fleet-identifier sweep (hostnames, tailnet IPs, guest LAN, operator
+identity incl. its @-form and home dir, guest user prefix, guest models
+root, personal domains) — 0 hits on every new/changed file.

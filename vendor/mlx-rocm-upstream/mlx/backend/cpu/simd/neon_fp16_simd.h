@@ -52,20 +52,20 @@ struct Simd<float16_t, N> {
   float16x8_t value;
 };
 
-#define DEFINE_GUESTA_UNARY_OP(name, op)                   \
+#define DEFINE_NEON_UNARY_OP(name, op)                   \
   inline Simd<float16_t, N> name(Simd<float16_t, N> a) { \
     return Simd<float16_t, N>{op(a.value)};              \
   }
 
-DEFINE_GUESTA_UNARY_OP(abs, vabsq_f16)
-DEFINE_GUESTA_UNARY_OP(ceil, vrndpq_f16)
-DEFINE_GUESTA_UNARY_OP(floor, vrndmq_f16)
-DEFINE_GUESTA_UNARY_OP(sqrt, vsqrtq_f16)
-DEFINE_GUESTA_UNARY_OP(rsqrt, vrsqrteq_f16)
-DEFINE_GUESTA_UNARY_OP(recip, vrecpeq_f16)
-DEFINE_GUESTA_UNARY_OP(rint, vrndnq_f16)
+DEFINE_NEON_UNARY_OP(abs, vabsq_f16)
+DEFINE_NEON_UNARY_OP(ceil, vrndpq_f16)
+DEFINE_NEON_UNARY_OP(floor, vrndmq_f16)
+DEFINE_NEON_UNARY_OP(sqrt, vsqrtq_f16)
+DEFINE_NEON_UNARY_OP(rsqrt, vrsqrteq_f16)
+DEFINE_NEON_UNARY_OP(recip, vrecpeq_f16)
+DEFINE_NEON_UNARY_OP(rint, vrndnq_f16)
 
-#define DEFINE_GUESTA_BINARY_OP(name, op)                                        \
+#define DEFINE_NEON_BINARY_OP(name, op)                                        \
   inline Simd<float16_t, N> name(Simd<float16_t, N> a, Simd<float16_t, N> b) { \
     return op(a.value, b.value);                                               \
   }                                                                            \
@@ -87,14 +87,14 @@ inline Simd<float16_t, N> operator-(Simd<float16_t, N> v) {
   return vnegq_f16(v.value);
 }
 
-DEFINE_GUESTA_BINARY_OP(maximum, vmaxq_f16)
-DEFINE_GUESTA_BINARY_OP(minimum, vminq_f16)
-DEFINE_GUESTA_BINARY_OP(operator+, vaddq_f16)
-DEFINE_GUESTA_BINARY_OP(operator-, vsubq_f16)
-DEFINE_GUESTA_BINARY_OP(operator*, vmulq_f16)
-DEFINE_GUESTA_BINARY_OP(operator/, vdivq_f16)
+DEFINE_NEON_BINARY_OP(maximum, vmaxq_f16)
+DEFINE_NEON_BINARY_OP(minimum, vminq_f16)
+DEFINE_NEON_BINARY_OP(operator+, vaddq_f16)
+DEFINE_NEON_BINARY_OP(operator-, vsubq_f16)
+DEFINE_NEON_BINARY_OP(operator*, vmulq_f16)
+DEFINE_NEON_BINARY_OP(operator/, vdivq_f16)
 
-#define DEFINE_GUESTA_COMPARISON(Op, op)                   \
+#define DEFINE_NEON_COMPARISON(Op, op)                   \
   template <typename T>                                  \
   Simd<bool, N> operator Op(Simd<float16_t, N> a, T b) { \
     auto out = op(a.value, Simd<float16_t, N>(b).value); \
@@ -111,11 +111,11 @@ DEFINE_GUESTA_BINARY_OP(operator/, vdivq_f16)
     return Simd<uint16_t, N>(*(uint16_t*)(&out));        \
   }
 
-DEFINE_GUESTA_COMPARISON(==, vceqq_f16)
-DEFINE_GUESTA_COMPARISON(>=, vcgeq_f16)
-DEFINE_GUESTA_COMPARISON(<=, vcleq_f16)
-DEFINE_GUESTA_COMPARISON(>, vcgtq_f16)
-DEFINE_GUESTA_COMPARISON(<, vcltq_f16)
+DEFINE_NEON_COMPARISON(==, vceqq_f16)
+DEFINE_NEON_COMPARISON(>=, vcgeq_f16)
+DEFINE_NEON_COMPARISON(<=, vcleq_f16)
+DEFINE_NEON_COMPARISON(>, vcgtq_f16)
+DEFINE_NEON_COMPARISON(<, vcltq_f16)
 
 template <typename T>
 Simd<bool, N> operator!=(Simd<float16_t, N> a, T b) {

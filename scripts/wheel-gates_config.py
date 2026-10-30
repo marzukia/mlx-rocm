@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""an earlier run rule-6 config print+assert: env, wheel sha, (kernel names asserted by the runner from a short rocprof pass).
+"""rule-6 config print+assert: env, wheel sha; kernel names asserted by the runner from a short rocprof pass.
 
 Prints the effective config of the gate run and asserts it matches the expected
 from-ref build. Exits non-zero on any assertion failure (a gate run on the wrong

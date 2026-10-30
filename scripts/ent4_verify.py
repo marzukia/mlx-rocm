@@ -92,7 +92,7 @@ def main():
             rowstart = np.frombuffer(f.read(4 * n), dtype=np.uint32).copy()
             # +3 zero bytes: the 15-bit window decoder reads a 4-byte window and
             # the last code's window can extend up to 3 bytes past the stream
-            # content end (ported from t1044 8ec0580).
+            # content end (ported from run-1044 8ec0580).
             stream = np.frombuffer(f.read(comp_bytes) + b"\x00" * 3, dtype=np.uint8)
             out = np.zeros(n * k, dtype=np.uint8)
             ep = ctypes.c_uint64(0)

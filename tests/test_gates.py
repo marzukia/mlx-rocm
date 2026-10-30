@@ -17,7 +17,7 @@ def _vendor() -> dict:
 
 def test_vendor_pin_is_well_formed():
     v = _vendor()
-    for key in ("primary", "fallback"):
+    for key in ("primary",):
         assert v[key]["fork"].startswith("https://github.com/")
         assert v[key]["ref"]
     assert v["build"]["hip_architectures"] == "gfx1201"

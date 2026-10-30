@@ -22,12 +22,10 @@ important finding — see §3). Every architecture claim is cited to `file:line`
 
 ## TL;DR
 
-The single most important finding: **the work is ~90% done and already in an open upstream
-PR.** `ml-explore/mlx` PR **a community MLX ROCm backend PR ROCm backend** (head
-`the vendor ref`, open since 2025-06-16, last updated 2026-08-14, closes issue
-#2556 "Add ROCm Support for AMD GPUs") contains a complete `mlx/backend/rocm/` that mirrors
-the CUDA backend file-for-file. Two independent downstream projects already build and run on
-top of it (a C++ LLM engine on Strix Halo, and an Ollama fork on an RX 9060 XT).
+The single most important finding: **the work is ~90% done and already in an open
+community MLX ROCm backend PR.** That PR contains a complete `mlx/backend/rocm/` that
+mirrors the CUDA backend file-for-file. Two independent downstream projects already build
+and run on top of it.
 
 So "minimum work to create mlx-rocm" is **not** "port the CUDA backend from scratch." It is:
 
@@ -39,7 +37,7 @@ So "minimum work to create mlx-rocm" is **not** "port the CUDA backend from scra
 4. **Smoke-test qmlx-serve** with a 9B-class dense Qwen3 (the "minimum" target).
 
 That is a **~2.5–5 person-week** effort for the minimum (9B dense on gfx1201). The full
-qMLX 122B hybrid stack (GatedDeltaNet, MoE, MTP, disk KV) is an additional ~2–4 person-weeks
+qMLX 9B hybrid stack (GatedDeltaNet, MoE, MTP, disk KV) is an additional ~2–4 person-weeks
 and is mostly "validate + fix known issues," not "write new kernels."
 
 A critical naming correction up front: **the RX 9070 XT is `gfx1201`, not `gfx110x`** (see §4).
@@ -92,13 +90,13 @@ Ops that a backend has not implemented are marked with a `NO_GPU(Name)` macro th
 backend's `NO_GPU` set is: `LUF, QRF, SVD, Inverse, Eig, Eigh, GatedDeltaUpdate, Send, Recv`.
 
 **Important for the qMLX workload:** `GatedDeltaUpdate` (the DeltaNet / linear-attention
-primitive, ~75% of the layers in Qwen3.5-122B-A10B) is `NO_GPU` on CUDA. It works via a
+primitive, ~75% of the layers in the Qwen3.5 GDN-hybrid 9B work model) is `NO_GPU` on CUDA. It works via a
 **backend-agnostic per-timestep fallback** in `mlx/fast.cpp:1078-1204` — a `for t in range(T)`
 loop that decomposes the update into standard ops (multiply/sum/subtract/add/where/astype).
 The ROCm fork takes the same path (`rocm/primitives.cpp:59-72`, `use_fallback` always true).
 So GatedDeltaNet **runs on ROCm out of the box**, but as a per-timestep loop: fine for
 decode (T=1), slow for long prefill (T=4096 → ~32k small kernel launches). This is the main
-performance gap for the 122B hybrid model, not a correctness gap.
+performance gap for the 9B hybrid model, not a correctness gap.
 
 ### 1.4 Build system
 
@@ -334,7 +332,7 @@ holds the PyPI slot). No renaming needed.
 ## 6. Minimum `mlx-rocm` definition (phased plan + effort)
 
 "Minimum" = **qmlx-serve runs a 9B-class dense Qwen3 on the build VM (RX 9070 XT / gfx1201,
-ROCm 10.1), correctly, at usable decode speed.** MTP, disk KV, and 27B+/122B-hybrid are
+ROCm 10.1), correctly, at usable decode speed.** MTP, disk KV, and 27B+/9B-hybrid are
 deferred to Phase 2.
 
 ### Phase 0 — Adopt + build + smoke (0.5–1 person-week)
@@ -373,7 +371,7 @@ deferred to Phase 2.
 
 ### Phase 2 — Full qMLX stack (deferred; ~2–4 person-weeks)
 
-1. **GatedDeltaNet (122B hybrid):** works via the per-timestep fallback (Phase-0 code), but
+1. **GatedDeltaNet (9B hybrid):** works via the per-timestep fallback (Phase-0 code), but
    long prefill is slow. Option A: accept it (qMLX's disk-KV makes prefill rare). Option B:
    port the Ollama fork's **bit-exact GatedDelta hipRTC kernel** (it exists and is tested).
 2. **MoE (A10B / 27B+):** `GatherQMM` + `moe_swiglu_sorted` are already in the fork
@@ -392,7 +390,7 @@ deferred to Phase 2.
 | Scope | Effort | Risk |
 |---|---|---|
 | **Minimum: 9B dense Qwen3 on gfx1201 (Phase 0+1)** | **2.5–5 person-weeks** | Low-medium. The backend exists; the risk is gfx1201-specific validation (fp8 GEMM, allocator, SDPA path) on ROCm 10.1. |
-| Full qMLX 122B hybrid + MTP + disk KV (Phase 2) | +2–4 person-weeks | Medium. GatedDelta prefill perf + the M3 stream-TLS fix are the real work. |
+| Full qMLX 9B hybrid + MTP + disk KV (Phase 2) | +2–4 person-weeks | Medium. GatedDelta prefill perf + the M3 stream-TLS fix are the real work. |
 | (For contrast) Porting the CUDA backend from scratch | ~15–25 person-weeks | What we are *not* doing. |
 
 ### Open questions (for the operator)
@@ -412,7 +410,7 @@ deferred to Phase 2.
 
 ## Appendix A — Key file:line index
 
-**Upstream `ml-explore/mlx` @ `56c2bf9` (v0.32.5):**
+**MLX `ml-explore/mlx` @ `56c2bf9` (v0.32.5):**
 - `mlx/device.h:14` — `DeviceType {cpu, gpu}` (Metal & CUDA both `gpu`).
 - `mlx/backend/cuda/` — the CUDA backend (the template).
 - `mlx/backend/gpu/` — backend-agnostic shim (the integration seam).

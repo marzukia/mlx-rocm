@@ -141,7 +141,7 @@ template<> struct VLEN<double> { static constexpr size_t val=2; };
 #elif (defined(__VSX__))
 template<> struct VLEN<float> { static constexpr size_t val=4; };
 template<> struct VLEN<double> { static constexpr size_t val=2; };
-#elif (defined(__ARM_GUESTA__) || defined(__ARM_GUESTA))
+#elif (defined(__ARM_NEON__) || defined(__ARM_NEON))
 template<> struct VLEN<float> { static constexpr size_t val=4; };
 template<> struct VLEN<double> { static constexpr size_t val=2; };
 #else

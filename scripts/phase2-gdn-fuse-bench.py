@@ -2,7 +2,7 @@
 """Phase 2 GDN-fuse harness: A/B bench + lossless gate data capture.
 
 One process per measured path (runner spawns fresh processes). Mirrors the
-t1012-29k.py protocol exactly (WARM pass discarded, MEASURE pass, decode
+run-1012-29k.py protocol exactly (WARM pass discarded, MEASURE pass, decode
 tok/s ALL steps + steady-state window with first N=56 steps excluded, median
 step time), plus:
   * stream mode: ALLTOKS token-id stream for byte-identity diff
@@ -72,7 +72,7 @@ STATE_OUT = os.environ.get("P2_STATE_OUT", "")
 STREAM_OUT = os.environ.get("P2_STREAM_OUT", "")
 _state_steps_env = os.environ.get("P2_STATE_STEPS", "")
 
-# Fixed corpus (deterministic, single source) -- same text as t1012-29k.py.
+# Fixed corpus (deterministic, single source) -- same text as run-1012-29k.py.
 CORPUS = (
     "A modern smartphone is a small general-purpose computer. Its main processor "
     "and graphics run on a system-on-chip, with the CPU cores, GPU, and neural "

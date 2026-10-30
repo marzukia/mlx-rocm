@@ -78,7 +78,7 @@ graphs** → every decode step is eager: ~1,070 dispatches + ~20 buffer commits/
 
 ---
 
-## 2. Upstream deltas (our tree vs `the vendor ref`)
+## 2. Base deltas (our tree vs `the vendor ref`)
 
 `vendor.json` pin = the pinned base sha = current `the vendor ref` HEAD (verified byte-identical
 clone). **GatedDeltaNet, mxfp8 prefill GEMM, and the gfx1200 fixes are already in

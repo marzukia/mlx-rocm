@@ -1,6 +1,6 @@
 # Lever 1 — lossless compressed 4-bit weight stream + in-CU decode (ent4)
 
-Re-dispatch of t1039 (ended empty). Goal: shrink the 4-bit weight stream on the
+Re-dispatch of run-1039 (ended empty). Goal: shrink the 4-bit weight stream on the
 qmv path and reconstruct it bit-exactly on the GPU, so dequant is unchanged and
 the lever is lossless by construction.
 

@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: mlx-rocm
-Version: 0.1.1
+Version: 0.1.2
 Summary: ROCm backend for MLX (pre-alpha): vendored mlx ROCm backend tree + hipBLASLt GEMM + QMV decode kernels, validated on AMD RDNA4 (gfx1201)
 Author-email: Submitter <submitter@example.org>
 Keywords: mlx,rocm,hip,amd,rdna4,gfx1201
@@ -19,13 +19,13 @@ ROCm backend for [MLX](https://github.com/ml-explore/mlx) — **pre-alpha**
 (first public release 0.1.0).
 
 Purpose: a ROCm backend for MLX on AMD RDNA4 — validated on the RX 9070 XT
-(**gfx1201** — *not* gfx110x) — targeting the 122B hybrid at high decode
+(**gfx1201** — *not* gfx110x) — targeting the 9B hybrid at high decode
 speed. MTP spec decode and KV management are part of the MLX core path;
 serving is out of scope for this repo.
 
 Stage: **pre-alpha**. 0.1.0 is a public milestone of the current tree, not a
 stability promise — expect breaking changes. The **alpha cut is planned once
-decode reaches close to the card's ceiling** (122B-hybrid target: ~120 tok/s,
+decode reaches close to the card's ceiling** (9B-hybrid target: ~120 tok/s,
 byte-identical vs autoregressive).
 
 Verified toolchain: ROCm 10.1 userland on the validated guest (core at
@@ -36,13 +36,10 @@ target — neither is the verified version).
 
 Three pieces:
 
-1. **`vendor/mlx-rocm-upstream/`** — the vendored ROCm backend tree. The
-   work is ~complete in the vendored base: `ml-explore/mlx` a community MLX ROCm backend PR (head
-   `the vendor ref`) carries a complete `mlx/backend/rocm/`
-   mirroring the CUDA backend file-for-file; we vendor the newer
-   forward-merge `the vendor ref` @ `the pinned base sha` (adds
-   GatedDeltaUpdate fallback, mxfp8 prefill GEMM, gfx1200/RDNA4 fixes).
-   Provenance: `vendor/mlx-rocm-upstream/README.md`.
+1. **`vendor/mlx-rocm-upstream/`** — the vendored ROCm backend tree: a
+   complete `mlx/backend/rocm/` mirroring the CUDA backend file-for-file
+   (GatedDeltaUpdate fallback, mxfp8 prefill GEMM, gfx1200/RDNA4 fixes).
+   MIT licensed (`LICENSE.upstream`).
 2. **`src/cpp/mlx_rocm/gemm/`** — a minimal standalone hipBLASLt GEMM
    (bf16 + fp8 e4m3, persistent handle + workspace, heuristic algo,
    row-major layouts) plus a dependency-free CPU reference GEMM.
@@ -61,10 +58,9 @@ Three pieces:
 - **fp8 GEMM status on this box**: the smoke's
   `mlx_rocm_gemm_fp8_probe()` (256³ e4m3 GEMM vs. host reference)
   **passes** on the build VM gfx1201 (max_rel_err 0.0057, 0/65536 bad) — the
-  probe shows no driver bug. Upstream notes fp8 e4m3 activation GEMM
+  probe shows no driver bug. The ROCm base notes fp8 e4m3 activation GEMM
   "may be kernel-buggy on some RDNA4 drivers — long-context prefill on
-  gfx1201 garbles" (an earlier research pass evidence, a different workload than this
-  probe). Keep `MLX_ROCM_GEMM_BF16=1` as the safe default until real
+  gfx1201 garbles" (seen on a different workload). Keep `MLX_ROCM_GEMM_BF16=1` as the safe default until real
   prefill validation proves the driver clean for that workload. The
   probe is part of the smoke run.
 - Discrete-GPU allocator hazards the fork engineered around (BAR read
@@ -112,7 +108,7 @@ check, tar transfer, ROCm build, GPU GEMM + fp8 probe. Results land in
 | Qwen3-0.6B | 8-bit (affine) | validated — benched 207.6–214.3 tok/s (`k2-non-gemm-fusion`) |
 | Qwen3-0.6B | bf16 | Phase 0 smoke target (`scripts/smoke.py` ladder) |
 | 9B-class dense Qwen3 | 4-bit (affine qmm) | validated — benched 55.9–57.8 tok/s A/B (`k2-non-gemm-fusion`), 63.8 tok/s with a 16-token warmup (`opt-gauntlet-areaA`) |
-| 122B hybrid (GDN + FA) | 4-bit (affine) | supported — the main workload; ~73 tok/s AR small-ctx on main, levers in flight toward ~120 |
+| 9B hybrid (GDN + FA) | 4-bit (affine) | supported — the main workload; ~73 tok/s AR small-ctx on main, levers in flight toward ~120 |
 | 27B dense / MoE | — | not validated (a 27B load was in flight on the guest, unvalidated) |
 | MTP spec decode | 4-bit | K=2 supported, lossless (merged); slower than AR today — the active speed target |
 | non-gfx1201 archs | — | not validated (only gfx1201 is validated in this repo) |
@@ -156,7 +152,7 @@ bindings to `libmlx_rocm.so` (host GEMM always; GPU GEMM + fp8 probe in ROCm
 builds) with a pure-numpy bf16 fallback. The published 0.1.0 wheel is this
 package; the full `mlx` wheel (the vendored tree with the ROCm backend,
 `scripts/build-wheel.sh`) is built and validated per workload — the 9B-class
-and 122B-hybrid serve paths are validated on the guest.
+and 9B-hybrid serve paths are validated on the guest.
 
 ## License
 

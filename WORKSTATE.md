@@ -1,26 +1,26 @@
-# WORKSTATE — t1045 (ent4 final: port t1044 fixes + per-tensor E<3.9 gating)
+# WORKSTATE — run-1045 (ent4 final: port run-1044 fixes + per-tensor E<3.9 gating)
 
-Branch `phase3-entropy-compress`, base 7f9d1bd (t1042 final). Succeeds t1042
-(compressor + lossless gates + A/B, REPORT-entropy.md) and t1044 (3 compressor
+Branch `phase3-entropy-compress`, base 7f9d1bd (run-1042 final). Succeeds run-1042
+(compressor + lossless gates + A/B, REPORT-entropy.md) and run-1044 (3 compressor
 fixes on its own v1-format script; net-zero finding — see below).
 
 ## Timeline
-- 04:00Z: worktree up; t1044's 3 commits (764fc08 timing/RSS/traceback, 4f4a9e1
-  int32 cumsum, 8ec0580 stream-end OOB) confirmed; manual port required (t1044
+- 04:00Z: worktree up; run-1044's 3 commits (764fc08 timing/RSS/traceback, 4f4a9e1
+  int32 cumsum, 8ec0580 stream-end OOB) confirmed; manual port required (run-1044
   targets a different v1 format).
-- 04:40Z: E discrepancy resolved — t1044's 3.9707 "dataset" was measured on
+- 04:40Z: E discrepancy resolved — run-1044's 3.9707 "dataset" was measured on
   /models/qwen3-9b-mlx-clean/model.safetensors (reproduced its per-tensor
-  values bit-for-bit by running its exact script on that file). t1042's 3.713
+  values bit-for-bit by running its exact script on that file). run-1042's 3.713
   was measured on the final served model /models/qwen3-9b-mlx (independent
   re-measurement: aggregate E_huff 3.7368; per-class el 3.747 / attn 3.728 /
   mlp 3.736; per-tensor max 3.754; 16 distinct symbols everywhere).
 - 05:40Z: step 2 done — per-tensor E<3.9 gating (default --gate 3.9; --gate 0 =
   compress-all legacy). Gated .ent4 on the final 9B model (the build VM):
   250/250 tensors compressed (per-tensor E ≤ 3.754, all < 3.9; file size
-  4,192,642,800 B = t1042's 4,192,642,550 B + 250 flag bytes, streams
+  4,192,642,800 B = run-1042's 4,192,642,550 B + 250 flag bytes, streams
   otherwise identical) — the gate is a no-op on this dataset. Per-class
   re-measure (compressor's own path): el 3.7472 / attn 3.7331 / mlp 3.7392
-  bits/sym; TOTAL raw 4.4764 GB → comp 4.1849 GB (x1.0696, = t1042).
+  bits/sym; TOTAL raw 4.4764 GB → comp 4.1849 GB (x1.0696, = run-1042).
 - 06:20Z: step 3 done — lossless gates on the build VM: rebuilt wheel (mlx-m8r2
   tree: updated ent4.h/ent4_json.h + load.cpp +3 alloc/memcpy, pip wheel OK),
   CPU verifier 250/250 bad=0 on the gated .ent4 (flag byte + +3 pad), GPU
@@ -40,7 +40,7 @@ fixes on its own v1-format script; net-zero finding — see below).
 - The two "datasets" never disagreed about the code: they are two different
   model builds — see timeline 04:40Z. Decision C's E<3.9 gate is a no-op on
   the final model (all 250 tensors E ≤ 3.754, all compressed; the 6.5 %
-  memory saving from t1042 stands) but is the safety mechanism for models
+  memory saving from run-1042 stands) but is the safety mechanism for models
   where a class runs above 3.9 (e.g. the -clean build's attn 4.21 / mlp 4.08
   would go plain).
 

@@ -2,7 +2,7 @@
 
 Living plan. Full research report: [docs/plan.md](docs/plan.md) (an earlier research pass, 2026-10-25).
 
-## Phase 3 — Lever 1: lossless compressed 4bit weight stream + in-CU decoder (t1039 re-dispatch, 2026-10-31)
+## Phase 3 — Lever 1: lossless compressed 4bit weight stream + in-CU decoder (run-1039 re-dispatch, 2026-10-31)
 
 Goal: byte-identical greedy ALLTOKS vs uncompressed AR at ctx=14 and ctx=29K; A/B bench for GB/token + tok/s. Baseline anchor: 5.95 GB/token, 100.0 tok/s @93% (595.2 GB/s of 640).
 
@@ -10,11 +10,11 @@ Goal: byte-identical greedy ALLTOKS vs uncompressed AR at ctx=14 and ctx=29K; A/
 
 - **Unit:** per-tensor. One **shared canonical Huffman codebook** over the 16 4bit code values (signed int4), table = 16 lengths x 4 bits = 8 bytes + 4-byte checksum, stored once per tensor (negligible: 250 tensors).
 - **Huffman vs ANS — Huffman. Justification:** with a 16-symbol alphabet ANS buys <=0.1 bits/code (3.74 vs 3.71) at the cost of per-symbol state + renormalization that serializes in-CU decoding; canonical Huffman decodes in one prefix pass with a 16-entry table in registers — the 0.1 bit gap is <3% of the total win and the decoder ALU is what this lever bets on.
-- **Measured E[L] (t1023 per-tensor histograms):** per-tensor shared = 3.713 bits/code (range 3.62–3.75); global = 3.737; raw = 4.0. A per-group (64-code) codebook would need 8+ bytes of table per 64 codes = 1 bit/code overhead — it cancels the win, hence shared-per-tensor.
+- **Measured E[L] (run-1023 per-tensor histograms):** per-tensor shared = 3.713 bits/code (range 3.62–3.75); global = 3.737; raw = 4.0. A per-group (64-code) codebook would need 8+ bytes of table per 64 codes = 1 bit/code overhead — it cancels the win, hence shared-per-tensor.
 - **Group size:** 64 (== quantization group; one decoded group == one qmv K-tile FMA chunk). Groups are NOT byte-aligned in the stream (no 15-bit/chunk padding). Row starts = per-row **u32 cumulative row-start table** (absolute stream bit offset per row; 4B/row, 7.7MB model total — a block reads one u32, no prefix sum; max value 4.7e9 bits < 2^32). Overhead ≈ 0.007 bits/code — negligible. (Model facts: all 4bit tensors K=4096 except down_proj K=12288; U32 [N, K/8] packed layout; 250 tensors.)
 - **Losslessness by construction:** decode reconstructs the exact 4bit code values; the existing dequant (scale/bias from the safetensors side data, untouched) runs on the decoded tile → bit-identical results. Greedy ALLTOKS gate at ctx=14 and ctx=29K vs uncompressed AR (fresh process per path, discarded warm pass, steady window skip=56).
 
-### Per-token byte budget (t1023 accounting, re-anchored at E=3.713)
+### Per-token byte budget (run-1023 accounting, re-anchored at E=3.713)
 
 | item | current (GB/token) | compressed (GB/token) |
 |------|-------------------|-----------------------|
@@ -24,7 +24,7 @@ Goal: byte-identical greedy ALLTOKS vs uncompressed AR at ctx=14 and ctx=29K; A/
 | row-length table | 0 | 0.008 |
 | **total** | **5.95** | **5.63** |
 
-Projection @93% (595.2 GB/s): 5.95 → 100.0; 5.63 → **105.8 tok/s** (full stream). qmv-path only (codes+scale/bias = 4.72 vs 5.04 GB): 118.2 → **126.2 tok/s**. (t1023 anchored at raw H=3.706 → 108.0; per-tensor E[L]=3.713 lands at 105.8.)
+Projection @93% (595.2 GB/s): 5.95 → 100.0; 5.63 → **105.8 tok/s** (full stream). qmv-path only (codes+scale/bias = 4.72 vs 5.04 GB): 118.2 → **126.2 tok/s**. (run-1023 anchored at raw H=3.706 → 108.0; per-tensor E[L]=3.713 lands at 105.8.)
 
 ### Kernel design
 - qmv wide path (per WORKSTATE: row=blockIdx.y, grid=(N/8, M)): each (m, n) block owns one compressed weight row (≤5.7KB at K=12288). Block start: read its row's start bit offset from the L2-resident table; load the row's compressed bytes into LDS; cooperative sequential decode (warp lanes split each 64-code group 2-codes/lane, shfl-passed bit positions, 16-entry canonical codebook in registers) → decoded 4bit codes in LDS (≤6KB at K=12288; both fit the 64KB LDS budget); the EXISTING FMA loop then reads the decoded uint4 tile from LDS instead of global — identical FMA order, identical code values → lossless.
@@ -41,7 +41,7 @@ Projection @93% (595.2 GB/s): 5.95 → 100.0; 5.63 → **105.8 tok/s** (full str
 ## Definition of minimum
 
 qmlx-serve runs a 9B-class dense Qwen3 on the build VM (RX 9070 XT / gfx1201, ROCm 10.1),
-correctly, at usable decode speed. MTP, disk KV, 27B+/122B-hybrid = Phase 2.
+correctly, at usable decode speed. MTP, disk KV, 27B+/9B-hybrid = Phase 2.
 
 **ROCm version (single source of truth, 2026-10-26):** the verified guest toolchain on
 the build VM is **ROCm 10.1** (core at `/opt/rocm/core-10.1`,
@@ -51,11 +51,11 @@ docs/quickstart.md). Nothing else is verified: 6.4 was the early probe validatio
 
 ## Current state (2026-10-25)
 
-- Research done (an earlier research pass): the backend is ~90% done in upstream PR an open community MLX ROCm backend PR
-  (head the vendor ref); newer forward-merge the vendor ref.
+- Research done (an earlier research pass): the backend is ~90% done in an open community
+  MLX ROCm backend PR; the vendored tree is a forward-merge of that base.
   Effort: 2.5-5 person-weeks for the minimum (Phase 0+1).
-- the build VM is UP (RX 9070 XT; guest userland ROCm 10.1 — the only verified toolchain).
-  submitter is building the MVP on the the build VM guest VM (smoke unblocked, relayed to submitter).
+- The build VM is UP (RX 9070 XT; userland ROCm 10.1 — the only verified toolchain).
+  The MVP is being built on the build VM (smoke unblocked).
 - Repo bootstrapped: hermetic CI (lint/format/pytest/size gate), vendor pin, build +
   smoke scripts. GPU validation still to be done on the build VM.
 
@@ -82,7 +82,7 @@ docs/quickstart.md). Nothing else is verified: 6.4 was the early probe validatio
   (`scripts/smoke-serve.sh`)
 
 ### Phase 2 — Full qMLX stack (deferred; ~2-4 person-weeks)
-GatedDeltaNet (122B hybrid), MoE (A10B/27B+), MTP spec decode (blocked on the M3
+GatedDeltaNet (9B hybrid), MoE (A10B/27B+), MTP spec decode (blocked on the M3
 stream-TLS fix), disk KV cache validation. Details in docs/plan.md §Phase 2.
 
 ## Open questions (operator's call)

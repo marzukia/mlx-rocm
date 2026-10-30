@@ -99,7 +99,7 @@ inline bool load_ent4_file(
     }
     // +3 zero bytes: the 15-bit window decoder reads a 4-byte window and the
     // last code's window can extend up to 3 bytes past the content end
-    // (t1044 8ec0580).
+    // (run-1044 8ec0580).
     p->stream.resize(comp_bytes + 3);
     if (comp_bytes &&
         fread(p->stream.data(), 1, comp_bytes, f) != comp_bytes) {

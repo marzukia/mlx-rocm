@@ -254,7 +254,7 @@ def apply(root):
     # decode scratch. This is what makes the lever actually save in-memory HBM.
     # idempotent: zero-pad the uploaded stream by 3 bytes (the 15-bit window
     # decoder reads a 4-byte window; the last code's window can extend up to
-    # 3 bytes past the content end — t1044 8ec0580). No-op on fresh applies
+    # 3 bytes past the content end — run-1044 8ec0580). No-op on fresh applies
     # (the block above already carries the +3).
     edit(
         "backend/rocm/load.cpp",
