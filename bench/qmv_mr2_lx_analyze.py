@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""t889: gain gate (method doc section 2: gain >= 3% to count) — t852 LX
-hoist (LX=1) vs the t825 path (LX=0), per-combo kernel-time gain from
+"""an earlier run: gain gate (method doc section 2: gain >= 3% to count) — an earlier run LX
+hoist (LX=1) vs the an earlier run path (LX=0), per-combo kernel-time gain from
 the two A/B combo files (one per env, identical sequence, per-position
 pairing).
 
@@ -17,9 +17,9 @@ import json
 import sys
 
 with open(sys.argv[1]) as f:
-    a = json.load(f)  # LX=0 (t825 path)
+    a = json.load(f)  # LX=0 (an earlier run path)
 with open(sys.argv[2]) as f:
-    b = json.load(f)  # LX=1 (t852 hoist)
+    b = json.load(f)  # LX=1 (an earlier run hoist)
 assert len(a) == len(b) == 16, (len(a), len(b))
 
 print(

@@ -181,7 +181,7 @@ class GatedDeltaNet:
             state = state * g[:, t, :, None, None]
             kv_mem = np.sum(state * k[:, t, :, None, :], axis=-1)
             delta = (v[:, t] - kv_mem) * beta[:, t, :, None]
-            state = state + k[:, t, :, None, :] * delta[:, :, :, None]  # t605-fix: outer product (was elementwise: delta axis misplaced)
+            state = state + k[:, t, :, None, :] * delta[:, :, :, None]  # an earlier run-fix: outer product (was elementwise: delta axis misplaced)
             ys[:, t] = np.sum(state * q[:, t, :, None, :], axis=-1)
         xnorm = rms_norm(ys, W["gdn_norm"], EPS)
         out = silu(z) * xnorm

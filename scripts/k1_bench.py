@@ -13,7 +13,7 @@ Usage: k1_bench.py <baseline|k1-16|k1-32>
 The K1 gate env is static-initialized at first use, so the env is set
 before the first op (separate process per config).
 
-Expected accuracy (from monky's fix report): K1 stages x as int8
+Expected accuracy (from submitter's fix report): K1 stages x as int8
 (per-group scale) -> ~1% relative error vs the ~3e-6 baseline; the maxrel
 column below is a path-confirmation sanity signal, not a pass/fail gate.
 

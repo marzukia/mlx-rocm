@@ -1,9 +1,9 @@
 // r4d_gdn: the gated-delta-net chunked scan, gfx1201 WMMA. Entry point
 // r4d_gdn_chunk_scan_k128_v128_c64_bf16 -- head_k 128, head_v 128, chunk 64, bf16 in.
-// Ported from R4D (libr4d e8de4bc / vllm-radiance 1d2e248) for the MLX
+// Ported from R4D (libr4d e8de4bc / <opt-fork>/vllm-<opt> 1d2e248) for the MLX
 // GatedDeltaUpdate ROCm kernel; see reports/k3-gdn-port.md. Adaptations from
 // the R4D original: the varlen `cu` offsets become a fixed-length batch
-// [B, T], and the extreme-decay repair (r4d_radiance_extras.patch) is built
+// [B, T], and the extreme-decay repair (r4d_<opt>_extras.patch) is built
 // in and launched from the entry point.
 // Named for the algorithm rather than the serving phase: the chunked scan is what prefill and
 // chunked prefill both run, while decode runs the recurrent update, which is a different kernel.
@@ -913,7 +913,7 @@ extern "C" int r4d_gdn_gate_prep_c64_bf16(
 // S <- exp(g_step) S; d <- beta (v - S k); S <- S + d k^T; o <- scale S q.
 // Per-token negative decay is bounded. Ordinary heads retain the fast result.
 // This runs on the same stream, with no host readback or synchronization.
-// (Ported from r4d_radiance_extras.patch; `cu` replaced by [B, T].)
+// (Ported from r4d_<opt>_extras.patch; `cu` replaced by [B, T].)
 static __device__ __forceinline__ float r4d_gdn_reference_from_bf16(uint16_t value) {
   return __uint_as_float(static_cast<uint32_t>(value) << 16);
 }

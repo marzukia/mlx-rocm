@@ -1,8 +1,8 @@
-# t606: numpy RCA of F1 (MTP draft uncorrelated with target) — RESOLVED
+# an earlier run: numpy RCA of F1 (MTP draft uncorrelated with target) — RESOLVED
 
-Date: 2026-10-27 (guest UTC). Submitter: monky (worker t606, continuation of t605).
+Date: 2026-10-27 (guest UTC). Submitter: submitter (worker an earlier run, continuation of an earlier run).
 Scope: root-cause F1 (draft rank ~206k-248k of 248320, corr ~-0.02..-0.05) on the
-mlx-rocm Qwen3.5-9B port (marzuki-neon, gfx1201, ROCm 10.1), validate the numpy
+mlx-rocm Qwen3.5-9B port (the build VM, gfx1201, ROCm 10.1), validate the numpy
 reference, run the never-run E3/E4 ground truth, and settle the L0 GDN r-divergence.
 
 ## Verdict (one line)
@@ -21,12 +21,12 @@ written as elementwise product); the K3 GDN kernels are correct.
 | # | experiment | gate | result | status |
 |---|-----------|------|--------|--------|
 | E1 | numpy port validation (t1, t2, h1 cos vs mlx) | t1=271, t2=8160, h1 cos>0.99 | t1=271, t2=8160, h1 cos=0.9956 (after GDN fix; was t1=10992) | PASS |
-| E2 | mlx trunk reference | t1=271, t2=8160, top8 | t1=271, t2=8160 (established t605, unchanged) | PASS (ref) |
+| E2 | mlx trunk reference | t1=271, t2=8160, top8 | t1=271, t2=8160 (established an earlier run, unchanged) | PASS (ref) |
 | E3 | numpy MTP fed (h1_ref, e1_ref) -> rank of t2 | draft rank small, corr>0 | draft max=16.54, t2=8160 **rank=0**, corr(draft,target)=0.8014 | PASS |
 | E4 | MTP fed mlx (h1_mlx, e1_mlx) -> rank of t2 | draft rank small, corr>0 | draft max=17.42, t2=8160 **rank=0**, corr(draft,target)=0.7967 | PASS |
 | E5 | L0 GDN 3-way (K3 kernel vs numpy vs op-loop semantics) + f1step acceptance | kernel == sequential ref; draft D=t2 | K3 r=26.170 vs numpy(fixed) r=26.169 (ratio 1.0000, corr 0.99939); isolated GDN: ys ratio 0.9986 / corr 1.00000, state corr 1.00000, T=1 decode corr 1.00000; f1step: t1=271, t2=8160, **draft D=8160=t2, rank=0, max=17.47** | PASS |
 
-Decision tree from t605 (E3 good + E4 bad = mlx trunk corrupt; E3 bad = convention
+Decision tree from an earlier run (E3 good + E4 bad = mlx trunk corrupt; E3 bad = convention
 wrong; both good = mlx MTP path suspect): **E3 and E4 both pass, and f1step (the
 real mlx MTP path on the fixed file) gives rank 0** — the mlx trunk hidden state
 is good, the MTP math is good, and the mlx MTP module path is good. F1 is fully
@@ -36,18 +36,18 @@ explained by the file norm convention.
 
 ### RC-1 (F1): MTP RMSNorm weights stored as (w-1) in model-mtp.safetensors
 
-- Convention (verified t605 on 4 trunk norms): the 4bit file stores trunk RMSNorm
+- Convention (verified an earlier run on 4 trunk norms): the 4bit file stores trunk RMSNorm
   weights as `w = HF_raw + 1` (e.g. L0 input_layernorm mean 1.0331 = 0.0331+1);
   `load_model` therefore does NOT add +1 (weights pre-sanitized); conv1d is
   [C,K,1] (`has_unsanitized_conv1d=False`).
 - `f1step.py` overwrites `mtp.*` parameters **directly from model-mtp.safetensors,
   bypassing the sanitize** — so the file must already hold `w`.
-- It did not. t605 table (means): input_layernorm loaded 0.0991 (HF raw) vs
+- It did not. an earlier run table (means): input_layernorm loaded 0.0991 (HF raw) vs
   required 1.0991; post_attn 0.2413 vs 1.2413; q_norm 0.7573 vs 1.7573;
   k_norm 0.7445 vs 1.7445. All 7 MTP norm tensors were (w-1).
 - Effect: every MTP RMSNorm divides by ~10x too little -> normalized MTP
   activations attenuated ~10x -> draft logits uncorrelated (rank ~206k-248k,
-  corr ~-0.02..-0.05). Non-norm MTP keys verified exact vs HF (t605).
+  corr ~-0.02..-0.05). Non-norm MTP keys verified exact vs HF (an earlier run).
 - Fix + verification: rebuilt `model-mtp.safetensors` with norms = HF+1 (f32;
   original backed up as `.bak-wminus1`; rebuild script had a shape-flattening
   bug, fixed). `f1step.py` re-run: trunk unchanged (t1=271, t2=8160), draft
@@ -69,10 +69,10 @@ explained by the file norm convention.
   q/k/v/g/beta from the model): ys ratio 0.9986, corr 1.00000; state ratio
   0.9988, corr 1.00000; T=1 decode corr 1.00000. The earlier "7x kernel
   discrepancy" was entirely the reference bug.
-- The t515 K3 verification (fused vs op-loop fallback vs f32 ref, max_abs
+- The an earlier run K3 verification (fused vs op-loop fallback vs f32 ref, max_abs
   0.0-7.8e-3) and this probe together establish the K3 kernels (chunk-scan,
   kkt_solve, recurrent decode) as correct on gfx1201.
-- Side findings (not bugs): (a) the ipz shape mismatch in the t605 probe
+- Side findings (not bugs): (a) the ipz shape mismatch in the an earlier run probe
   (mlx (4096,512) vs np (4096,4096)) is a quantized-layout artifact
   (group_size=8), not a model difference; (b) the mlx op-loop graph cannot run
   in this guest (JIT/comgr fails: `hip/hip_runtime.h` not found — HIP headers
@@ -95,13 +95,13 @@ explained by the file norm convention.
    t2=8160, h1 cos 0.9956), E3, E4, E5 all pass.
 3. No kernel changes required. `vendor/mlx-rocm-upstream/mlx/backend/rocm/`
    r4d GDN kernels and `gated_delta_update.cpp` dispatch are correct as-is
-   (kernels md5-identical between the venv-g1 build tree and the vendored
-   source; only the dispatch differs by the t576 contiguity-copy fix, which is
+   (kernels md5-identical between the venv-a build tree and the vendored
+   source; only the dispatch differs by the an earlier run contiguity-copy fix, which is
    a no-op on contiguous inputs).
 
 ## What this means for qmlx-serve
 
-- The 9B dense Qwen3.5 port on neon now has: validated numpy reference (E1),
+- The 9B dense Qwen3.5 port on the build VM now has: validated numpy reference (E1),
   validated K3 GDN kernels (E5), validated MTP math (E3/E4), and a working MTP
   draft (f1step: D=t2, rank 0) after the one-file fix.
 - Remaining for serve: regenerate/verify `model-mtp.safetensors` in the

@@ -917,7 +917,7 @@ void RocmAllocator::decode_arena_end() {
 
 // gfx1201 / ROCm 10.1: a single large host-shadow staging copy (>=300 MB;
 // the 1.2 GB model-weight scale) intermittently hangs in kfd_wait_on_events
-// with the GPU idle (t444/t454 lineage). Keep each staging copy at or below
+// with the GPU idle (an earlier run/an earlier run lineage). Keep each staging copy at or below
 // the safe size. Override with MLX_ROCM_D2H_CHUNK_MB (0 = single copy, the
 // pre-chunking behavior).
 static size_t host_shadow_chunk_bytes() {
@@ -935,16 +935,16 @@ static size_t host_shadow_chunk_bytes() {
   return chunk;
 }
 
-// t515 (k3): chunked host-shadow staging copy. Each chunk is issued on its
+// an earlier run (k3): chunked host-shadow staging copy. Each chunk is issued on its
 // own freshly created stream (hipMemcpyAsync + hipStreamSynchronize) so no
 // chunk inherits a queue with a pending un-retired KFD completion event —
-// the per-chunk queue reset is the hang-avoidance property (t460).
+// the per-chunk queue reset is the hang-avoidance property (an earlier run).
 //
-// t461-class segfault fix: the t460 design also DESTROYED the per-chunk
+// an earlier run-class segfault fix: the an earlier run design also DESTROYED the per-chunk
 // stream (hipStreamDestroy). On gfx1201 the KFD completion event of an
 // async copy is not retired promptly; destroying the per-chunk stream while
 // that event is still pending races the runtime stream/event bookkeeping and
-// segfaults in this function (t506: core x4 in the GDN bf16 D2H, backtrace
+// segfaults in this function (an earlier run: core x4 in the GDN bf16 D2H, backtrace
 // at the chunked-copy region). The stream is therefore intentionally NOT
 // destroyed: one small bounded leak per chunk per shadow copy (a 1.2 GB
 // copy leaks 12 streams; negligible for a server process) in exchange for
@@ -952,11 +952,11 @@ static size_t host_shadow_chunk_bytes() {
 static hipError_t shadow_chunked_copy(void* dst, const void* src, size_t size,
                                      hipMemcpyKind kind) {
   const size_t chunk = host_shadow_chunk_bytes();
-  // t517: small copies use the legacy single-shot sync hipMemcpy (no stream,
-  // no leak). The t444/t454/t458 hang was size-dependent (>=300 MB single
+  // an earlier run: small copies use the legacy single-shot sync hipMemcpy (no stream,
+  // no leak). The an earlier run/an earlier run/an earlier run hang was size-dependent (>=300 MB single
   // copies in kfd_wait_on_events); the pre-K3 wheel ran 9B loads (1856
   // small flushes) on plain hipMemcpy with no hang. Large copies keep the
-  // t460 chunked fresh-stream path (hang-avoidance) with the t515 no-destroy
+  // an earlier run chunked fresh-stream path (hang-avoidance) with the an earlier run no-destroy
   // (bounded leak: a few streams per large copy, not per small flush).
   if (size <= chunk) {
     return hipMemcpy(dst, src, size, kind);
@@ -985,7 +985,7 @@ static hipError_t shadow_chunked_copy(void* dst, const void* src, size_t size,
     if (err == hipSuccess) {
       err = G1_HL_SYNC("hipStreamSynchronize (shadow_chunked)", hipStreamSynchronize(stream), "shadow_chunked");
     }
-    // t515: no hipStreamDestroy(stream) — see the comment above.
+    // an earlier run: no hipStreamDestroy(stream) — see the comment above.
     if (err != hipSuccess) {
       return err;
     }
@@ -1128,12 +1128,12 @@ void* Buffer::raw_ptr() {
     return cbuf.data;
   }
 
-  // t584: wait for all pending GPU work before ANY host read. The model
+  // an earlier run: wait for all pending GPU work before ANY host read. The model
   // stream is non-blocking (hipStreamNonBlocking) and is NOT ordered with
   // the default (nullptr) stream; the previous default-stream-only sync
   // let host reads race pending kernels — the token-ID read raced the
   // argmax/logits work on the model stream and returned stale values
-  // (t583: non-deterministic first token across runs, degenerate decode).
+  // (an earlier run: non-deterministic first token across runs, degenerate decode).
   // hipDeviceSynchronize covers every writer stream (the same call the
   // device>=0 branch already made) and is a no-op when the GPU is idle.
   G1_HL_SYNC("hipDeviceSynchronize (raw_ptr)", hipDeviceSynchronize(), "raw_ptr");

@@ -10,18 +10,18 @@
 // L2 for each column; 16 cols per block (lever 3) to cut tail/scheduling
 // effects on the large shapes.
 //
-// WEIGHT REUSE (t825): the dequantized weight tile is computed ONCE per
+// WEIGHT REUSE (an earlier run): the dequantized weight tile is computed ONCE per
 // k-tile (shift+mask+cvt hoisted out of the row loop into a register array)
 // and MAC'd against ALL M rows, instead of re-dequantizing per row. The
 // per-row math keeps the exact FMA order of qmv_wide_kernel, so every row
 // stays bit-identical to the per-row kernel.
 //
-// LX HOIST (t852): the per-row x-chunk-sum lx = sum_j sx[m*K + k0+j] is
-// COLUMN-INVARIANT (independent of the output column n), but the t825 kernel
+// LX HOIST (an earlier run): the per-row x-chunk-sum lx = sum_j sx[m*K + k0+j] is
+// COLUMN-INVARIANT (independent of the output column n), but the an earlier run kernel
 // recomputed it for every one of the block's 16 columns (16x redundancy) and
 // for every row (Mx redundancy). It is now computed ONCE per (row, k-tile)
 // by the lane whose threadIdx.y equals the row (the 32-term 4-bit / 16-term
-// 8-bit FADD chain in the EXACT order of the t825 per-row lx: q-major,
+// 8-bit FADD chain in the EXACT order of the an earlier run per-row lx: q-major,
 // j-minor over the chunk, same values from sx), written to a 256-float
 // DOUBLE-BUFFERED LDS buffer (buffer parity = k-iteration parity),
 // __syncthreads, and read by all lanes. The double buffer is required for
@@ -39,13 +39,13 @@
 // kernel (lossless gate: maxdiff 0.0). The in-k-loop __syncthreads requires
 // uniform k-iteration counts across lanes: the dispatch gate enables the
 // hoist only when K % (32 * WPER) == 0 (K % 1024 == 0 for 4-bit,
-// K % 512 == 0 for 8-bit); shapes that do not satisfy it run the t825 path
+// K % 512 == 0 for 8-bit); shapes that do not satisfy it run the an earlier run path
 // (LXHOIST = false, no in-k barrier).
 //
-// A/B (t889): LXHOIST is a template parameter selected at dispatch by
-// MLX_QMV_MR_LX (default 1 = hoist on; 0 = t825 path). Each instantiation
+// A/B (an earlier run): LXHOIST is a template parameter selected at dispatch by
+// MLX_QMV_MR_LX (default 1 = hoist on; 0 = an earlier run path). Each instantiation
 // compiles only its m-loop path (if constexpr), so the A/B baseline
-// (LXHOIST = false) is codegen-equivalent to the t825 kernel (the x-staging
+// (LXHOIST = false) is codegen-equivalent to the an earlier run kernel (the x-staging
 // barrier and the dispatch structure are the only shared code). This makes
 // the gain gate (method doc section 2: gain >= 3% to count) measurable in
 // one session, free of the cross-run drift recorded in REPORT.md section 6.1
@@ -82,7 +82,7 @@ __global__ void __launch_bounds__(1024) qmv_wide_mr_kernel(
   // declaring it as T[] conflicts across T instantiations). Cast to T*.
   extern __shared__ uint8_t sx_bytes[];
   T* sx = reinterpret_cast<T*>(sx_bytes);  // [nrows][K]
-  // LX HOIST (t852): per-row, per-lane x-chunk-sum buffer (256 floats =
+  // LX HOIST (an earlier run): per-row, per-lane x-chunk-sum buffer (256 floats =
   // 1 KB, DOUBLE-BUFFERED on k-iteration parity). Written once per (row,
   // k-tile) by the thread (threadIdx.x == lane, threadIdx.y == row); read
   // by all threads after __syncthreads(). The double buffer avoids the
@@ -135,7 +135,7 @@ __global__ void __launch_bounds__(1024) qmv_wide_mr_kernel(
     float b = has_bias ? static_cast<float>(bcr[g]) : 0.0f;
     uint4 wv = *reinterpret_cast<const uint4*>(&wr[(k * BITS) / 8]);
     const uint32_t* wp = reinterpret_cast<const uint32_t*>(&wv);
-    // WEIGHT REUSE (t825): dequantize the weight tile ONCE per k-tile and
+    // WEIGHT REUSE (an earlier run): dequantize the weight tile ONCE per k-tile and
     // reuse it across all M rows, instead of re-dequantizing (shift+mask+
     // cvt) per row. The dequantized values are bit-identical to the per-row
     // dequant (same exact int->float conversion), and the per-row math below
@@ -159,13 +159,13 @@ __global__ void __launch_bounds__(1024) qmv_wide_mr_kernel(
           wn[q * 4 + j] = static_cast<float>((wp[q] >> (8 * j)) & 0xFF);
     }
     if constexpr (LXHOIST) {
-      // LX HOIST (t852): compute the column-invariant per-row x-chunk-sum
+      // LX HOIST (an earlier run): compute the column-invariant per-row x-chunk-sum
       // ONCE per (row, k-tile). The FADD chain is the EXACT order of the
-      // t825 per-row lx (q-major, j-minor over the 32/16-value chunk, same
-      // values from sx), so the value is bit-identical to the t825 per-row
+      // an earlier run per-row lx (q-major, j-minor over the 32/16-value chunk, same
+      // values from sx), so the value is bit-identical to the an earlier run per-row
       // lx. The thread (lane, row) writes s_lx[row][lane]; all threads read
       // it after the barrier. When !has_bias the consumer multiplies by
-      // b == 0.0f, so 0.0f * (finite chain) == 0.0f == the t825
+      // b == 0.0f, so 0.0f * (finite chain) == 0.0f == the an earlier run
       // (unaccumulated) lx — the result is bit-identical in both cases.
       {
         int ly = threadIdx.y;
@@ -214,9 +214,9 @@ __global__ void __launch_bounds__(1024) qmv_wide_mr_kernel(
         acc[m] += s * la + b * s_lx[p][m][lane];
       }
     } else {
-      // t825 path (A/B baseline): per-row lx accumulated in the same inner
-      // loop (EXACT t825 order: la FMA then lx FADD per value, guarded by
-      // has_bias), so this instantiation is codegen-equivalent to the t825
+      // an earlier run path (A/B baseline): per-row lx accumulated in the same inner
+      // loop (EXACT an earlier run order: la FMA then lx FADD per value, guarded by
+      // has_bias), so this instantiation is codegen-equivalent to the an earlier run
       // kernel.
       for (int m = 0; m < MAXM; ++m) {
         if (m >= nrows)

@@ -8,7 +8,7 @@ A/B isolation: both venvs carry the same fused wheel (mlx-0.32.3.dev20261026+the
 ON = venv-k2 (patched mlx_lm model files, scripts/patch-models-k2.py, verified idempotent),
 OFF = pristine /mnt/models/venv (unpatched model files). The delta is the model-side fusion.
 
-## 9B-4bit A/B (qwen3-9b-mlx) — from t504
+## 9B-4bit A/B (qwen3-9b-mlx) — from an earlier run
 
 | arm | tok/s | notes |
 |---|---|---|

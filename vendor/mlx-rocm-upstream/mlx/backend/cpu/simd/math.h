@@ -56,7 +56,7 @@ Simd<T, N> exp(Simd<T, N> in) {
 }
 
 /* Implementation from:
- * https://github.com/JishinMaster/simd_utils/blob/3c1433a86fb38edcc9b02039f3c9a65b16640976/neon_mathfun.h#L357
+ * https://github.com/JishinMaster/simd_utils/blob/3c1433a86fb38edcc9b02039f3c9a65b16640976/the build VM_mathfun.h#L357
  * which originally came from the Cephes math library.
  */
 template <bool Sine, typename T, int N>

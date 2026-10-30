@@ -49,7 +49,7 @@ def test_ci_wiring_present():
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
     assert 'pytest -m "not gpu"' in ci
     assert "size_ratchet.py" in ci
-    assert "self-hosted" not in ci  # hermetic CI: no GPU, no neon assumptions
+    assert "self-hosted" not in ci  # hermetic CI: no GPU, no the build VM assumptions
 
 
 def test_gpu_tests_are_marked():

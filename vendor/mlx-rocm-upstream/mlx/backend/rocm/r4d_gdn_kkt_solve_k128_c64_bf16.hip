@@ -2,7 +2,7 @@
 //
 //     A = (I + strict_lower(diag(beta) . K K^T . e^{g_i - g_j}))^{-1}     per chunk of 64
 //
-// Ported from R4D (libr4d e8de4bc / vllm-radiance 1d2e248) for the MLX
+// Ported from R4D (libr4d e8de4bc / <opt-fork>/vllm-<opt> 1d2e248) for the MLX
 // GatedDeltaUpdate ROCm kernel; see reports/k3-gdn-port.md. The only adaptation
 // from the R4D original: the varlen `cu` offsets become a fixed-length batch
 // [B, T] (the MLX primitive's layout), so the grid is exactly sized and the

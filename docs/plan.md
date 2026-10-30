@@ -5,11 +5,11 @@ determine the minimum work to create an equivalent ROCm backend (`mlx-rocm`). No
 the host, so this is source-reading + web.
 
 **End use:** run the fleet's qMLX inference stack (qmlx-serve, Qwen3.x serving, MTP spec
-decode, prefix/disk KV cache, mlx-lm) on **marzuki-neon** — AMD RX 9070 XT + Ryzen 9700X,
+decode, prefix/disk KV cache, mlx-lm) on **the build VM** — AMD RX 9070 XT + Ryzen 9700X,
 ROCm 10.1 (verified guest toolchain; 7.7 was the original target).
 
 **ROCm version note (2026-10-26, supersedes the 6.4/7.7 references below):** the verified
-guest toolchain on marzuki-neon is **ROCm 10.1** (core at `/opt/rocm/core-10.1`,
+guest toolchain on the build VM is **ROCm 10.1** (core at `/opt/rocm/core-10.1`,
 `CMAKE_PREFIX_PATH=/opt/rocm/core-10.1`, `amdrocm-*-dev10.1` packages; see
 docs/quickstart.md). Nothing else is verified: 6.4 was the early probe validation and
 7.7 the original target. Where this report says "on ROCm 7.7" for the box, read 10.1.
@@ -211,7 +211,7 @@ This is the real, ongoing, upstream MLX→ROCm port. Facts:
 - **Known open issue** (`docs/rocm-investigation-2026-07-19/RESULTS.md`): **dual large-model
   process load → SIGSEGV** (exit 139) on a unified-memory APU (gfx1150) — a resource
   overcommit / ungraceful-OOM in the allocator/HIP, *not* a single-stream kernel bug.
-  Exclusive single-process loads pass. **For marzuki-neon (a single discrete GPU, single
+  Exclusive single-process loads pass. **For the build VM (a single discrete GPU, single
   serving process) this is not the blocking case**, but it is the one to watch if you ever
   run two models.
 - **Packaging:** `setup.py` has no `[rocm]` extra yet — the wheel is just the standard `mlx`
@@ -281,7 +281,7 @@ Per the official ROCm GPU spec table (ROCm 10.1.0) and the compatibility matrix:
 
 So: **`gfx110x` is the RDNA3 / RX 7000 series. The RX 9070 XT (RDNA4) is `gfx1201`.**
 Both prior-art repos agree (bleeding-edge: "gfx120X = rdna4"; the fork's CMake: "RDNA4:
-gfx1200, gfx1201"). **marzuki-neon's target arch is `gfx1201`.** (If the box's
+gfx1200, gfx1201"). **the build VM's target arch is `gfx1201`.** (If the box's
 `rocm_agent_enumerator`/`rocminfo` reports something else, trust the tool — but expect
 gfx1201.)
 
@@ -289,7 +289,7 @@ gfx1201.)
 
 - **RDNA4 (gfx1200/gfx1201) support landed in ROCm 6.4.0** (release notes: "Support for
   gfx1201"). It is carried through 7.x and 10.x. **ROCm 10.1 (the verified guest
-  toolchain on marzuki-neon) supports gfx1201.**
+  toolchain on the build VM) supports gfx1201.**
 - The fork's `CMakeLists.txt` arch list explicitly targets "ROCm 6.4.0 – 7.2.0 compatibility
   matrix" and includes gfx1200/gfx1201; the fork's CI runs TheRock 7.13 and the Ollama fork
   runs ROCm 10 — so gfx1201 is a first-class target across the 7.x line.
@@ -333,7 +333,7 @@ holds the PyPI slot). No renaming needed.
 
 ## 6. Minimum `mlx-rocm` definition (phased plan + effort)
 
-"Minimum" = **qmlx-serve runs a 9B-class dense Qwen3 on marzuki-neon (RX 9070 XT / gfx1201,
+"Minimum" = **qmlx-serve runs a 9B-class dense Qwen3 on the build VM (RX 9070 XT / gfx1201,
 ROCm 10.1), correctly, at usable decode speed.** MTP, disk KV, and 27B+/122B-hybrid are
 deferred to Phase 2.
 
@@ -345,7 +345,7 @@ deferred to Phase 2.
    `CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=OpenBLAS"`.
    (No `setup.py` change needed — the fork builds the standard `mlx` wheel; the ROCm system
    install provides hip/rocblas/rocprim/hiprand/hiprtc/hipblaslt/rocwmma.)
-3. On marzuki-neon: `python -c "import mlx.core as mx; print(mx.rocm.is_available())"`,
+3. On the build VM: `python -c "import mlx.core as mx; print(mx.rocm.is_available())"`,
    `mx.set_default_device(mx.gpu)`, then the fork's basic tests (matmul, softmax) and
    `mlx_lm.generate` on Qwen3-0.6B (bf16 + 8bit).
    **Exit criteria:** `is_available()==True`, matmul/softmax correct, 0.6B generates sane

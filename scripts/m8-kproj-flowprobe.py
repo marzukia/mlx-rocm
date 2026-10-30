@@ -24,7 +24,7 @@ Captured per forward (wrapper-based, in+out):
   - FA layers: k_proj, k_norm, rope (and q_proj/q_norm/v_proj at FA15)
   - mx.fast GDN function hooks (gdn_prep / gated_delta_update / norm_gated)
 
-Run ON marzuki-neon with the venv-g4 python + LD_LIBRARY_PATH, under flock.
+Run ON the build VM with the venv-d python + LD_LIBRARY_PATH, under flock.
 """
 
 import os

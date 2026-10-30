@@ -1,6 +1,6 @@
 # GDN T=2 fast: fix the non-linear S=2 verify cost (K=1 MTP spec-decode)
 
-Date: 2026-10-27 (guest UTC). Worker: kernel-perf (t612). Machine: marzuki-neon,
+Date: 2026-10-27 (guest UTC). Worker: kernel-perf (an earlier run). Machine: the build VM,
 RX 9070 XT / gfx1201, ROCm 10.1 guest userland. Model: /mnt/models/qwen3-9b-mlx
 (4bit, 9B GDN-hybrid = 24 GDN + 8 attention layers).
 
@@ -60,7 +60,7 @@ change (below) and is bit-exact vs 2x T=1 (state/y maxdiff 0.0) at ~2x cost.
 
 ## 3. Fix (smallest correct)
 
-Two changes, both in the guest build tree /mnt/models/mlx-clone-g1 (HEAD fa18fbf),
+Two changes, both in the guest build tree /mnt/models/mlx-clone-a (HEAD fa18fbf),
 both now ported to vendor/mlx-rocm-upstream/:
 
 1. **qmm.hip**: WMMA dense GEMM gate `M > 1` -> `M > 8` (+ comment). M=1 path
@@ -141,4 +141,4 @@ structure/harness overhead (reject re-forwards + draft + Python), not S=2.
   mtp-bench-gdn3.py (GDN prim), mtp-bench3.py + bench4.sh (bench),
   g1-wmma-gate-fix.py (the edit script).
 - Bench outputs: /mnt/models/tmp/bench4/ (m0, m1, m2a/b/c, full streams).
-- Pre-fix report: /srv/fleetwork/work/608/reports/mtp-bench.md.
+- Pre-fix report: /srv/<fleet>/work/608/reports/mtp-bench.md.

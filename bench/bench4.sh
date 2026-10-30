@@ -1,8 +1,8 @@
 #!/bin/bash
-# K=1 MTP spec-decode bench (t612): m0 (AR) + m1 (2x T=1 verify) + m2 (S=2) x3.
+# K=1 MTP spec-decode bench (an earlier run): m0 (AR) + m1 (2x T=1 verify) + m2 (S=2) x3.
 # 1024 tokens, greedy, fresh process per run, flock.
 #
-# Lossless gate (t638 audit n-1 fix): mtp-bench3.py prints "ALLTOKS: <toks>"
+# Lossless gate (an earlier run audit n-1 fix): mtp-bench3.py prints "ALLTOKS: <toks>"
 # (no '='), but the executed bench4.sh grepped '^STREAM=' (0 matches) and cut
 # on '=' -> A=B="" -> STREAMS-MATCH passed on empty==empty (vacuous). The
 # grep now targets the real line (cut -d' '); every compare fails LOUD when a
@@ -86,7 +86,7 @@ gate() {  # gate <label> <fileA> <fileB> [prefix]; missing file -> SKIP (not vac
 }
 
 run_gate() {
-  # K=1 lossless claim (t612 report: "m2 token stream byte-identical to m0")
+  # K=1 lossless claim (an earlier run report: "m2 token stream byte-identical to m0")
   gate M2-M0-LOSSLESS "$OUT/m0.out" "$OUT/m2a.out"
   # control: 2x T=1 verify machinery (m1) must be byte-identical to m0
   gate M1-M0-CONTROL "$OUT/m0.out" "$OUT/m1.out"
@@ -107,11 +107,11 @@ if [ "$1" = "check" ]; then
   exit 0
 fi
 
-flock -w 900 $LOCK env MLX_MTP=0 /mnt/models/venv-g1/bin/python /tmp/mtp-bench3.py > $OUT/m0.out 2>&1
-flock -w 900 $LOCK env MLX_MTP=1 /mnt/models/venv-g1/bin/python /tmp/mtp-bench3.py > $OUT/m1.out 2>&1
-flock -w 900 $LOCK env MLX_MTP=2 /mnt/models/venv-g1/bin/python /tmp/mtp-bench3.py > $OUT/m2a.out 2>&1
-flock -w 900 $LOCK env MLX_MTP=2 /mnt/models/venv-g1/bin/python /tmp/mtp-bench3.py > $OUT/m2b.out 2>&1
-flock -w 900 $LOCK env MLX_MTP=2 /mnt/models/venv-g1/bin/python /tmp/mtp-bench3.py > $OUT/m2c.out 2>&1
+flock -w 900 $LOCK env MLX_MTP=0 /mnt/models/venv-a/bin/python /tmp/mtp-bench3.py > $OUT/m0.out 2>&1
+flock -w 900 $LOCK env MLX_MTP=1 /mnt/models/venv-a/bin/python /tmp/mtp-bench3.py > $OUT/m1.out 2>&1
+flock -w 900 $LOCK env MLX_MTP=2 /mnt/models/venv-a/bin/python /tmp/mtp-bench3.py > $OUT/m2a.out 2>&1
+flock -w 900 $LOCK env MLX_MTP=2 /mnt/models/venv-a/bin/python /tmp/mtp-bench3.py > $OUT/m2b.out 2>&1
+flock -w 900 $LOCK env MLX_MTP=2 /mnt/models/venv-a/bin/python /tmp/mtp-bench3.py > $OUT/m2c.out 2>&1
 
 run_gate
 

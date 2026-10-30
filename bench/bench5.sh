@@ -2,7 +2,7 @@
 # K=2 MTP spec-decode bench: m0 (AR) + m3 (K=2, S=3) x3 + m2 sanity anchor.
 # 1024 tokens, greedy, fresh process per run, flock.
 #
-# Lossless gate (t638 audit B-1 fix): mtp-bench5.py prints "ALLTOKS: <toks>"
+# Lossless gate (an earlier run audit B-1 fix): mtp-bench5.py prints "ALLTOKS: <toks>"
 # (no '='), so the stream is extracted with cut -d' '. The executed guest copy
 # (md5 42efb930) used grep '^ALLTOKS=' | cut -d= -> every stream var empty ->
 # every compare passed on empty==empty (vacuous). Every compare now fails LOUD
@@ -16,7 +16,7 @@
 #                                          # no-GPU: lossless gate on saved streams only
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib
-PY=/mnt/models/venv-g1/bin/python
+PY=/mnt/models/venv-a/bin/python
 OUT=${BENCH5_OUT:-/mnt/models/tmp/bench5}
 mkdir -p $OUT
 LOCK=/mnt/models/gpu-bench.lock
@@ -117,10 +117,10 @@ flock -w 900 $LOCK $PY /tmp/g1-t3-parts.py > $OUT/t3parts.out 2>&1
 # m0 AR baseline
 flock -w 900 $LOCK env MLX_MTP=0 $PY /tmp/mtp-bench5.py > $OUT/m0.out 2>&1
 
-# m2 sanity anchor (reproduce the t612 63.8 reference; validates wheel+harness)
+# m2 sanity anchor (reproduce the an earlier run 63.8 reference; validates wheel+harness)
 flock -w 900 $LOCK env MLX_MTP=2 $PY /tmp/mtp-bench5.py > $OUT/m2s.out 2>&1
 
-# m3 K=2 x3 (stability, per t612 protocol)
+# m3 K=2 x3 (stability, per an earlier run protocol)
 flock -w 900 $LOCK env MLX_MTP=3 $PY /tmp/mtp-bench5.py > $OUT/m3a.out 2>&1
 flock -w 900 $LOCK env MLX_MTP=3 $PY /tmp/mtp-bench5.py > $OUT/m3b.out 2>&1
 flock -w 900 $LOCK env MLX_MTP=3 $PY /tmp/mtp-bench5.py > $OUT/m3c.out 2>&1

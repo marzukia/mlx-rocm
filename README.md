@@ -1,12 +1,21 @@
 # mlx-rocm
 
-ROCm backend for [MLX](https://github.com/ml-explore/mlx) — **MVP skeleton** (v0.0.1).
+ROCm backend for [MLX](https://github.com/ml-explore/mlx) — **pre-alpha**
+(first public release 0.1.0).
 
-End use: run the fleet's qMLX inference stack (qmlx-serve, Qwen3.x, MTP spec
-decode, prefix/disk KV) on **marzuki-neon** — AMD RX 9070 XT (RDNA4,
-**gfx1201** — *not* gfx110x), ROCm 10.1 userland (the verified guest toolchain;
-core at `/opt/rocm/core-10.1`. 6.4 was the early probe validation and 7.7 the
-original target — neither is the verified version).
+Purpose: run MLX inference on AMD RDNA4 — validated on the RX 9070 XT
+(**gfx1201** — *not* gfx110x) — carrying the qMLX inference stack (qmlx-serve,
+Qwen3.x, MTP spec decode, prefix/disk KV) up to the 122B hybrid at high
+decode speed.
+
+Stage: **pre-alpha**. 0.1.0 is a public milestone of the current tree, not a
+stability promise — expect breaking changes. The **alpha cut is planned once
+decode reaches close to the card's ceiling** (122B-hybrid target: ~120 tok/s,
+byte-identical vs autoregressive).
+
+Verified toolchain: ROCm 10.1 userland on the validated guest (core at
+`/opt/rocm/core-10.1`; 6.4 was the early probe validation and 7.7 the original
+target — neither is the verified version).
 
 ## What this is
 
@@ -24,9 +33,9 @@ Three pieces:
    row-major layouts) plus a dependency-free CPU reference GEMM.
    Modeled on the fork's `gemms/hipblaslt_gemm.cpp`.
 3. **`scripts/smoke.sh`** — builds the GEMM, runs a small GEMM on the
-   build host (hydrogen, CPU reference), then rsyncs the tree to
-   marzuki-neon (`ssh andryo@100.91.94.56`), builds it against local
-   ROCm, and runs the GPU GEMM + fp8 probe there (neon phase budgeted
+   build host (host-a, CPU reference), then rsyncs the tree to
+   the build VM (`ssh operator@<tailnet-ip>`), builds it against local
+   ROCm, and runs the GPU GEMM + fp8 probe there (the build VM phase budgeted
    ~120 s; failures are recorded, not fatal).
 
 ## gfx1201 notes
@@ -36,10 +45,10 @@ Three pieces:
   its own QMV/QMM crossover tuning and the WMMA dense-qmm allowlist.
 - **fp8 GEMM status on this box**: the smoke's
   `mlx_rocm_gemm_fp8_probe()` (256³ e4m3 GEMM vs. host reference)
-  **passes** on neon gfx1201 (max_rel_err 0.0057, 0/65536 bad) — the
+  **passes** on the build VM gfx1201 (max_rel_err 0.0057, 0/65536 bad) — the
   probe shows no driver bug. Upstream notes fp8 e4m3 activation GEMM
   "may be kernel-buggy on some RDNA4 drivers — long-context prefill on
-  gfx1201 garbles" (t386 evidence, a different workload than this
+  gfx1201 garbles" (an earlier research pass evidence, a different workload than this
   probe). Keep `MLX_ROCM_GEMM_BF16=1` as the safe default until real
   prefill validation proves the driver clean for that workload. The
   probe is part of the smoke run.
@@ -56,7 +65,7 @@ cmake -S . -B build && cmake --build build
 ./build/gemm_smoke host
 ```
 
-With ROCm (gfx1201 box, e.g. the neon guest — see `docs/quickstart.md`):
+With ROCm (gfx1201 box, e.g. the the build VM guest — see `docs/quickstart.md`):
 
 ```
 cmake -S . -B build -DMLX_ROCM_WITH_HIP=ON -DCMAKE_PREFIX_PATH=/opt/rocm/core-10.1 \
@@ -77,7 +86,7 @@ CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=O
 scripts/smoke.sh
 ```
 
-Local: build + small host GEMM. Neon: `ssh` reachability + `rocm-smi`
+Local: build + small host GEMM. Guest-a: `ssh` reachability + `rocm-smi`
 check, tar transfer, ROCm build, GPU GEMM + fp8 probe. Results land in
 `scripts/smoke-results/` (gitignored).
 
@@ -88,8 +97,9 @@ check, tar transfer, ROCm build, GPU GEMM + fp8 probe. Results land in
 | Qwen3-0.6B | 8-bit (affine) | validated — benched 207.6–214.3 tok/s (`k2-non-gemm-fusion`) |
 | Qwen3-0.6B | bf16 | Phase 0 smoke target (`scripts/smoke.py` ladder) |
 | 9B-class dense Qwen3 | 4-bit (affine qmm) | validated — benched 55.9–57.8 tok/s A/B (`k2-non-gemm-fusion`), 63.8 tok/s with a 16-token warmup (`opt-gauntlet-areaA`) |
-| 27B+ / 122B-hybrid / MoE | — | not supported (Phase 2; a 27B load was in flight on the guest, unvalidated) |
-| MTP spec decode | — | not supported (blocked on the M3 stream-TLS fix) |
+| 122B hybrid (GDN + FA) | 4-bit (affine) | supported — the main workload; ~73 tok/s AR small-ctx on main, levers in flight toward ~120 |
+| 27B dense / MoE | — | not validated (a 27B load was in flight on the guest, unvalidated) |
+| MTP spec decode | 4-bit | K=2 supported, lossless (merged); slower than AR today — the active speed target |
 | non-gfx1201 archs | — | not validated (only gfx1201 is validated in this repo) |
 
 Details, in-flight items, and caveats: `docs/limitations.md`.
@@ -113,24 +123,25 @@ Or use a pre-converted `mlx-community/*` ref (e.g.
 prefill runs via the opt-in dequant→bf16 GEMM path today; there is no native
 mxfp4 kernel yet.
 
-## Status — in-flight lanes
+## Status — lanes
 
 | Lane | What | Branch |
 |---|---|---|
 | K1 (QMV/GEMV bandwidth) | int8-activation QMV fix (N=12288); no bench yet | `k1-qmv-gemv-bandwidth` |
-| K2 (non-GEMM fusion) | bench complete, verdict ADOPT; PR #2 open | `k2-non-gemm-fusion` |
-| K3 (GDN port) | segfault fix + numerics PASS; PR #3 open | `k3-gdn-port` |
+| K2 (non-GEMM fusion) | merged (#2) | — |
+| K3 (GDN port) | merged (#3) | — |
 | K4 (MXFP4) | opt-in dequant→bf16 GEMM only; no native kernel, no dedicated branch yet | — |
 | G1 (graph decode) | pilot wiring + ROCm 10.1 `hipStreamIsCapturing` fix; symbol export / engine wiring pending | `g1-graph-decode` |
 | alpha (docs/housekeeping) | alpha-state checklist + this docs wave | `alpha-checklist` / `alpha-docs` |
 
 ## Python package
 
-`pip install`-able skeleton (`pyproject.toml`, `src/python/mlx_rocm/`):
-ctypes bindings to `libmlx_rocm.so` (host GEMM always; GPU GEMM + fp8
-probe in ROCm builds) with a pure-numpy bf16 fallback. The wheel does not
-yet bundle the full `mlx` C++ core — that is the next milestone (full
-wheel + qmlx-serve 9B validation).
+`pip install mlx-rocm` (`pyproject.toml`, `src/python/mlx_rocm/`): ctypes
+bindings to `libmlx_rocm.so` (host GEMM always; GPU GEMM + fp8 probe in ROCm
+builds) with a pure-numpy bf16 fallback. The published 0.1.0 wheel is this
+package; the full `mlx` wheel (the vendored tree with the ROCm backend,
+`scripts/build-wheel.sh`) is built and validated per workload — the 9B-class
+and 122B-hybrid serve paths are validated on the guest.
 
 ## License
 
@@ -144,11 +155,11 @@ MIT (MLX upstream license; see `LICENSE`).
 - `docs/quickstart.md` — the verified build + smoke path on a gfx1201 box.
 - `PLAN.md` — living plan (phases, current state, open questions).
 - `vendor.json` — the pinned vendor fork + ref (primary/fallback) and the build flags.
-- `scripts/build-wheel.sh` — build the `mlx` wheel with `-DMLX_BUILD_ROCM=ON` for gfx1201 (runs on neon).
+- `scripts/build-wheel.sh` — build the `mlx` wheel with `-DMLX_BUILD_ROCM=ON` for gfx1201 (runs on the build VM).
 - `scripts/smoke.py` — Phase 0 smoke: is_available, matmul/softmax numerics, 0.6B generate.
 - `scripts/smoke-serve.sh` — Phase 1 smoke: qmlx-serve with a 9B-class dense Qwen3.
 - `scripts/size_ratchet.py` + `size-ratchet.json` — deterministic size gate (CI).
-- `tests/` — hermetic tests (CI) + `@pytest.mark.gpu` tests (neon only).
+- `tests/` — hermetic tests (CI) + `@pytest.mark.gpu` tests (the build VM only).
 
 ## Commands
 
@@ -159,7 +170,7 @@ uv run pytest -m "not gpu"          # hermetic (CI)
 uv run python scripts/size_ratchet.py --base HEAD
 ```
 
-GPU commands run on marzuki-neon (see AGENTS.md).
+GPU commands run on the build VM (see AGENTS.md).
 
 ## Rules
 

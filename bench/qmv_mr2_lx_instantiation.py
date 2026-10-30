@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""t889 (t903 MINOR-2 fix): the template-instantiation assert for the
+"""an earlier run (an earlier run MINOR-2 fix): the template-instantiation assert for the
 qmv_wide_mr_kernel A/B — non-vacuous on mangled symbol names.
 
 The MR kernel is qmv_wide_mr_kernel<T, ScaleT, GROUP_SIZE, BITS,
 LXHOIST> (scripts/apply-qmv-mr-lxhoist.py P1): the bool LXHOIST is the
 LAST template parameter, so a symbol name carries it as
   - mangled (rocprofv3 --kernel-trace on this toolchain): Lb0
-    (false = t825 path) / Lb1 (true = hoist), immediately before the E
-    that terminates the template-argument list — the t889 trace names
+    (false = an earlier run path) / Lb1 (true = hoist), immediately before the E
+    that terminates the template-argument list — the an earlier run trace names
     end ...Li4ELb0E (LX=0) / ...Li4ELb1E (LX=1);
   - demangled: ", false>" / ", true>" (the bool is the last template
     argument, so the marker is unambiguous).
@@ -16,7 +16,7 @@ dispatched) carries the opposite marker and fails. The per-row
 qmv_wide_kernel (wide fallback / drift control) has no LX template
 parameter and is not checked.
 
-The t889 runner's original check was conditional on the name containing
+The an earlier run runner's original check was conditional on the name containing
 "<" (demangled) and was a no-op for the mangled names rocprofv3
 actually reports; this module is the sound replacement (proven
 non-vacuous offline by tests/test_qmv_mr2_lx_instantiation.py).
@@ -37,7 +37,7 @@ _DEMANGLED = {False: ", false>", True: ", true>"}
 
 def lx_instantiation_ok(full_name: str, want_lx: bool) -> bool:
     """True iff full_name is a qmv_wide_mr_kernel symbol instantiated
-    with LXHOIST == want_lx (False = t825 path, True = hoist).
+    with LXHOIST == want_lx (False = an earlier run path, True = hoist).
 
     False for any other kernel (e.g. the per-row qmv_wide_kernel, which
     has no LX template parameter) and for a name that carries the

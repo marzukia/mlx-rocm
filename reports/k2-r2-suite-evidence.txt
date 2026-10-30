@@ -1,10 +1,10 @@
 --- session event 43 (toolResult) ---
 total 108
-drwxrw-r--  2 neonvm neonvm  4096 Oct 26 09:28 .
+drwxrw-r--  2 the build VM the build VM  4096 Oct 26 09:28 .
 drwxrwxrwt 45 root   root   20480 Oct 26 11:42 ..
--rw-rw-r--  1 neonvm neonvm 45208 Oct 26 09:28 fast.cpp
--rw-rw-r--  1 neonvm neonvm  4775 Oct 26 09:28 fast.h
--rw-rw-r--  1 neonvm neonvm 21312 Oct 26 09:28 rms_norm.hip
+-rw-rw-r--  1 the build VM the build VM 45208 Oct 26 09:28 fast.cpp
+-rw-rw-r--  1 the build VM the build VM  4775 Oct 26 09:28 fast.h
+-rw-rw-r--  1 the build VM the build VM 21312 Oct 26 09:28 rms_norm.hip
 START 10:23:21
 LOCK-ACQUIRED 10:23:21
 === IDENTITY PROBE (venv-k2) ===

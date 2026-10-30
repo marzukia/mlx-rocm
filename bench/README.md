@@ -1,11 +1,11 @@
 # bench/
 
 Guest-side MTP spec-decode bench harness, promoted from guest `/tmp` into the repo
-(t638 audit: the as-run lossless gate was vacuous — `cut -d=` against `ALLTOKS:`
+(an earlier run audit: the as-run lossless gate was vacuous — `cut -d=` against `ALLTOKS:`
 lines with no `=`).
 
-- `mtp-bench3.py` + `bench4.sh` — t612 K=1 (S=2) harness + runner.
-- `mtp-bench5.py` + `bench5.sh` — t631 K=2 (S=3) harness + runner.
+- `mtp-bench3.py` + `bench4.sh` — an earlier run K=1 (S=2) harness + runner.
+- `mtp-bench5.py` + `bench5.sh` — an earlier run K=2 (S=3) harness + runner.
 - `g1-t3-parts.py` — un-sandwiched T=1 vs S=3 forward + 2-draft timing probe.
 - `step0_run.sh` + `step0_streaming_read.py` + `step0_parse.py` + `step0_hip_cu.cu`
   — step 0 (method-correction doc 2026-10-28, section 4): in-guest streaming-read
@@ -15,7 +15,7 @@ lines with no `=`).
   mlx uses). Prints/asserts effective config (doc rule 6).
   `bash step0_run.sh` (env: STEP0_NBYTES / STEP0_WARMUP / STEP0_ITERS / STEP0_OUT).
 
-Run on marzuki-neon (all GPU work under `flock /mnt/models/gpu-bench.lock`):
+Run on the build VM (all GPU work under `flock /mnt/models/gpu-bench.lock`):
 `bash bench5.sh` (full bench + lossless gate) or
 `BENCH5_OUT=/mnt/models/tmp/bench5 bash bench5.sh check` (no-GPU gate on saved
 streams; same `check` mode for `bench4.sh`). Vacuity guard: any empty compared

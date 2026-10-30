@@ -1,11 +1,11 @@
-# MTP spec-decode benchmark (K=1) — Qwen3.5-9B mlx-rocm, neon gfx1201
+# MTP spec-decode benchmark (K=1) — Qwen3.5-9B mlx-rocm, the build VM gfx1201
 
-Date: 2026-10-27 (guest UTC). Salvage + re-bench by piboy (t608 hit the wall at 20:02Z in the
+Date: 2026-10-27 (guest UTC). Salvage + re-bench by <operator> (an earlier run hit the wall at 20:02Z in the
 final phase; its bench script passed the mode as a positional arg while the probe reads env
 MLX_MTP — all four of its final runs silently ran mode 0; re-run here with the correct interface).
 
 ## Protocol
-- Model /mnt/models/qwen3-9b-mlx (4bit, model-mtp.safetensors = fixed norms file), venv-g1,
+- Model /mnt/models/qwen3-9b-mlx (4bit, model-mtp.safetensors = fixed norms file), venv-a,
   LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib, greedy, MAX_TOKENS=1024, fresh process per run,
   flock gpu-bench.lock. Prompt: "Explain in great detail how a modern smartphone works..."
   (1024 tokens generated; the fruits prompt EOSes at 149 and undersells MTP).
@@ -27,7 +27,7 @@ incl. reject-path GDN restore + KV trim + re-forward).
 
 1. **Batched verify is not fast on this port.** One S=2 forward costs ~128 ms vs ~15.4 ms/token
    for T=1 (4.6 token-equivalents). The T=2 GDN forward is correct (bit-exact vs 2x T=1 after
-   the wheel fix the t608 worker validated: state/y maxdiff 0.0) but runs the chunk-scan /
+   the wheel fix the an earlier run worker validated: state/y maxdiff 0.0) but runs the chunk-scan /
    general path — there is NO fast small-T (T=2) recurrent decode path in the K3 GDN kernels.
    The fast path is T=1-only; anything wider pays chunk-scan prefill-shaped overhead.
 2. **At 76% acceptance the K=1 verify structure itself is the bottleneck, not acceptance.**
@@ -51,4 +51,4 @@ incl. reject-path GDN restore + KV trim + re-forward).
 ## Assets
 - Guest /tmp: mtp-bench3.py (probe, smartphone prompt, MAX_TOKENS=1024, env MLX_MTP),
   bench4.sh (clean runner), outputs /mnt/models/tmp/bench4/ (full streams).
-- Inline AR/MTP reference runs (fruits 149-tok + smartphone 1024-tok) in piboy channel 2026-10-27.
+- Inline AR/MTP reference runs (fruits 149-tok + smartphone 1024-tok) in <operator> channel 2026-10-27.

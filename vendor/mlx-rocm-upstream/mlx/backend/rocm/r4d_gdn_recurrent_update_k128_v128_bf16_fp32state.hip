@@ -1,6 +1,6 @@
 // r4d_gdn_recurrent_update_k128_v128_bf16_fp32state.hip -- the gated-delta-net
 // recurrent state update, which is what decode runs where prefill runs the
-// chunked scan. Ported from R4D (libr4d e8de4bc / vllm-radiance 1d2e248) for
+// chunked scan. Ported from R4D (libr4d e8de4bc / <opt-fork>/vllm-<opt> 1d2e248) for
 // the MLX GatedDeltaUpdate ROCm kernel; see reports/k3-gdn-port.md.
 //
 // The state-resident structure is the R4D one: one thread owns one v row and

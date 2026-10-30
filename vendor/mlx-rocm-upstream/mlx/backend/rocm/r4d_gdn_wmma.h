@@ -1,4 +1,4 @@
-// Ported from R4D (libr4d e8de4bc / vllm-radiance 1d2e248) for the MLX
+// Ported from R4D (libr4d e8de4bc / <opt-fork>/vllm-<opt> 1d2e248) for the MLX
 // GatedDeltaUpdate ROCm kernels; see reports/k3-gdn-port.md.
 //
 // R4D: gfx1201 wave32 bf16 WMMA fragment helpers, shared by the GDN kernels.

@@ -1,7 +1,7 @@
 # Quickstart — verified build + smoke path on a gfx1201 box
 
-The verified toolchain is the **marzuki-neon guest VM** (RX 9070 XT / gfx1201,
-ROCm 10.1 userland). This is the path that has actually been run (t479/t480,
+The verified toolchain is the **the build VM guest VM** (RX 9070 XT / gfx1201,
+ROCm 10.1 userland). This is the path that has actually been run (an earlier run/an earlier run,
 k2/k3, gauntlet, battery). Nothing else is verified.
 
 ## Guest environment (what must be true)
@@ -49,7 +49,7 @@ path. `scripts/build-wheel.sh` does the same thing for the pinned fork.)
 
 Overwrite **both** `site-packages/mlx/lib` and `site-packages/mlx/lib64`
 and sha-verify — a stale `libmlx.so` in either directory silently shadows the
-new one (t461/t462).
+new one (an earlier run/an earlier run).
 
 ## 3. Host-only GEMM build (no full wheel needed)
 

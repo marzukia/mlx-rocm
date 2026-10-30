@@ -33,7 +33,7 @@ assert NBYTES % 4 == 0, "f32 buffer must be element-aligned"
 assert mx.rocm.is_available(), "mx.rocm not available"
 N = NBYTES // 4
 print(
-    f"CONFIG: venv=venv-g4 rocm=10.1 mlx_wheel={mx.__version__} "
+    f"CONFIG: venv=venv-d rocm=10.1 mlx_wheel={mx.__version__} "
     f"buffer_bytes={NBYTES} n_elements={N} warmup={WARMUP} iters={ITERS}",
     flush=True,
 )

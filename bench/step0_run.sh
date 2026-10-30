@@ -2,7 +2,7 @@
 # Step 0 (method-correction doc 2026-10-28, section 4): in-guest streaming-read
 # ceiling + runtime CU count. No model load.
 #
-# Usage (ON marzuki-neon):  bash step0_run.sh
+# Usage (ON the build VM):  bash step0_run.sh
 #   env: STEP0_NBYTES (default 4 GiB), STEP0_WARMUP (3), STEP0_ITERS (10),
 #        STEP0_OUT (default /mnt/models/tmp/step0)
 #
@@ -10,7 +10,7 @@
 # time. CU count: what the runtime reports (doc section 1 row 4).
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib
-PY=/mnt/models/venv-g4/bin/python
+PY=/mnt/models/venv-d/bin/python
 OUT=${STEP0_OUT:-/mnt/models/tmp/step0}
 LOCK=/mnt/models/gpu-bench.lock
 HERE=$(cd "$(dirname "$0")" && pwd)

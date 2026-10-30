@@ -5,7 +5,7 @@ Goal: the first model layer whose state differs between one T=2 verify
 forward and two chained T=1 forwards, both started from the identical
 pre-verify state (the S62 arm: prev_token=279, draft=3545, n_out==61).
 
-Setup: the m2 draft-verify flow (same prompt/model as the t809 S62 diag;
+Setup: the m2 draft-verify flow (same prompt/model as the an earlier run S62 diag;
 deterministic - it reaches the S62 arm at n_out==61, act=ACC). At the
 arm the ENTIRE main-model cache is snapshotted, then the two variants:
 
@@ -56,7 +56,7 @@ PROMPT = (
 MAX_TOKENS = int(os.environ.get("DIAG_MAX", "160"))
 EOS = 248044
 MODE = os.environ.get("MODE", "m3")
-D = os.environ.get("CAP_DIR", "/mnt/models/tmp/t785")
+D = os.environ.get("CAP_DIR", "/mnt/models/tmp/an earlier run")
 S62_PREV = 279
 S62_DRAFT = 3545
 EXPECT_N_OUT = 61
@@ -297,9 +297,9 @@ def main():
         else:
             d = draft
             draft = None
-            # the m2 REJ rollback (exactly as the t809 flow): ArraysCache
+            # the m2 REJ rollback (exactly as the an earlier run flow): ArraysCache
             # entries restored, KVCache trimmed by 2 (page layout is NOT
-            # rolled back - that is the t786 suspect, preserved here).
+            # rolled back - that is the an earlier run suspect, preserved here).
             saved = [(i, c[0], c[1], c.lengths) for i, c in enumerate(cache) if isinstance(c, ArraysCache)]
             logits, hidden = lm(
                 mx.array([[prev_token, d]]),

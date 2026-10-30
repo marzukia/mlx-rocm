@@ -1,4 +1,4 @@
-"""GPU tests: run ON marzuki-neon only (uv run pytest -m gpu). Skipped off-GPU.
+"""GPU tests: run ON the build VM only (uv run pytest -m gpu). Skipped off-GPU.
 
 Phase 0 exit criteria live here; Phase 1 (QMM/SDPA/fp8/allocator) extends this file.
 """
@@ -17,7 +17,7 @@ pytestmark = pytest.mark.gpu
 @pytest.fixture(scope="module", autouse=True)
 def require_gpu():
     if not (sys.platform == "linux" and os.environ.get("MLX_ROCM_GPU") == "1"):
-        pytest.skip("gpu tests run on marzuki-neon with MLX_ROCM_GPU=1")
+        pytest.skip("gpu tests run on the build VM with MLX_ROCM_GPU=1")
     if not hasattr(mx, "rocm") or not mx.rocm.is_available():
         pytest.skip("no ROCm backend in this wheel")
     mx.set_default_device(mx.gpu)

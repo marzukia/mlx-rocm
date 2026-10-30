@@ -46,4 +46,4 @@ CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=O
 ```
 
 `gfx1201` = RX 9070 XT (RDNA4). **Not** `gfx110x` (that is RDNA3 / RX 7000).
-ROCm 6.4+ supports gfx1200/1201; neon runs ROCm 7.x (TheRock/Fedora stack).
+ROCm 6.4+ supports gfx1200/1201; the build VM runs ROCm 7.x (TheRock/Fedora stack).

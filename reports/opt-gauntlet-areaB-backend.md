@@ -7,7 +7,7 @@ kernel-level timing on the guest (RX 9070 XT, gfx1201, ROCm 10.1, **32-CU vGPU
 partition** — `cus=32` in the boot log; full card is 54 CU).
 
 Headline: 9B-4bit decode is **63 tok/s** on the current wheel (the brief's 31 tok/s
-baseline predates the t460 patches + ROCm 10.1 — the stack has already 2×'d).
+baseline predates the an earlier run patches + ROCm 10.1 — the stack has already 2×'d).
 Per token (15.9 ms): **~9.5–11.2 ms in the quantized GEMV (60–70%) at ~490–510 GB/s
 (≈50% of 960 GB/s)**, ~4.9 ms in non-GEMM kernels (30%), ~1.5 ms launch/commit/python
 gaps (10%). The decode path runs **eager** — 0 HIP graph launches in the trace even
@@ -87,9 +87,9 @@ keys"). Deltas vs upstream = only the local patches:
 
 | Delta | Files | Perf relevance |
 |---|---|---|
-| t451 chunked async D2H/H2D ≤300 MB, per-chunk `hipStreamSynchronize` | allocator.cpp/.h | Workaround for gfx1201/ROCm 7.7 KFD completion-event hang (300 MB+ sync copies). Small per-step cost (see §4). |
-| t460 cand-A: lazy host-shadow staging (`has_gpu_contents`) | allocator.cpp/.h | Skips the D2H staging copy when the buffer is fresh and the CPU reader overwrites it. Saves one copy; zero cost when it skips. |
-| t460 cand-B: per-chunk stream separation (create→async→sync→destroy per chunk) | allocator.cpp | Same hang, stronger workaround. Adds ~stream create/destroy per chunk. |
+| an earlier run chunked async D2H/H2D ≤300 MB, per-chunk `hipStreamSynchronize` | allocator.cpp/.h | Workaround for gfx1201/ROCm 7.7 KFD completion-event hang (300 MB+ sync copies). Small per-step cost (see §4). |
+| an earlier run cand-A: lazy host-shadow staging (`has_gpu_contents`) | allocator.cpp/.h | Skips the D2H staging copy when the buffer is fresh and the CPU reader overwrites it. Saves one copy; zero cost when it skips. |
+| an earlier run cand-B: per-chunk stream separation (create→async→sync→destroy per chunk) | allocator.cpp | Same hang, stronger workaround. Adds ~stream create/destroy per chunk. |
 | ROCm 6.4 compat shims (16-bit `atomicCAS` in hip_atomic_compat, naive_gemm, kernel_utils, load, reduce_utils) | 5 files, ~16 lines | None. |
 
 The guest wheel (`/mnt/models/mlx-clone`, 7 files / +133 lines vs the earlier vendor base) contains
@@ -148,24 +148,24 @@ commit** (~1,050 extra commits/token). KV is pre-allocated and flat
 
 ---
 
-## 4. Patch status + per-step cost (cand-A + t451 in the wheel)
+## 4. Patch status + per-step cost (cand-A + an earlier run in the wheel)
 
 Both patches are **active** in the built wheel (verified in `/mnt/models/mlx-clone`:
 `has_gpu_contents` in allocator.h, `chunked_copy_stream_separated` in allocator.cpp).
 
 Per decode step the only touched path is the token-id readout:
 - cand-A: fresh id buffer → `has_gpu_contents==false` → **D2H skipped** (zero cost).
-- t451/cand-B: when a D2H does happen (a few bytes), it is one ≤300 MB chunk on a
+- an earlier run/cand-B: when a D2H does happen (a few bytes), it is one ≤300 MB chunk on a
   fresh stream: 1× `hipStreamCreate` + `hipMemcpyAsync` + `hipStreamSynchronize` +
   `hipStreamDestroy` ≈ **30–80 µs/token ≈ 0.2–0.5% of the 15.9 ms step**.
 - The 300 MB chunking only bites for large copies (model save, whole-buffer D2H) —
   not on the per-token path. H2D staging (prompt embeddings) is the same small path.
 
 Verdict: the patches are active and cheap; they are not a decode bottleneck. The
-t461 `clear_cache()`→`hipFree` 20 s hang is on the model unload/reload path
+an earlier run `clear_cache()`→`hipFree` 20 s hang is on the model unload/reload path
 (`buffer_cache_.clear()` → free callback → hipFree/hipFreeAsync), not per-step;
 ROCm 10.1 may not exhibit it, but the serve stack should avoid `clear_cache()`
-mid-session until t461 lands.
+mid-session until an earlier run lands.
 
 ---
 
@@ -196,7 +196,7 @@ which assumes ~0.5 ms of everything-but-weights.
 backend's build-once/`hipGraphExecUpdate`/`decode_arena` machinery is already
 there). Collapses ~1,070 dispatches + ~20 commits/token into one graph launch
 (~40 µs/commit × 20 ≈ 0.8 ms + per-dispatch gaps). Verify interaction with the
-t451/cand-B per-chunk streams (id readout stays outside the graph — no conflict).
+an earlier run/cand-B per-chunk streams (id readout stays outside the graph — no conflict).
 A/B it with `MLX_GRAPH_DECODE=0` as the kill switch.
 
 **Combined expectation: 63 → ~120–130 tok/s (68–73% of the 177 ceiling).**
@@ -224,5 +224,5 @@ A/B it with `MLX_GRAPH_DECODE=0` as the kill switch.
   region, kernel + memory-copy + graph traces).
 - Source: `vendor/mlx-rocm-upstream/mlx/backend/rocm/{matmul.cpp, gemms/hipblaslt_gemm.cpp,
   gemms/gemv.hip, quantized/qmm.hip, device.cpp, eval.cpp, allocator.cpp, host_stage.cpp}`;
-  patches on branch `t460-salvage-candA` (bd061d6, 37e2834, d82ce84); guest build tree
+  patches on branch `an earlier run-salvage-candA` (bd061d6, 37e2834, d82ce84); guest build tree
   `/mnt/models/mlx-clone` (the earlier vendor base + 7 files / +133 lines).

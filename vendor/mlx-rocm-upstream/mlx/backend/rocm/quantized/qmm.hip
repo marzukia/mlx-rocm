@@ -4121,16 +4121,16 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
       // order). Opt out: MLX_QMV_NO_MR; cols: MLX_QMV_MR_COLS.
       static bool use_mr_qmv = (std::getenv("MLX_QMV_NO_MR") == nullptr);
       static int mr_cols_env = parse_non_negative_int_env("MLX_QMV_MR_COLS", 0);
-      // t889: A/B toggle for the t852 LX hoist (default 1 = hoist on;
-      // 0 = t825 path — the same kernel without the in-k barrier).
+      // an earlier run: A/B toggle for the an earlier run LX hoist (default 1 = hoist on;
+      // 0 = an earlier run path — the same kernel without the in-k barrier).
       static int mr_lx_env = parse_non_negative_int_env("MLX_QMV_MR_LX", 1);
       int mcols = (mr_cols_env >= 8) ? mr_cols_env : 16;
       size_t mr_lds = (size_t)std::min(4, M) * (size_t)K * 2;
       bool mr_ok = use_mr_qmv && (M <= 4) && (mr_lds <= 32768);
-      // t852: the MR kernel's in-k-loop __syncthreads (LX hoist) requires
+      // an earlier run: the MR kernel's in-k-loop __syncthreads (LX hoist) requires
       // uniform k-iteration counts across lanes: K % (32 * WPER) == 0
       // (K % 1024 == 0 for 4-bit, K % 512 == 0 for 8-bit). Shapes that do
-      // not satisfy it (or MLX_QMV_MR_LX=0) run the t825 path
+      // not satisfy it (or MLX_QMV_MR_LX=0) run the an earlier run path
       // (LXHOIST = false) — the MR dispatch gate itself is unchanged.
       bool lxhoist = (mr_lx_env != 0) &&
           (K % ((bits_ == 4) ? 1024 : 512) == 0);
@@ -4173,8 +4173,8 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     else { LAUNCH_QMV_WIDE_MR(TT, ST, 128, BV, LX); }                      \
   } while (0)
       // LXHOIST is a template parameter (compile-time), so the runtime
-      // lxhoist value selects between the two instantiations (true = t852
-      // hoist, false = t825 path).
+      // lxhoist value selects between the two instantiations (true = an earlier run
+      // hoist, false = an earlier run path).
       if (x.dtype() == bfloat16) {
         if (bits_ == 4) {
           if (lxhoist) { LAUNCH_QMV_WIDE_MR_GS(hip_bfloat16, hip_bfloat16, 4, true); }

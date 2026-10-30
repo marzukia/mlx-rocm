@@ -1,10 +1,10 @@
 # mlx-rocm MVP — standalone CMake.
 #
-# Host-only build (e.g. hydrogen, no ROCm):
+# Host-only build (e.g. host-a, no ROCm):
 #   cmake -S . -B build && cmake --build build
 #   ./build/gemm_smoke host
 #
-# ROCm build (e.g. marzuki-neon, RX 9070 XT / gfx1201):
+# ROCm build (e.g. the build VM, RX 9070 XT / gfx1201):
 #   cmake -S . -B build -DMLX_ROCM_WITH_HIP=ON && cmake --build build
 #   ./build/gemm_smoke hip
 #

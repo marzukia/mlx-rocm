@@ -1,8 +1,8 @@
 #!/bin/bash
 # m5 prof: per-spec rocprofv3 --kernel-trace dispatch table (no model load).
-cd /mnt/models/tmp/t785
+cd /mnt/models/tmp/an earlier run
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib:/opt/rocm/lib
-PY=/mnt/models/venv-g4/bin/python
+PY=/mnt/models/venv-d/bin/python
 export MODE=prof
 for attempt in 1 2 3 4 5 6; do
   flock -w 900 /mnt/models/gpu-bench.lock -c "$PY diag-s62-m5.py > diag-m5-prof.log 2>&1; echo \$? > m5-prof-rc"

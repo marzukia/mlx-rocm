@@ -1,6 +1,6 @@
 # K2 verify r2: full suite after the r3 fix (kv_append gate → kernel-exact strides)
 
-Branch: k2-non-gemm-fusion (fix r3 = cd1b6cd). Guest: marzuki-neon, gfx1201
+Branch: k2-non-gemm-fusion (fix r3 = cd1b6cd). Guest: the build VM, gfx1201
 (RX 9070 XT), ROCm 10.1 (core-10.1 libs), venv-k2.
 Protocol: flock /mnt/models/gpu-bench.lock (short-wait poll; another lane may
 hold it), LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib, timeout wraps (suite 900 /
@@ -39,7 +39,7 @@ materializes before reading strides: both reject the view.
 
 ## 2. Environment / build (checked this run)
 
-- Guest: marzuki-neon 192.168.122.234 (via jump andryo@100.91.94.56),
+- Guest: the build VM <guest-ip> (via jump operator@<tailnet-ip>),
   gfx1201 (AMD Radeon RX 9070 XT), ROCm 10.1.
 - Wheel: /mnt/models/mlx-clone-k2/dist/mlx-0.32.3.dev20261026+the earlier vendor base-...whl,
   sha256 prefix ec48eb4c — the prior run's rebuild from /mnt/models/mlx-clone-k2
@@ -64,7 +64,7 @@ output is bit-exact against the reference. r1's 16/256 misaddress is gone.
 Verdict: **69 PASS / 0 FAIL** - the 62 core unit checks plus 7 MAJOR-3/4/5 +
 negative cases; the r1 failing case (`kv_append non-contig keys`) now PASS.
 
-Sourcing note (for the re-review gate): the raw guest log of the t531 run
+Sourcing note (for the re-review gate): the raw guest log of the an earlier run run
 (/tmp/k2-r2-full.log) was lost to guest tmp cleanup after the wall-kill; the
 numbers above come from that run's own tool output (grep -c over the suite
 log, executed inside the run): `grep -c "^[PASS]"` = 69,

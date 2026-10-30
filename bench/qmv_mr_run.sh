@@ -3,13 +3,13 @@
 # gates + bench. GB/s from rocprofv3 kernel time + bytes moved (doc rule 2);
 # bit-exact gate (doc rule 4); effective config printed + asserted (doc rule 6).
 #
-# Usage (ON marzuki-neon):  bash qmv_mr_run.sh <tag> <python>
+# Usage (ON the build VM):  bash qmv_mr_run.sh <tag> <python>
 #   tag    : ref (current wheel: bitexact ref + baseline bench + AR stream)
 #            new (new wheel: bitexact check + bench + AR stream)
 #   python : interpreter with the wheel under test on its path
 #
-#   e.g. bash qmv_mr_run.sh ref /mnt/models/venv-g4/bin/python
-#        bash qmv_mr_run.sh new /mnt/models/venv-g4/bin/python \
+#   e.g. bash qmv_mr_run.sh ref /mnt/models/venv-d/bin/python
+#        bash qmv_mr_run.sh new /mnt/models/venv-d/bin/python \
 #            (with PYTHONPATH=/mnt/models/wheel-qmv exported)
 set -uo pipefail
 TAG=$1

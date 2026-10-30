@@ -14,10 +14,10 @@
 export PATH=/opt/rocm/bin:/opt/rocm/core-10.1/bin:/opt/rocm/lib:/opt/rocm/core-10.1/lib:$PATH
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib:/opt/rocm/lib
 
-OUT=${M6_OUT:-/mnt/models/tmp/t866}
+OUT=${M6_OUT:-/mnt/models/tmp/an earlier run}
 mkdir -p $OUT
 LOCK=/mnt/models/gpu-bench.lock
-PY=/mnt/models/venv-g4/bin/python
+PY=/mnt/models/venv-d/bin/python
 SCRIPT=$OUT/diag-s62-m6.py
 
 if [ "$1" = "check" ]; then

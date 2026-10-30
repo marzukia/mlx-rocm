@@ -14,8 +14,8 @@ BOTH variants:
   variant A: one T=2 verify forward  [[279, 3545]]  (row 1 = token 3545)
   variant B: two T=1 forwards        [[279]] then [[3545]]
 
-The layer-3 block (qwen3_5.DecoderLayer, full_attention; the t718c-patched
-venv model, /mnt/models/venv-g4; linear layers are 4-bit quantized, group 64):
+The layer-3 block (qwen3_5.DecoderLayer, full_attention; the an earlier runc-patched
+venv model, /mnt/models/venv-d; linear layers are 4-bit quantized, group 64):
 
   x   = block input (the GDN-2 block output / residual stream)
   r   = self_attn(input_layernorm(x), mask, cache)
@@ -90,11 +90,11 @@ MAX_TOKENS = int(os.environ.get("DIAG_MAX", "160"))
 EOS = 248044
 MODE = os.environ.get("MODE", "ab")
 SPEC = os.environ.get("SPEC", "")
-D = os.environ.get("CAP_DIR", "/mnt/models/tmp/t785")
+D = os.environ.get("CAP_DIR", "/mnt/models/tmp/an earlier run")
 M3_PKL = os.path.join(D, "cap-m3-s62.pkl")
 M4_PKL = os.path.join(D, "cap-m4-sdpa.pkl")
 M5_PKL = os.path.join(D, "cap-m5-s62.pkl")
-PY = os.environ.get("PY", "/mnt/models/venv-g4/bin/python")
+PY = os.environ.get("PY", "/mnt/models/venv-d/bin/python")
 ROCPROF = os.environ.get("ROCPROF", "/opt/rocm/core-10.1/bin/rocprofv3")
 S62_PREV = 279
 S62_DRAFT = 3545
@@ -253,7 +253,7 @@ class BlockHook:
     """Capture the I/O of every component of the layer-3 full-attention block.
 
     nn.Module's call path bypasses instance __call__ attributes (verified on
-    venv-g4), so each module is replaced by a plain-Python wrapper object
+    venv-d), so each module is replaced by a plain-Python wrapper object
     that records I/O and delegates; the originals are restored on exit.
     """
 

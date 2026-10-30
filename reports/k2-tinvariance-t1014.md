@@ -1,9 +1,9 @@
-# t1014 — K=2 k_proj T-invariance: probes, gates, bench (2026-10-30)
+# an earlier run — K=2 k_proj T-invariance: probes, gates, bench (2026-10-30)
 
-Lane: marzuki-neon (100.91.94.56 / 192.168.122.234, RX 9070 XT gfx1201, ROCm 10.1),
+Lane: the build VM (<tailnet-ip> / <guest-ip>, RX 9070 XT gfx1201, ROCm 10.1),
 `flock /mnt/models/gpu-bench.lock` for every GPU run.
-Wheel: `t1012-29k/venv-m8`, `libmlx.so` sha256[:12]=`de6de5f154c0` (m8rebase,
-t992-verified; **no rebuild — the patch is python-side, .so untouched**).
+Wheel: `t29k/venv-m8`, `libmlx.so` sha256[:12]=`de6de5f154c0` (m8rebase,
+an earlier run-verified; **no rebuild — the patch is python-side, .so untouched**).
 Model: `/mnt/models/qwen3-9b-mlx` (5.95GB 4bit, 32 layers, 8 full-attention
 layers [3,7,11,15,19,23,27,31], 24 GDN layers).
 Repo: `worker/k2-kproj-tinvariance` off base `2027d51` (m8 audit #20).
@@ -32,7 +32,7 @@ Repo: `worker/k2-kproj-tinvariance` off base `2027d51` (m8 audit #20).
 ## Root cause (why the wheel already fixed it)
 
 The #20 audit's flow probe found a 1-ulp in `k_proj` at the first verify
-divergence. The m8 round-2 (t976) correction re-located it: the model's
+divergence. The m8 round-2 (an earlier run) correction re-located it: the model's
 `k_proj` is a **4-bit QMM** (`qmv_wide_kernel`) — T-invariant per row by
 construction (verified here: D1 n=0). MTP's plain-matmul `k_proj` runs only at
 T=1 (gemv, deterministic). The actual T-dependence was `mx.fast.rope`: the
@@ -44,7 +44,7 @@ now shows `NO LEAK` and all gates pass with the **unmodified .so**.
 Residual (non-gating): plain bf16 matmul still shows value-specific 1-ulp
 flips between same-shape T=2 and T=1 calls (D2: 5/20 trials, 1 elem, on
 k_proj-shaped `x(2,4096)@W(1024,4096).T`; 11/20 trials, 2 elems, on
-t-shaped `x(2,1024)@W(4096,1024).T`) — the t976 "follow-up candidate". It
+t-shaped `x(2,1024)@W(4096,1024).T`) — the an earlier run "follow-up candidate". It
 cannot affect the greedy lossless path: in the model k_proj is QMM, and in
 the MTP draft path the plain matmul is T=1-only (same kernel, same result,
 deterministic: D3 n=0).
@@ -55,11 +55,11 @@ deterministic: D3 n=0).
   T=2 vs T=1 (8 FA layers × 20 random bf16 trials, expect n=0), D1b q/v_proj
   control, D2 plain-matmul direct P3 test (both orientations, informational),
   D3 determinism re-run.
-- `bench/t1014-warm-mtp-bench.py` — warmup-first bench harness: mtp-bench5
-  MTP flow (mode 0/2/3, draft chain + reject rollbacks verbatim) + t1012
+- `bench/warm-mtp-bench.py` — warmup-first bench harness: mtp-bench5
+  MTP flow (mode 0/2/3, draft chain + reject rollbacks verbatim) + an earlier run
   chunked 29K prefill + discarded warm pass + iteration-based window
   (skip=56), 14-token and 29K prompt, acceptance stats, ALLTOKS.
-- `scripts/t1014-run.sh` — lane driver (all runs under flock, venv-m8).
+- `scripts/warm-mtp-run.sh` — lane driver (all runs under flock, venv-m8).
 
 ## Gate results (lane, 2026-10-30 01:16-01:30Z)
 
@@ -87,7 +87,7 @@ G4 arm speeds (14-token prompt, 1024 toks): m0 AR 69.72; m1 K=1 (2×T=1) 55.49
 
 | mode | decode tok/s (all) | tok/s (window) | it median | verifies | D1% | D2% | tok/step |
 |---|---|---|---|---|---|---|---|
-| AR (m0, t1012 unmodified) | 61.30 | **61.04** | 16.3 ms | — | — | — | — |
+| AR (m0, an earlier run unmodified) | 61.30 | **61.04** | 16.3 ms | — | — | — | — |
 | K=1 (m2) | 4.56 | **45.77** | 23.7 ms | 128 | 40.6 | — | 1.406 |
 | K=2 (m3) | 4.45 | **37.35** | 32.1 ms | 98 | 60.2 | 25.4 | 1.602 |
 
@@ -112,17 +112,17 @@ are the main overhead), or extend K to 3-4 to raise tok/step above 2.
 ## Reproduction
 
 ```
-# on neon, under flock /mnt/models/gpu-bench.lock:
-PY=/mnt/models/tmp/t1012-29k/venv-m8/bin/python
-D=/mnt/models/tmp/t1014   # this round's uploaded scripts + outputs
+# on the build VM, under flock /mnt/models/gpu-bench.lock:
+PY=/mnt/models/tmp/t29k/venv-m8/bin/python
+D=/mnt/models/tmp/an earlier run   # this round's uploaded scripts + outputs
 $PY $D/k2-kproj-tinvariance-probe.py        # gate (a)
-bash $D/t1014-run.sh                        # full: gates + bench
+bash $D/an earlier run-run.sh                        # full: gates + bench
 ```
 
 Evidence: `$D/{kproj-probe,flowprobe,gate,k2-14tok-gate,k2-29k-gate}.log|.out`,
 `$D/{m0,m1,m2a,m2b,m2c,ar2048,m3-14tok}.out`,
-`$D/{bench14-m0,bench14-m2,bench14-m3,ar29k-t1012,bench29k-m2,bench29k-m3,
+`$D/{bench14-m0,bench14-m2,bench14-m3,ar29k-an earlier run,bench29k-m2,bench29k-m3,
 ar29k512,m3-29k512}.out`, `$D/run.log`, `$D/import.log`
 (wheel sha `de6de5f154c0edec6aaa6ec5f1f9f970b0a4b955841eea0921200f5b300b0caf`).
 
-worker: piboy; reviewer pass to follow.
+worker: <operator>; reviewer pass to follow.

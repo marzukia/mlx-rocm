@@ -1,4 +1,4 @@
-# Vendor overlay note — K1 N=12288 correctness fix (t543, MAJOR-1)
+# Vendor overlay note — K1 N=12288 correctness fix (an earlier run, MAJOR-1)
 
 Status: **overlay documented — fork push failed (no push creds), re-pin pending.**
 
@@ -22,15 +22,15 @@ as a delta over that pin:
 
 The delta was committed for the fork as `1051504`
 ("rocm/qmv: K1 v_dot4 int8-activation QMV + N=12288 stale-output fix") in
-the guest worktree `/tmp/mlx-k1-push` (neonvm, a `git worktree` of
+the guest worktree `/tmp/mlx-k1-push` (the build VM, a `git worktree` of
 `/mnt/models/mlx-clone-k1` at `the earlier vendor base`). The push to `materton/mlx`
 failed 2026-10-26: the guest clone has no credentials (bare https remote,
-no netrc/gh), and `lifeofpiboy` — the only token available — has no push
+no netrc/gh), and `the fork user>` — the only token available — has no push
 access to `materton/mlx` (403). The commit is ready to push once creds
 exist:
 
 ```sh
-# on neonvm
+# on the build VM
 cd /tmp/mlx-k1-push && git push origin HEAD:the vendor ref
 ```
 

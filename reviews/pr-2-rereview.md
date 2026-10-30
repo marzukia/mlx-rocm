@@ -1,6 +1,6 @@
 # K2 PR #2 re-review (non-GEMM fusion) — adversarial, post-fix
 
-Reviewer: jimmyateworld (fresh session, read-only). Submitter of record: monky.
+Reviewer: <agent-gh> (fresh session, read-only). Submitter of record: submitter.
 Scope: `main..19e76d9` (task named head `d812947`; the branch advanced to `19e76d9`
 "k2: ruff import-sort on identity probe (CI I001)" before this review — the delta is
 ruff-only on `scripts/k2-identity-probe.py`, no product/test semantics change).

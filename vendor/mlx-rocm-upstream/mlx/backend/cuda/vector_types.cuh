@@ -27,7 +27,7 @@ struct Vector2<__half> {
 
 template <>
 struct Vector2<__nv_bfloat16> {
-  using type = __nv_bfloat162;
+  using type = __nv_bfloaan earlier run;
 };
 
 template <typename T>

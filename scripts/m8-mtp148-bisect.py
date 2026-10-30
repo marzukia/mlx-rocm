@@ -123,7 +123,7 @@ def main():
         if CAP["mode"] not in e:
             e[CAP["mode"]] = npf(arr)
 
-    # mx.fast GDN hooks (fused path is always active in venv-g4)
+    # mx.fast GDN hooks (fused path is always active in venv-d)
     orig_gdn_prep = mx.fast.gdn_prep
 
     def gdn_prep_wrap(*a, **k):

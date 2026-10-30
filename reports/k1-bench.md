@@ -2,11 +2,11 @@
 
 ## Env + settings
 
-- **GPU**: marzuki-neon, dedicated guest `neonvm@192.168.122.234` (via
-  `ssh -J andryo@100.91.94.56`), AMD Radeon RX 9070 XT / gfx1201, ROCm 7.7
+- **GPU**: the build VM, dedicated guest `the build VM@<guest-ip>` (via
+  `ssh -J operator@<tailnet-ip>`), AMD Radeon RX 9070 XT / gfx1201, ROCm 7.7
   (guest runtime `/opt/rocm/core-10.1`).
 - **Wheel**: venv-k1 `mlx 0.32.3.dev20261026+the earlier vendor base` — libmlx.so already carries
-  monky's verified fix (worktree head `99cddb5`, branch base); no rebuild.
+  submitter's verified fix (worktree head `99cddb5`, branch base); no rebuild.
 - **Env for every guest python**: `LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib`,
   `/mnt/models/venv-k1/bin/python`.
 - **GPU serialization**: `flock /mnt/models/gpu-bench.lock` (short-wait poll,
@@ -74,15 +74,15 @@ known exit-time HIP teardown hang; never waits beyond the timeout).
 
 ```sh
 # upload (from worktree)
-scp -J andryo@100.91.94.56 scripts/k1_bench.py scripts/k1bench_run.sh \
-    neonvm@192.168.122.234:/mnt/models/tmp/
+scp -J operator@<tailnet-ip> scripts/k1_bench.py scripts/k1bench_run.sh \
+    the build VM@<guest-ip>:/mnt/models/tmp/
 
 # one per config (baseline, k1-16, k1-32), run sequentially
-ssh -J andryo@100.91.94.56 neonvm@192.168.122.234 \
+ssh -J operator@<tailnet-ip> the build VM@<guest-ip> \
     'timeout 570 sh /mnt/models/tmp/k1bench_run.sh baseline'
-ssh -J andryo@100.91.94.56 neonvm@192.168.122.234 \
+ssh -J operator@<tailnet-ip> the build VM@<guest-ip> \
     'timeout 570 sh /mnt/models/tmp/k1bench_run.sh k1-16'
-ssh -J andryo@100.91.94.56 neonvm@192.168.122.234 \
+ssh -J operator@<tailnet-ip> the build VM@<guest-ip> \
     'timeout 570 sh /mnt/models/tmp/k1bench_run.sh k1-32'
 
 # results land in /mnt/models/tmp/k1bench_{baseline,k1-16,k1-32}.out

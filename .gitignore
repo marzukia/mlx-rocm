@@ -13,3 +13,7 @@ scripts/smoke-results/
 
 # vendor/ is NOT ignored: the vendored upstream tree is committed
 # (vendor/mlx-rocm-upstream/, provenance in vendor/mlx-rocm-upstream/README.md).
+
+# fleet session state (never commit; see issue #19)
+.fleetwork/
+salvage.tar

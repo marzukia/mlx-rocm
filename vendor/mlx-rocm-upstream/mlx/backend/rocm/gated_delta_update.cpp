@@ -1,7 +1,7 @@
 // Copyright © 2024 Apple Inc.
 //
 // ROCm GatedDeltaUpdate: fused gated-delta-net kernels ported from R4D
-// (libr4d e8de4bc / vllm-radiance 1d2e248; see reports/k3-gdn-port.md).
+// (libr4d e8de4bc / <opt-fork>/vllm-<opt> 1d2e248; see reports/k3-gdn-port.md).
 // Decode (T == 1) runs the recurrent state update; longer sequences run the
 // chunked scan (gate prep + kkt_solve + chunk_scan, with the extreme-decay
 // repair inside the scan entry). Geometry outside the compiled kernels

@@ -111,7 +111,7 @@ struct Erf {
     if constexpr (cuda::std::is_same_v<T, __half>) {
       return erf(__half2float(x));
     } else if constexpr (cuda::std::is_same_v<T, __nv_bfloat16>) {
-      return erf(__bfloat162float(x));
+      return erf(__bfloaan earlier runfloat(x));
     } else {
       return erf(x);
     }
@@ -124,7 +124,7 @@ struct ErfInv {
     if constexpr (cuda::std::is_same_v<T, __half>) {
       return erfinv(__half2float(x));
     } else if constexpr (cuda::std::is_same_v<T, __nv_bfloat16>) {
-      return erfinv(__bfloat162float(x));
+      return erfinv(__bfloaan earlier runfloat(x));
     } else {
       return erfinv(x);
     }
@@ -313,7 +313,7 @@ struct Rsqrt {
     } else if constexpr (cuda::std::is_same_v<T, __half>) {
       return rsqrt(__half2float(x));
     } else if constexpr (cuda::std::is_same_v<T, __nv_bfloat16>) {
-      return rsqrt(__bfloat162float(x));
+      return rsqrt(__bfloaan earlier runfloat(x));
     } else {
       return rsqrt(x);
     }

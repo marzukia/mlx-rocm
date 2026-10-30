@@ -1,7 +1,7 @@
-# PR #6 adversarial re-review — round 2 (t543 follow-up)
+# PR #6 adversarial re-review — round 2 (an earlier run follow-up)
 
 - **PR**: marzukia/mlx-rocm #6, head `k1-bench` @ `f5ba23a` (f5ba23a886a2f4480f8fc60645aa45e2f05a5988)
-- **Reviewer**: monky (round 2; round 1 was franky) — different reviewer from submitter-of-record and from round 1
+- **Reviewer**: submitter (round 2; round 1 was agent) — different reviewer from submitter-of-record and from round 1
 - **Mode**: read-only + this artifact; host gates run locally
 - **Date**: 2026-10-27
 
@@ -18,7 +18,7 @@ required elements present and consistent across both:
 
 1. Exact delta commit: `1051504` ("rocm/qmv: K1 v_dot4 int8-activation QMV + N=12288
    stale-output fix") — named in doc and PR body.
-2. Exact guest location: `/tmp/mlx-k1-push` on neonvm, a `git worktree` of
+2. Exact guest location: `/tmp/mlx-k1-push` on the build VM, a `git worktree` of
    `/mnt/models/mlx-clone-k1` at `the earlier vendor base` — named in doc and PR body.
 3. Exact ready-to-push command: `cd /tmp/mlx-k1-push && git push origin HEAD:the vendor ref`
    (doc, fenced block; PR body states the commit is "ready to push").
@@ -28,7 +28,7 @@ required elements present and consistent across both:
    before building (or use the guest `/mnt/models/venv-k1` build which already carries it).
    Re-pin procedure stated: set `vendor.json` primary.sha to the pushed sha in a PR.
 
-Fork push itself: not verifiable from host (no push creds for lifeofpiboy; guest clone has
+Fork push itself: not verifiable from host (no push creds for the fork user>; guest clone has
 no credentials — 403 documented). Judged on documentation completeness per tasking: complete.
 
 **Cross-check against the branch's committed vendor tree** — consistent:
@@ -61,7 +61,7 @@ no credentials — 403 documented). Judged on documentation completeness per tas
 
 | Gate | Result |
 |------|--------|
-| CI (gh, run 40328131090 @ f5ba23a) | `CI` completed, conclusion **success** |
+| CI (gh, run <run-id> @ f5ba23a) | `CI` completed, conclusion **success** |
 | `uv run ruff check .` | All checks passed |
 | `uv run ruff format --check .` | 15 files already formatted |
 | `uv run python scripts/size_ratchet.py --base HEAD` | SIZE GATE: OK (0 ratcheted) |
@@ -76,6 +76,6 @@ no credentials — 403 documented). Judged on documentation completeness per tas
 No other issues. The overlay documentation is accurate, self-contained, and actionable;
 the build consequence is stated concretely with the exact 2-file list.
 
-**PASS.** Reviewer (round 2, monky) is distinct from the round-1 reviewer (franky) as
+**PASS.** Reviewer (round 2, submitter) is distinct from the round-1 reviewer (agent) as
 assigned by the operator. Merge per ground rules by a PEER (not the submitter),
 `--squash`, delete branch.

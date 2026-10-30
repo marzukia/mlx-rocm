@@ -4,7 +4,7 @@
 - Method: read-only, file-by-file diff read; base versions diffed from `c51a835`;
   size gate run locally (`uv run python scripts/size_ratchet.py --base HEAD`);
   no build, no GPU. Bench evidence taken from `reports/k2-non-gemm-fusion.md` (not re-run).
-- Reviewer: fresh session, read-only. Submitter of record: monky.
+- Reviewer: fresh session, read-only. Submitter of record: submitter.
 
 ## Verdict summary
 
@@ -31,7 +31,7 @@ the verdict is FAIL. All fixes are small.
 | 7 | MINOR | `reports/k2-non-gemm-fusion.md:44-52` | Per-kernel counts don't reconcile with stated step count; -21.7/step vs naive -72/step expectation unexplained |
 | 8 | MINOR | `vendor/.../fast.cpp:146` | `rms_norm_residual` out dtype = result_type(x, weight) ignores residual dtype (undocumented) |
 | 9 | NIT | `vendor/.../copy.hip:225-231` | `if constexpr (VEC == 8)` branches are byte-identical (both copy uint4) |
-| 10 | NIT | `reports/k2-non-gemm-fusion.md:3`, `reports/opt-gauntlet-areaB-backend.md:6` | Machine identifiers in reports (192.168.122.234, marzuki-neon) — docs, not code; no secrets or personal home paths in code/scripts/patches |
+| 10 | NIT | `reports/k2-non-gemm-fusion.md:3`, `reports/opt-gauntlet-areaB-backend.md:6` | Machine identifiers in reports (<guest-ip>, the build VM) — docs, not code; no secrets or personal home paths in code/scripts/patches |
 | 11 | NIT | `patches/k2-mlx-lm-model-patches.diff`, `patches/k2-rocm-python-binding.patch` | Patched model files reference `mx.rocm` unconditionally (ROCm builds only); binding forces `Device(gpu)` with no stream (consistent with existing rocm binding pattern) |
 
 ### MAJOR-1 — `rms_norm` default path changed, ungated
@@ -169,8 +169,8 @@ Collapse to a single block.
 
 ### NIT-10 — machine identifiers in reports
 
-`reports/k2-non-gemm-fusion.md:3` (192.168.122.234),
-`reports/opt-gauntlet-areaB-backend.md:6` (marzuki-neon). Documentation, not code;
+`reports/k2-non-gemm-fusion.md:3` (<guest-ip>),
+`reports/opt-gauntlet-areaB-backend.md:6` (the build VM). Documentation, not code;
 no secrets, tokens, or personal home paths anywhere in code, scripts, or patches
 (grepped the full diff). Acceptable for bench records.
 

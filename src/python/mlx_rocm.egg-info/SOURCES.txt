@@ -160,7 +160,7 @@ vendor/mlx-rocm-upstream/mlx/backend/cpu/simd/accelerate_fp16_simd.h
 vendor/mlx-rocm-upstream/mlx/backend/cpu/simd/accelerate_simd.h
 vendor/mlx-rocm-upstream/mlx/backend/cpu/simd/base_simd.h
 vendor/mlx-rocm-upstream/mlx/backend/cpu/simd/math.h
-vendor/mlx-rocm-upstream/mlx/backend/cpu/simd/neon_fp16_simd.h
+vendor/mlx-rocm-upstream/mlx/backend/cpu/simd/the build VM_fp16_simd.h
 vendor/mlx-rocm-upstream/mlx/backend/cpu/simd/simd.h
 vendor/mlx-rocm-upstream/mlx/backend/cpu/simd/type.h
 vendor/mlx-rocm-upstream/mlx/backend/cuda/CMakeLists.txt

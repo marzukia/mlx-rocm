@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""t889: parse the rocprofv3 JSON trace from qmv_mr2_lx_bench.py (method
+"""an earlier run: parse the rocprofv3 JSON trace from qmv_mr2_lx_bench.py (method
 doc section 2 rule 2: GB/s = bytes moved / rocprofv3 kernel time; rule 6:
 print the kernel names actually dispatched).
 
 The bench runs 16 combos (4 shapes x M=1..4) in a fixed order, each
 WARMUP + REPS quantized_matmul calls; each call dispatches exactly one
-qmv* kernel (t835: 60/60 dispatches per shape). The parser segments the
+qmv* kernel (an earlier run: 60/60 dispatches per shape). The parser segments the
 qmv dispatch stream by that order.
 
 Usage: qmv_mr2_lx_parse.py <trace.json> <warmup> <reps> <outdir>
