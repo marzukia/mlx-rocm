@@ -49,7 +49,7 @@ docs/quickstart.md). Nothing else is verified: 6.4 was the early probe validatio
 GatedDeltaNet (122B hybrid), MoE (A10B/27B+), MTP spec decode (blocked on the M3
 stream-TLS fix), disk KV cache validation. Details in docs/plan.md §Phase 2.
 
-## Open questions (Andryo's call)
+## Open questions (operator's call)
 
 1. Base: the vendor ref (preferred) vs the vendor ref (fallback) — resolved by Phase 0 build.
 2. Wheel vs source: source-on-the build VM for now; PyPI wheel (`mlx-rocm` name slot already held

@@ -395,7 +395,7 @@ deferred to Phase 2.
 | Full qMLX 122B hybrid + MTP + disk KV (Phase 2) | +2–4 person-weeks | Medium. GatedDelta prefill perf + the M3 stream-TLS fix are the real work. |
 | (For contrast) Porting the CUDA backend from scratch | ~15–25 person-weeks | What we are *not* doing. |
 
-### Open questions (for Andryo)
+### Open questions (for the operator)
 
 1. **Base choice:** `the vendor ref` (the the upstream base head, TheRock 7.13-tested)
    vs `the vendor ref` (newer, ROCm 10 + gfx1200 fixes, GatedDeltaNet). Need to
