@@ -15,6 +15,7 @@ src/python/mlx_rocm.egg-info/SOURCES.txt
 src/python/mlx_rocm.egg-info/dependency_links.txt
 src/python/mlx_rocm.egg-info/top_level.txt
 tests/test_gates.py
+tests/test_gdn_fuse.py
 tests/test_gpu.py
 tests/test_qmv_mr2_lx_instantiation.py
 vendor/mlx-rocm-upstream/CMakeLists.upstream.txt
