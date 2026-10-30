@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: mlx-rocm
-Version: 0.1.0
+Version: 0.1.1
 Summary: ROCm backend for MLX (pre-alpha): vendored mlx ROCm backend tree + hipBLASLt GEMM + QMV decode kernels, validated on AMD RDNA4 (gfx1201)
 Author-email: Submitter <submitter@example.org>
 Keywords: mlx,rocm,hip,amd,rdna4,gfx1201

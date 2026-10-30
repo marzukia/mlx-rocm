@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mlx-rocm"
-version = "0.1.0"
+version = "0.1.1"
 description = "ROCm backend for MLX (pre-alpha): vendored mlx ROCm backend tree + hipBLASLt GEMM + QMV decode kernels, validated on AMD RDNA4 (gfx1201)"
 readme = "README.md"
 requires-python = ">=3.11"
