@@ -1,17 +1,15 @@
 import os
-
-import mlx.core as mx
 import numpy as np
+import pickle
+import mlx.core as mx
 from mlx_lm import load
-from mlx_lm.models.cache import KVCache
+from mlx_lm.models.cache import KVCache, ArraysCache
 
 MODEL = os.environ.get("MTP_MODEL", "/mnt/models/qwen3-9b-mlx")
 PROMPT = "The capital of France is"
 
-
 def npf(a):
     return np.asarray(mx.array(a).astype(mx.float32)).copy() if a is not None else None
-
 
 model, tok = load(MODEL)
 lm = model.language_model
@@ -23,7 +21,6 @@ logits, hidden = lm(mx.array([prompt_ids]), cache=cache, return_hidden=True, ret
 lg = logits[0, -1]
 hidd = hidden[0, -1]
 
-
 def snap_cache(cache):
     snap = []
     for c in cache:
@@ -32,7 +29,6 @@ def snap_cache(cache):
         else:
             snap.append((c, [npf(x) for x in c.cache], c.left_padding, c.lengths))
     return snap
-
 
 def restore_cache(cache, snap):
     for c, data, extra1, extra2 in snap:
@@ -43,7 +39,6 @@ def restore_cache(cache, snap):
             c.cache = [mx.array(x) for x in data]
             c.left_padding = extra1
             c.lengths = extra2
-
 
 out = []
 target_step = None
@@ -75,23 +70,20 @@ for step in range(130):
         # compare
         print(f"step {step}: prev={prev} draft={draft}")
         print("=== GDN state (conv, ssm) S=2 vs two S=1 ===")
-        for (iA, dataA), (_, dataB) in zip(stateA, stateB, strict=False):
-            for j, (a, b) in enumerate(zip(dataA, dataB, strict=False)):
+        for (iA, dataA), (iB, dataB) in zip(stateA, stateB):
+            for j, (a, b) in enumerate(zip(dataA, dataB)):
                 d = a - b
                 name = "conv" if j == 0 else "ssm"
-                print(f"  layer {iA} {name}: n={np.count_nonzero(d != 0)}/{d.size} maxabs={np.abs(d).max():.3e}")
+                print(f"  layer {iA} {name}: n={np.count_nonzero(d!=0)}/{d.size} maxabs={np.abs(d).max():.3e}")
         print("=== KV cache S=2 vs two S=1 ===")
-        for (iA, kA, vA), (_, kB, vB) in zip(kvA, kvB, strict=False):
+        for (iA, kA, vA), (iB, kB, vB) in zip(kvA, kvB):
             dk = kA - kB
             dv = vA - vB
-            print(f"  layer {iA} keys: n={np.count_nonzero(dk != 0)}/{dk.size} maxabs={np.abs(dk).max():.3e}")
-            print(f"  layer {iA} values: n={np.count_nonzero(dv != 0)}/{dv.size} maxabs={np.abs(dv).max():.3e}")
+            print(f"  layer {iA} keys: n={np.count_nonzero(dk!=0)}/{dk.size} maxabs={np.abs(dk).max():.3e}")
+            print(f"  layer {iA} values: n={np.count_nonzero(dv!=0)}/{dv.size} maxabs={np.abs(dv).max():.3e}")
         # logits
         dA = npf(logitsA[0, 1]) - npf(logitsB2[0, 0])
-        print(
-            f"logits after draft (A[0,1] vs B2[0,0]): "
-            f"n={np.count_nonzero(dA != 0)}/{dA.size} maxabs={np.abs(dA).max():.3e}"
-        )
+        print(f"logits after draft (A[0,1] vs B2[0,0]): n={np.count_nonzero(dA!=0)}/{dA.size} maxabs={np.abs(dA).max():.3e}")
         break
     # continue the MTP loop
     logits2, hidden2 = lm(mx.array([[prev, draft]]), cache=cache, return_hidden=True, return_prenorm=True)

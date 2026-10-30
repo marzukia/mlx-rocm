@@ -1,17 +1,14 @@
 import os
-
-import mlx.core as mx
 import numpy as np
+import mlx.core as mx
 from mlx_lm import load
 from mlx_lm.models.cache import KVCache
 
 MODEL = os.environ.get("MTP_MODEL", "/mnt/models/qwen3-9b-mlx")
 PROMPT = "The capital of France is"
 
-
 def npf(a):
     return np.asarray(mx.array(a).astype(mx.float32)).copy() if a is not None else None
-
 
 model, tok = load(MODEL)
 lm = model.language_model
@@ -51,12 +48,12 @@ for step in range(110):
         mtp_cache[0].values = mx.array(mtp_values)
         dh2 = lm.mtp(hidd, emb, mtp_cache)
         draft2 = int(mx.argmax(lm.lm_head(dh2)[0, -1]))
-        print(f"draft2 (re-run)={draft2} same={draft == draft2}")
+        print(f"draft2 (re-run)={draft2} same={draft==draft2}")
         # check the MTP module's output (dh) determinism
         dh_np = npf(dh[0, -1])
         dh2_np = npf(dh2[0, -1])
         d = dh_np - dh2_np
-        print(f"MTP output (dh): n={np.count_nonzero(d != 0)}/{d.size} maxabs={np.abs(d).max():.3e}")
+        print(f"MTP output (dh): n={np.count_nonzero(d!=0)}/{d.size} maxabs={np.abs(d).max():.3e}")
         break
     dh = lm.mtp(hidd, emb, mtp_cache)
     draft = int(mx.argmax(lm.lm_head(dh)[0, -1]))

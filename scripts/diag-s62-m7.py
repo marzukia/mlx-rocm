@@ -64,6 +64,7 @@ import mlx.core as mx
 import mlx.nn as mnn
 import numpy as np
 from mlx_lm import load
+from mlx_lm.models import cache as cache_mod
 from mlx_lm.models import qwen3_5 as q5
 from mlx_lm.models.cache import ArraysCache, KVCache
 
@@ -121,7 +122,9 @@ def cmp_report(name, a, b, first_idx=True):
     st = cmp_status(a, b)
     if st == "MATCH":
         print(f"  {name:<46} MATCH  (n={np.asarray(a).size})", flush=True)
-    elif st in ("NONE", "NONE-vs-ARR") or st.startswith("SHAPE"):
+    elif st in ("NONE", "NONE-vs-ARR"):
+        print(f"  {name:<46} {st}", flush=True)
+    elif st.startswith("SHAPE"):
         print(f"  {name:<46} {st}", flush=True)
     else:
         d = np.asarray(a, dtype=np.float32).ravel() - np.asarray(b, dtype=np.float32).ravel()
@@ -265,11 +268,7 @@ class AttnHook:
                         for x in a
                     ],
                     "kw": {
-                        k: (
-                            npf(v)
-                            if isinstance(v, mx.array)
-                            else (v if isinstance(v, (str, int, type(None))) else "<obj>")
-                        )
+                        k: (npf(v) if isinstance(v, mx.array) else (v if isinstance(v, (str, int, type(None))) else "<obj>"))
                         for k, v in kw.items()
                     },
                     "out": npf(out),
@@ -310,15 +309,8 @@ class AttnHook:
             out = self.orig_sdpa(q, k, v, scale=scale, mask=mask, sinks=sinks)
             self.sdpa_calls.append(
                 {
-                    "q": npf(q),
-                    "k": npf(k),
-                    "v": npf(v),
-                    "out": npf(out),
-                    "scale": float(scale),
-                    "mask": mask,
-                    "qshape": tuple(q.shape),
-                    "kshape": tuple(k.shape),
-                    "vshape": tuple(v.shape),
+                    "q": npf(q), "k": npf(k), "v": npf(v), "out": npf(out), "scale": float(scale), "mask": mask,
+                    "qshape": tuple(q.shape), "kshape": tuple(k.shape), "vshape": tuple(v.shape),
                 }
             )
             return out
@@ -370,14 +362,9 @@ def cap_gdn_weights(L):
         if isinstance(mod, mnn.QuantizedLinear):
             w[nm] = {
                 "quantized": True,
-                "bits": int(mod.bits),
-                "group": int(mod.group_size),
-                "mode": mod.mode,
-                "in": int(mod.weight.shape[1] * 32 // mod.bits),
-                "out": int(mod.weight.shape[0]),
-                "weight": snap_w(mod.weight),
-                "scales": snap_w(mod.scales),
-                "biases": snap_w(mod.biases),
+                "bits": int(mod.bits), "group": int(mod.group_size), "mode": mod.mode,
+                "in": int(mod.weight.shape[1] * 32 // mod.bits), "out": int(mod.weight.shape[0]),
+                "weight": snap_w(mod.weight), "scales": snap_w(mod.scales), "biases": snap_w(mod.biases),
             }
         else:
             w[nm] = {"quantized": False, "weight": snap_w(mod.weight), "bias": snap_w(getattr(mod, "bias", None))}
@@ -520,7 +507,7 @@ def run_m7(lm, cache, out, prev_token, draft, step):
         ah.__exit__()
         for h in hooks:
             h.__exit__()
-    for i, h in zip(GDN_LAYERS, hooks, strict=False):
+    for i, h in zip(GDN_LAYERS, hooks):
         gdnA[i] = h.cap
     attnA = ah.cap
     sdpaA = ah.sdpa_calls
@@ -559,7 +546,7 @@ def run_m7(lm, cache, out, prev_token, draft, step):
         ah.__exit__()
         for h in hooks:
             h.__exit__()
-    for i, h in zip(GDN_LAYERS, hooks, strict=False):
+    for i, h in zip(GDN_LAYERS, hooks):
         gdnB[f"{i}_1"] = h.cap
     attnB["1"] = ah.cap
     sdpaB.extend(ah.sdpa_calls)
@@ -582,7 +569,7 @@ def run_m7(lm, cache, out, prev_token, draft, step):
         ah.__exit__()
         for h in hooks:
             h.__exit__()
-    for i, h in zip(GDN_LAYERS, hooks, strict=False):
+    for i, h in zip(GDN_LAYERS, hooks):
         gdnB[f"{i}_2"] = h.cap
     attnB["2"] = ah.cap
     sdpaB.extend(ah.sdpa_calls)
@@ -591,7 +578,7 @@ def run_m7(lm, cache, out, prev_token, draft, step):
     if os.path.exists(M3_PKL):
         with open(M3_PKL, "rb") as f:
             m3 = pickle.load(f)
-        for i, (kind, _, k, _) in enumerate(m3["ha"]):
+        for i, (kind, off, k, v) in enumerate(m3["ha"]):
             if kind == "gdn" and i == 4:
                 st = cmp_status(npf(cache[4][0]), k)
                 print(f"post-A layer-4 conv state vs m3 pkl: {st}", flush=True)
@@ -686,18 +673,9 @@ def gdn_components(cap):
 
 
 GDN_LOGICAL_ORDER = [
-    "inputs",
-    "in_proj_qkv",
-    "in_proj_z",
-    "in_proj_b",
-    "in_proj_a",
-    "conv_state_pre",
-    "ssm_state_pre",
-    "norm_q",
-    "norm_k",
-    "ssm_out",
-    "norm_out",
-    "out_proj",
+    "inputs", "in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a",
+    "conv_state_pre", "ssm_state_pre", "norm_q", "norm_k", "ssm_out",
+    "norm_out", "out_proj",
 ]
 
 
@@ -720,10 +698,7 @@ def run_ab():
     gdnA, gdnB = c["gdnA"], c["gdnB"]
     attnA, attnB = c["attnA"], c["attnB"]
     sdpaA, sdpaB = c["sdpaA"], c["sdpaB"]
-    print(
-        f"loaded: act={c['act']} n_out={c['n_out']} restore_nbad={c['restore_nbad']} out_tail={c['out_tail']}",
-        flush=True,
-    )
+    print(f"loaded: act={c['act']} n_out={c['n_out']} restore_nbad={c['restore_nbad']} out_tail={c['out_tail']}", flush=True)
 
     first_diff_row0 = {}
     first_diff_row1 = {}
@@ -746,7 +721,7 @@ def run_ab():
                 print(f"  {nm:<40} {st}", flush=True)
             else:
                 d = np.asarray(a_r, dtype=np.float32).ravel() - np.asarray(b_r, dtype=np.float32).ravel()
-                print(f"  {nm:<40} DIFF n={int((d != 0).sum())}/{d.size} maxabs={np.abs(d).max():.3e}", flush=True)
+                print(f"  {nm:<40} DIFF n={int((d!=0).sum())}/{d.size} maxabs={np.abs(d).max():.3e}", flush=True)
                 if fd0 is None:
                     fd0 = nm
         first_diff_row0[i] = fd0
@@ -767,7 +742,7 @@ def run_ab():
                 print(f"  {nm:<40} {st}", flush=True)
             else:
                 d = np.asarray(a_r, dtype=np.float32).ravel() - np.asarray(b_r, dtype=np.float32).ravel()
-                print(f"  {nm:<40} DIFF n={int((d != 0).sum())}/{d.size} maxabs={np.abs(d).max():.3e}", flush=True)
+                print(f"  {nm:<40} DIFF n={int((d!=0).sum())}/{d.size} maxabs={np.abs(d).max():.3e}", flush=True)
                 if fd1 is None:
                     fd1 = nm
         first_diff_row1[i] = fd1
@@ -794,7 +769,6 @@ def run_ab():
         ("block_out", "block", 0, "out", None),
     ]
     fd0 = None
-
     def row_of_comp(a, i, layout):
         # layout 'qkv' = (B, H, T, D) or (B, T, H, D); layout 'bt' = (B, T, ...)
         if a is None:
@@ -813,7 +787,6 @@ def run_ab():
                 return cand_axis2
             return a
         return row_of(a, i)
-
     for nm, comp, idx, io, sub in attn_comps:
         a = attnA.get(comp, [{}])[idx].get(io)
         if sub is not None:
@@ -837,7 +810,7 @@ def run_ab():
             print(f"  {nm:<40} {st}", flush=True)
         else:
             d = np.asarray(a_r, dtype=np.float32).ravel() - np.asarray(b_r, dtype=np.float32).ravel()
-            print(f"  {nm:<40} DIFF n={int((d != 0).sum())}/{d.size} maxabs={np.abs(d).max():.3e}", flush=True)
+            print(f"  {nm:<40} DIFF n={int((d!=0).sum())}/{d.size} maxabs={np.abs(d).max():.3e}", flush=True)
             if fd0 is None:
                 fd0 = nm
     # SDPA row 0 — SDPA output layout varies; take the first token row robustly
@@ -862,7 +835,7 @@ def run_ab():
             print(f"  {'sdpa_out':<40} MATCH", flush=True)
         else:
             d = np.asarray(a_r, dtype=np.float32).ravel() - np.asarray(b_r, dtype=np.float32).ravel()
-            print(f"  {'sdpa_out':<40} DIFF n={int((d != 0).sum())}/{d.size} maxabs={np.abs(d).max():.3e}", flush=True)
+            print(f"  {'sdpa_out':<40} DIFF n={int((d!=0).sum())}/{d.size} maxabs={np.abs(d).max():.3e}", flush=True)
             if fd0 is None:
                 fd0 = "sdpa_out"
     first_diff_row0["attn3"] = fd0
@@ -891,7 +864,7 @@ def run_ab():
             print(f"  {nm:<40} {st}", flush=True)
         else:
             d = np.asarray(a_r, dtype=np.float32).ravel() - np.asarray(b_r, dtype=np.float32).ravel()
-            print(f"  {nm:<40} DIFF n={int((d != 0).sum())}/{d.size} maxabs={np.abs(d).max():.3e}", flush=True)
+            print(f"  {nm:<40} DIFF n={int((d!=0).sum())}/{d.size} maxabs={np.abs(d).max():.3e}", flush=True)
             if fd1 is None:
                 fd1 = nm
     if sdpaA:
@@ -907,7 +880,7 @@ def run_ab():
             print(f"  {'sdpa_out':<40} MATCH", flush=True)
         else:
             d = np.asarray(a_r, dtype=np.float32).ravel() - np.asarray(b_r, dtype=np.float32).ravel()
-            print(f"  {'sdpa_out':<40} DIFF n={int((d != 0).sum())}/{d.size} maxabs={np.abs(d).max():.3e}", flush=True)
+            print(f"  {'sdpa_out':<40} DIFF n={int((d!=0).sum())}/{d.size} maxabs={np.abs(d).max():.3e}", flush=True)
             if fd1 is None:
                 fd1 = "sdpa_out"
     first_diff_row1["attn3"] = fd1
@@ -933,7 +906,9 @@ def main():
         cache = lm.make_cache()
         lmap = ["attn" if isinstance(c, KVCache) else "gdn" for c in cache]
         print(f"layer map ({len(lmap)} layers): {lmap}", flush=True)
-        logits, hidden = lm(mx.array([prompt_ids]), cache=cache, return_hidden=True, return_prenorm=True)
+        logits, hidden = lm(
+            mx.array([prompt_ids]), cache=cache, return_hidden=True, return_prenorm=True
+        )
         lg = logits[0, -1]
         hidd = hidden[0, -1]
         draft = prev_token = None
@@ -978,8 +953,12 @@ def main():
                         if isinstance(c, KVCache):
                             c.trim(2)
                     out.append(t2)
-                    logits, hidden = lm(mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True)
-                    logits, hidden = lm(mx.array([[t2]]), cache=cache, return_hidden=True, return_prenorm=True)
+                    logits, hidden = lm(
+                        mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True
+                    )
+                    logits, hidden = lm(
+                        mx.array([[t2]]), cache=cache, return_hidden=True, return_prenorm=True
+                    )
                     lg, hidd = logits[0, -1], hidden[0, -1]
         if not armed:
             print(

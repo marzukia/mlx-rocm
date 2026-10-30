@@ -332,11 +332,7 @@ def do_harvest(lm, cache, out, prev_token, draft, step):
         print("NO SDPA CALL CAPTURED - unexpected", flush=True)
         sys.exit(3)
     l3 = hook.calls[0]  # the first attention layer is layer 3
-    print(
-        f"layer-3 SDPA: qshape={l3['qshape']} kshape={l3['kshape']} "
-        f"vshape={l3['vshape']} scale={l3['scale']} mask={l3['mask']!r}",
-        flush=True,
-    )
+    print(f"layer-3 SDPA: qshape={l3['qshape']} kshape={l3['kshape']} vshape={l3['vshape']} scale={l3['scale']} mask={l3['mask']!r}", flush=True)
     print(f"layer-3 SDPA dtypes: q={l3['qdtype']} k={l3['kdtype']} v={l3['vdtype']} out={l3['outdtype']}", flush=True)
     if l3["qshape"][2] != 2:
         print(f"UNEXPECTED: layer-3 SDPA query S={l3['qshape'][2]} (expected 2)", flush=True)
@@ -410,11 +406,7 @@ def run_ab():
     qdt = getattr(mx, c.get("qdtype", "bfloat16").replace("mlx.core.", "").replace(".", "_"))
     kdt = getattr(mx, c.get("kdtype", "bfloat16").replace("mlx.core.", "").replace(".", "_"))
     vdt = getattr(mx, c.get("vdtype", "bfloat16").replace("mlx.core.", "").replace(".", "_"))
-    print(
-        f"loaded: qshape={c['qshape']} kshape={c['kshape']} vshape={c['vshape']} "
-        f"scale={scale} mask={mask_cap!r} act={c['act']}",
-        flush=True,
-    )
+    print(f"loaded: qshape={c['qshape']} kshape={c['kshape']} vshape={c['vshape']} scale={scale} mask={mask_cap!r} act={c['act']}", flush=True)
     print(f"dtypes: q={c.get('qdtype')} k={c.get('kdtype')} v={c.get('vdtype')} out={c.get('outdtype')}", flush=True)
 
     qm = of(q, qdt)
@@ -448,8 +440,7 @@ def run_ab():
     print("== core A/B verdict ==", flush=True)
     print(f"A re-run reproduces capture: {'YES' if a_ok else 'NO'}", flush=True)
     print(f"B1 (control) == A row 0:    {'YES' if b1_ok else 'NO'}", flush=True)
-    b2v = "YES" if b2_match else "NO  <-- the m3 divergence is reproduced by direct SDPA"
-    print(f"B2 == A row 1:              {b2v}", flush=True)
+    print(f"B2 == A row 1:              {'YES' if b2_match else 'NO  <-- the m3 divergence is reproduced by direct SDPA'}", flush=True)
 
     # ---- (4) bisection: single-variable A/Bs -----------------------------
     print("== (4) bisection (single-variable A/Bs) ==", flush=True)
@@ -464,10 +455,7 @@ def run_ab():
     full_true = mx.ones((1, 1, 2, k.shape[2]), dtype=mx.bool_)
     full_S2 = npf(sdpa(qm, km, vm, scale, full_true))[0, :, 1, :]
     results["b_fullTrue_S2_row1_vs_causal_S2_row1"] = cmp_status(full_S2, A_row1)
-    print(
-        f"(b) full-True S=2 row1 vs causal S=2 row1: {results['b_fullTrue_S2_row1_vs_causal_S2_row1'][0]}",
-        flush=True,
-    )
+    print(f"(b) full-True S=2 row1 vs causal S=2 row1: {results['b_fullTrue_S2_row1_vs_causal_S2_row1'][0]}", flush=True)
 
     # (c) S=2 with row 0 zero-padded q (attend set identical)
     qz = mx.concatenate([mx.zeros_like(qm[:, :, 0:1, :]), qm[:, :, 1:2, :]], axis=2)  # (1,16,2,256)
@@ -500,12 +488,7 @@ def run_ab():
     sB2 = npf(sdpa(sq[:, :, 1:2, :], sk, sv, scale, None))[0, :, 0, :]
     s_match = cmp_status(sA, sB2)
     print(f"synthetic causal S=2 row1 vs unmasked S=1: {s_match[0]}", flush=True)
-    synth_v = (
-        "STRUCTURAL (reproduces on random data)"
-        if s_match[0] == "DIFF"
-        else "NOT reproduced on random data (data-dependent)"
-    )
-    print(f"synthetic verdict: {synth_v}", flush=True)
+    print(f"synthetic verdict: {'STRUCTURAL (reproduces on random data)' if s_match[0] == 'DIFF' else 'NOT reproduced on random data (data-dependent)'}", flush=True)
 
     # ---- summary --------------------------------------------------------
     print("== m4 A/B summary ==", flush=True)

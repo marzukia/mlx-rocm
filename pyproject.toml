@@ -42,6 +42,25 @@ extend-exclude = [
     "bench/mtp-bench3.py",
     "bench/mtp-bench5.py",
     "bench/g1-t3-parts.py",
+    # m8 full-state audit as-run probe scripts (t942/t976/t986/t992): kept
+    # byte-identical to as-run evidence; excluded from lint + format.
+    "scripts/m8-mtp148-bisect.py",
+    "scripts/m8-state-audit.py",
+    "scripts/m8-mtp-state-trace.py",
+    "scripts/m8-sdpa-isolated.py",
+    "scripts/m8-fa-bisect.py",
+    "scripts/m7-probe1.py",
+    "scripts/m7-probe2.py",
+    "scripts/m7-probe3.py",
+    "scripts/m7-probe4.py",
+    "scripts/m7-probe5.py",
+    "scripts/m7-state-probe.py",
+    "scripts/m7-g4-probe.py",
+    "scripts/m7-mtp-probe.py",
+    "scripts/m7-mtp2-probe.py",
+    "scripts/diag-s62-m5.py",
+    "scripts/diag-s62-m7.py",
+    "scripts/diag-s62-sdpa.py",
 ]
 
 [tool.ruff.lint]

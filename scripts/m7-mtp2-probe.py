@@ -26,11 +26,9 @@ Probe C (stateless vs cached, numerical-equivalence check):
   compares the stateless dh to the cached dh (documents the difference;
   the MTP draft only affects the accept rate, not the emitted stream).
 """
-
 import os
-
-import mlx.core as mx
 import numpy as np
+import mlx.core as mx
 from mlx_lm import load
 from mlx_lm.models.cache import KVCache
 
@@ -48,7 +46,9 @@ mx.eval(model.parameters())
 mtp_cache = [KVCache()]
 prompt_ids = tok.encode(PROMPT, add_special_tokens=False)
 cache = lm.make_cache()
-logits, hidden = lm(mx.array([prompt_ids]), cache=cache, return_hidden=True, return_prenorm=True)
+logits, hidden = lm(
+    mx.array([prompt_ids]), cache=cache, return_hidden=True, return_prenorm=True
+)
 lg = logits[0, -1]
 hidd = hidden[0, -1]
 
@@ -80,10 +80,8 @@ for step in range(110):
         mx.eval(dh2)
         draft2 = int(mx.argmax(lm.lm_head(dh2)[0, -1]))
         d = npf(dh[0, -1]) - npf(dh2[0, -1])
-        print(
-            f"[A] dh (full-state restore): n={np.count_nonzero(d != 0)}/{d.size} "
-            f"maxabs={np.abs(d).max():.3e} draft2={draft2} same={draft == draft2}"
-        )
+        print(f"[A] dh (full-state restore): n={np.count_nonzero(d != 0)}/{d.size} "
+              f"maxabs={np.abs(d).max():.3e} draft2={draft2} same={draft == draft2}")
 
         # ---- Probe B: stateless variant (fresh cache per draft) ----
         dh_s1 = lm.mtp(hidd, emb, None)
@@ -93,20 +91,21 @@ for step in range(110):
         mx.eval(dh_s2)
         draft_s2 = int(mx.argmax(lm.lm_head(dh_s2)[0, -1]))
         d_s = npf(dh_s1[0, -1]) - npf(dh_s2[0, -1])
-        print(
-            f"[B] stateless dh: n={np.count_nonzero(d_s != 0)}/{d_s.size} "
-            f"maxabs={np.abs(d_s).max():.3e} draft_s1={draft_s1} draft_s2={draft_s2}"
-        )
+        print(f"[B] stateless dh: n={np.count_nonzero(d_s != 0)}/{d_s.size} "
+              f"maxabs={np.abs(d_s).max():.3e} draft_s1={draft_s1} draft_s2={draft_s2}")
 
         # ---- Probe C: stateless vs cached (numerical-equivalence check) ----
         d_c = npf(dh_s1[0, -1]) - npf(dh[0, -1])
-        print(f"[C] stateless vs cached dh: n={np.count_nonzero(d_c != 0)}/{d_c.size} maxabs={np.abs(d_c).max():.3e}")
+        print(f"[C] stateless vs cached dh: n={np.count_nonzero(d_c != 0)}/{d_c.size} "
+              f"maxabs={np.abs(d_c).max():.3e}")
         break
     # continue the MTP loop (same as m7-mtp-probe)
     dh = lm.mtp(hidd, emb, mtp_cache)
     draft = int(mx.argmax(lm.lm_head(dh)[0, -1]))
     prev = t
-    logits2, hidden2 = lm(mx.array([[prev, draft]]), cache=cache, return_hidden=True, return_prenorm=True)
+    logits2, hidden2 = lm(
+        mx.array([[prev, draft]]), cache=cache, return_hidden=True, return_prenorm=True
+    )
     t2 = int(mx.argmax(logits2[0, 0]))
     if t2 == draft:
         out.append(t2)
@@ -121,7 +120,11 @@ for step in range(110):
             if isinstance(c, KVCache):
                 c.trim(2)
         out.append(t2)
-        logits2, hidden2 = lm(mx.array([[prev]]), cache=cache, return_hidden=True, return_prenorm=True)
-        logits2, hidden2 = lm(mx.array([[t2]]), cache=cache, return_hidden=True, return_prenorm=True)
+        logits2, hidden2 = lm(
+            mx.array([[prev]]), cache=cache, return_hidden=True, return_prenorm=True
+        )
+        logits2, hidden2 = lm(
+            mx.array([[t2]]), cache=cache, return_hidden=True, return_prenorm=True
+        )
         lg, hidd = logits2[0, -1], hidden2[0, -1]
 print(f"done: n_out={len(out)} last={out[-8:]}")

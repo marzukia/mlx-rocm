@@ -9,20 +9,16 @@ If the MTP-path state always matches the AR-path state, the emitted tokens
 must be bit-exact with AR (lossless). A divergence here localizes the G4
 first-divergence (token 148) to a specific step + component.
 """
-
 import os
-
-import mlx.core as mx
 import numpy as np
+import mlx.core as mx
 from mlx_lm import load
 from mlx_lm.models.cache import KVCache
 
 MODEL = os.environ.get("MTP_MODEL", "/mnt/models/qwen3-9b-mlx")
-PROMPT = (
-    "Explain in great detail how a modern smartphone works, from the "
-    "hardware components to the operating system, covering every "
-    "subsystem. Be exhaustive."
-)
+PROMPT = ("Explain in great detail how a modern smartphone works, from the "
+          "hardware components to the operating system, covering every "
+          "subsystem. Be exhaustive.")
 MAX_TOKENS = 200
 EOS = 248044
 
@@ -65,15 +61,15 @@ def cmp_state(snap_a, snap_b, tag, report):
     """Compare two full-state snapshots; append any divergence to report."""
     gdn_a, kv_a = snap_a
     gdn_b, kv_b = snap_b
-    for (_, ca, sa, _), (_, cb, sb, _) in zip(gdn_a, gdn_b, strict=False):
-        for _, (a, b, name) in enumerate([(ca, cb, "conv"), (sa, sb, "ssm")]):
+    for (ia, ca, sa, la), (ib, cb, sb, lb) in zip(gdn_a, gdn_b):
+        for j, (a, b, name) in enumerate([(ca, cb, "conv"), (sa, sb, "ssm")]):
             if a is None or b is None:
                 continue
             d = npf(a) - npf(b)
             n = np.count_nonzero(d != 0)
             if n > 0 and tag not in report:
                 report[tag] = (n, d.size, float(np.abs(d).max()), name)
-    for (_, ka, va, oa), (_, kb, vb, ob) in zip(kv_a, kv_b, strict=False):
+    for (ia, ka, va, oa), (ib, kb, vb, ob) in zip(kv_a, kv_b):
         for a, b, name in [(ka, kb, "keys"), (va, vb, "values")]:
             d = npf(a) - npf(b)
             n = np.count_nonzero(d != 0)
@@ -91,7 +87,7 @@ mtp_cache = [KVCache()]
 prompt_ids = tok.encode(PROMPT, add_special_tokens=False)
 cache = lm.make_cache()
 logits, hidden = lm(mx.array([prompt_ids]), cache=cache, return_hidden=True, return_prenorm=True)
-logits_last = logits[0, -1]
+l = logits[0, -1]
 h = hidden[0, -1]
 draft = None
 prev_token = None
@@ -103,7 +99,7 @@ first_div_step = None
 
 for _ in range(MAX_TOKENS):
     if draft is None:
-        t = int(mx.argmax(logits_last))
+        t = int(mx.argmax(l))
         if t == EOS:
             break
         out.append(t)
@@ -128,7 +124,7 @@ for _ in range(MAX_TOKENS):
             accepted += 1
             out.append(t2)
             snap_mtp = snap_all(cache)
-            logits_last, h = l1, h1
+            l, h = l1, h1
         else:
             restore_gdn(cache, saved)
             for c in cache:
@@ -138,7 +134,7 @@ for _ in range(MAX_TOKENS):
             logits, hidden = lm(mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True)
             logits, hidden = lm(mx.array([[t2]]), cache=cache, return_hidden=True, return_prenorm=True)
             snap_mtp = snap_all(cache)
-            logits_last, h = logits[0, -1], hidden[0, -1]
+            l, h = logits[0, -1], hidden[0, -1]
         # AR-path state: roll back to before the verify step, then [prev_token] then [t2]
         restore_all(cache, snap_before)
         logits, hidden = lm(mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True)
@@ -148,15 +144,13 @@ for _ in range(MAX_TOKENS):
         cmp_state(snap_mtp, snap_ar, f"v{verifies}", report)
         if f"v{verifies}" in report and first_div_step is None:
             first_div_step = verifies
-            print(
-                f"FIRST-DIV verify-step={verifies} (out_len={len(out)}) "
-                f"n={report[f'v{verifies}'][0]}/{report[f'v{verifies}'][1]} "
-                f"maxabs={report[f'v{verifies}'][2]:.3e} comp={report[f'v{verifies}'][3]}"
-            )
+            print(f"FIRST-DIV verify-step={verifies} (out_len={len(out)}) "
+                  f"n={report[f'v{verifies}'][0]}/{report[f'v{verifies}'][1]} "
+                  f"maxabs={report[f'v{verifies}'][2]:.3e} comp={report[f'v{verifies}'][3]}")
         # restore the MTP-path state so the flow can continue
         restore_all(cache, snap_mtp)
-        # re-eval logits_last, h from the MTP-path state (re-forward to get fresh logits_last, h)
-        # (logits_last, h were captured from the MTP-path forward above; they are still valid)
+        # re-eval l, h from the MTP-path state (re-forward to get fresh l, h)
+        # (l, h were captured from the MTP-path forward above; they are still valid)
     if len(out) >= MAX_TOKENS:
         break
 

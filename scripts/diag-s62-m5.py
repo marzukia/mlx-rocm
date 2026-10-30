@@ -225,12 +225,7 @@ def verify_restore(cache, snap):
         if s["kind"] == "kv":
             for nm in ("keys", "values"):
                 live = c.keys if nm == "keys" else c.values
-                (
-                    st,
-                    n,
-                    tot,
-                    _,
-                ) = cmp_status(npf(live), s[nm][0])
+                st, n, tot, _, = cmp_status(npf(live), s[nm][0])
                 if st not in ("MATCH", "NONE"):
                     nbad += 1
                     print(f"  RESTORE-DIFF entry={i} {nm}: {st} n={n}/{tot}", flush=True)
@@ -283,11 +278,7 @@ class BlockHook:
                         for x in a
                     ],
                     "kw": {
-                        k: (
-                            npf(v)
-                            if isinstance(v, mx.array)
-                            else (v if isinstance(v, (str, int, type(None))) else "<obj>")
-                        )
+                        k: (npf(v) if isinstance(v, mx.array) else (v if isinstance(v, (str, int, type(None))) else "<obj>"))
                         for k, v in kw.items()
                     },
                     "out": npf(out),
@@ -329,19 +320,9 @@ class BlockHook:
             out = self.orig_sdpa(q, k, v, scale=scale, mask=mask, sinks=sinks)
             self.sdpa_calls.append(
                 {
-                    "q": npf(q),
-                    "k": npf(k),
-                    "v": npf(v),
-                    "out": npf(out),
-                    "scale": float(scale),
-                    "mask": mask,
-                    "qshape": tuple(q.shape),
-                    "kshape": tuple(k.shape),
-                    "vshape": tuple(v.shape),
-                    "qdtype": str(q.dtype),
-                    "kdtype": str(k.dtype),
-                    "vdtype": str(v.dtype),
-                    "outdtype": str(out.dtype),
+                    "q": npf(q), "k": npf(k), "v": npf(v), "out": npf(out), "scale": float(scale), "mask": mask,
+                    "qshape": tuple(q.shape), "kshape": tuple(k.shape), "vshape": tuple(v.shape),
+                    "qdtype": str(q.dtype), "kdtype": str(k.dtype), "vdtype": str(v.dtype), "outdtype": str(out.dtype),
                 }
             )
             return out
@@ -368,14 +349,9 @@ def cap_weights(L3):
         if isinstance(mod, mnn.QuantizedLinear):
             return {
                 "quantized": True,
-                "bits": int(mod.bits),
-                "group": int(mod.group_size),
-                "mode": mod.mode,
-                "in": int(mod.weight.shape[1] * 32 // mod.bits),
-                "out": int(mod.weight.shape[0]),
-                "weight": snap_w(mod.weight),
-                "scales": snap_w(mod.scales),
-                "biases": snap_w(mod.biases),
+                "bits": int(mod.bits), "group": int(mod.group_size), "mode": mod.mode,
+                "in": int(mod.weight.shape[1] * 32 // mod.bits), "out": int(mod.weight.shape[0]),
+                "weight": snap_w(mod.weight), "scales": snap_w(mod.scales), "biases": snap_w(mod.biases),
             }
         return {"quantized": False, "weight": snap_w(mod.weight), "bias": snap_w(getattr(mod, "bias", None))}
 
@@ -465,12 +441,7 @@ def run_m5(lm, cache, out, prev_token, draft, step):
     print(f"variant A act={act} (t2={t2} draft={S62_DRAFT})", flush=True)
     capA = hk.cap
     sdpaA = hk.sdpa_calls[0]
-    print(
-        f"variant A: {len(hk.sdpa_calls)} SDPA calls; layer-3: "
-        f"qshape={sdpaA['qshape']} kshape={sdpaA['kshape']} mask={sdpaA['mask']!r} "
-        f"rope_offset={capA['rope'][0]['kw']['offset']}",
-        flush=True,
-    )
+    print(f"variant A: {len(hk.sdpa_calls)} SDPA calls; layer-3: qshape={sdpaA['qshape']} kshape={sdpaA['kshape']} mask={sdpaA['mask']!r} rope_offset={capA['rope'][0]['kw']['offset']}", flush=True)
     weights = cap_weights(L3)
 
     # ---- restore + verify the fork ---------------------------------------
@@ -500,12 +471,7 @@ def run_m5(lm, cache, out, prev_token, draft, step):
         mx.eval([logits_b2, hidden_b2])
     capB = hk.cap
     sdpaB = hk.sdpa_calls[0]
-    print(
-        f"variant B: {len(hk.sdpa_calls)} SDPA calls; layer-3: "
-        f"qshape={sdpaB['qshape']} kshape={sdpaB['kshape']} mask={sdpaB['mask']!r} "
-        f"rope_offset={capB['rope'][0]['kw']['offset']}",
-        flush=True,
-    )
+    print(f"variant B: {len(hk.sdpa_calls)} SDPA calls; layer-3: qshape={sdpaB['qshape']} kshape={sdpaB['kshape']} mask={sdpaB['mask']!r} rope_offset={capB['rope'][0]['kw']['offset']}", flush=True)
 
     # ---- cross-checks (determinism vs m3/m4) -----------------------------
     if os.path.exists(M4_PKL):
@@ -533,11 +499,7 @@ def run_m5(lm, cache, out, prev_token, draft, step):
     cmp_report("logits after 279  (A[0,0] vs B1[0,0])", npf(logits_a[0, 0]), npf(logits_b1[0, 0]))
     cmp_report("logits after 3545 (A[0,1] vs B2[0,0])", npf(logits_a[0, 1]), npf(logits_b2[0, 0]))
     if capA["rope"][0]["kw"]["offset"] != 87 or capB["rope"][0]["kw"]["offset"] != 88:
-        print(
-            f"UNEXPECTED rope offsets: A={capA['rope'][0]['kw']['offset']} "
-            f"B={capB['rope'][0]['kw']['offset']} (expected 87/88)",
-            flush=True,
-        )
+        print(f"UNEXPECTED rope offsets: A={capA['rope'][0]['kw']['offset']} B={capB['rope'][0]['kw']['offset']} (expected 87/88)", flush=True)
 
     with open(M5_PKL, "wb") as f:
         pickle.dump(
@@ -571,7 +533,8 @@ def run_ab():
     sdpaA, sdpaB = c["sdpaA"], c["sdpaB"]
     w = c["weights"]
     print(
-        f"loaded: act={c['act']} n_out={c['n_out']} restore_nbad={c['restore_nbad']} out_tail={c['out_tail']}",
+        f"loaded: act={c['act']} n_out={c['n_out']} restore_nbad={c['restore_nbad']} "
+        f"out_tail={c['out_tail']}",
         flush=True,
     )
     print(
@@ -638,32 +601,20 @@ def run_ab():
 
     # ---- consistency: captured vs recomputed (in-model) ------------------
     print("== consistency (captured vs recomputed, in-model) ==", flush=True)
-
     def oin_check(cap, tag):
         qkv = cap["q_proj"][0]["out"]
         B, L, _ = qkv.shape
         raw = mx.split(of(qkv, mx.bfloat16).reshape(B, L, N_H, -1), 2, axis=-1)[1].reshape(B, L, -1)
-        oin_re = of(sdpaA["out"] if tag == "A" else sdpaB["out"], mx.bfloat16).transpose(0, 2, 1, 3).reshape(
-            B, L, -1
-        ) * mx.sigmoid(raw)
+        oin_re = (of(sdpaA["out"] if tag == "A" else sdpaB["out"], mx.bfloat16).transpose(0, 2, 1, 3).reshape(B, L, -1) * mx.sigmoid(raw))
         cmp_report(f"o_proj in {tag} (captured vs sdpa*gate)", npf(oin_re), cap["o_proj"][0]["in"][0])
-
     oin_check(capA, "A")
     oin_check(capB, "B")
     cmp_report("post_ln in A (captured vs x+r)", capA["post_ln"][0]["in"][0], hA)
     cmp_report("post_ln in B (captured vs x+r)", capB["post_ln"][0]["in"][0], hB)
     cmp_report("down in A (captured vs silu*up)", capA["down_proj"][0]["in"][0], swA)
     cmp_report("down in B (captured vs silu*up)", capB["down_proj"][0]["in"][0], swB)
-    cmp_report(
-        "block out A (captured vs h+mlp)",
-        capA["block"][0]["out"],
-        npf(of(hA, mx.bfloat16) + of(capA["down_proj"][0]["out"], mx.bfloat16)),
-    )
-    cmp_report(
-        "block out B (captured vs h+mlp)",
-        capB["block"][0]["out"],
-        npf(of(hB, mx.bfloat16) + of(capB["down_proj"][0]["out"], mx.bfloat16)),
-    )
+    cmp_report("block out A (captured vs h+mlp)", capA["block"][0]["out"], npf(of(hA, mx.bfloat16) + of(capA["down_proj"][0]["out"], mx.bfloat16)))
+    cmp_report("block out B (captured vs h+mlp)", capB["block"][0]["out"], npf(of(hB, mx.bfloat16) + of(capB["down_proj"][0]["out"], mx.bfloat16)))
 
     # ---- Part 2: the direct re-run (M=2 row 1 vs M=1) -------------------
     print("== Part 2: direct re-run (M=2 row 1 vs M=1, captured inputs + weights) ==", flush=True)
@@ -671,12 +622,7 @@ def run_ab():
     xB = of(capB["block"][0]["in"][0], mx.bfloat16)
     ln = mk_rms(w["input_ln"])
     pln = mk_rms(w["post_ln"])
-    qproj, kproj, vproj, oproj = (
-        mk_linear(w["attn.q_proj"]),
-        mk_linear(w["attn.k_proj"]),
-        mk_linear(w["attn.v_proj"]),
-        mk_linear(w["attn.o_proj"]),
-    )
+    qproj, kproj, vproj, oproj = mk_linear(w["attn.q_proj"]), mk_linear(w["attn.k_proj"]), mk_linear(w["attn.v_proj"]), mk_linear(w["attn.o_proj"])
     qnorm, knorm = mk_rms(w["attn.q_norm"]), mk_rms(w["attn.k_norm"])
     gp_l, up_l, down_l = mk_linear(w["mlp.gate_proj"]), mk_linear(w["mlp.up_proj"]), mk_linear(w["mlp.down_proj"])
     rd = w["attn.rope"]
@@ -704,26 +650,10 @@ def run_ab():
         dp = down_l(sw)
         out = h + dp
         return {
-            "ln": ln_x,
-            "qkv": qkv,
-            "keys": keys,
-            "values": values,
-            "qn": qn,
-            "kn": kn,
-            "rq": rq,
-            "rk": rk,
-            "vt": vt,
-            "sdpa": sdpa_out,
-            "gate": mx.sigmoid(gate),
-            "oin": oin,
-            "r": r,
-            "h": h,
-            "pln": p,
-            "gp": gp,
-            "up": up,
-            "sw": sw,
-            "dp": dp,
-            "out": out,
+            "ln": ln_x, "qkv": qkv, "keys": keys, "values": values, "qn": qn, "kn": kn,
+            "rq": rq, "rk": rk, "vt": vt, "sdpa": sdpa_out, "gate": mx.sigmoid(gate),
+            "oin": oin, "r": r, "h": h, "pln": p, "gp": gp, "up": up, "sw": sw,
+            "dp": dp, "out": out,
         }
 
     offA = capA["rope"][0]["kw"]["offset"]
@@ -783,14 +713,9 @@ def run_ab():
     # ---- verdict ---------------------------------------------------------
     print("== m5 verdict ==", flush=True)
     st1, n1, tot1, _ = cmp_status(row1(capA["block"][0]["in"][0]), row0(capB["block"][0]["in"][0]))
-    ctrl_v = "MATCH" if st1 == "MATCH" else "DIFF (flaw in the GDN-2 output; probe the GDN-2 split next)"
-    print(f"control (block_in, the GDN-2 out): {ctrl_v}", flush=True)
+    print(f"control (block_in, the GDN-2 out): {'MATCH' if st1 == 'MATCH' else 'DIFF (flaw in the GDN-2 output; probe the GDN-2 split next)'}", flush=True)
     if first_diff is None:
-        print(
-            "first diverging component: NONE - the WHOLE layer-3 block is bit-exact "
-            "(m3's chain has a measurement flaw)",
-            flush=True,
-        )
+        print("first diverging component: NONE - the WHOLE layer-3 block is bit-exact (m3's chain has a measurement flaw)", flush=True)
     else:
         print(f"first diverging component: {first_diff}", flush=True)
     return {"first_diff": first_diff, "control": st1 == "MATCH", "re_diff": re_diff}
@@ -799,34 +724,10 @@ def run_ab():
 # --- oneshot: one direct call (for rocprofv3 --kernel-trace) --------------------
 
 ONESHOT_SPECS = [
-    "ln_A",
-    "ln_B",
-    "qproj_A",
-    "qproj_B",
-    "kproj_A",
-    "kproj_B",
-    "vproj_A",
-    "vproj_B",
-    "oproj_A",
-    "oproj_B",
-    "qnorm_A",
-    "qnorm_B",
-    "knorm_A",
-    "knorm_B",
-    "ropeq_A",
-    "ropeq_B",
-    "ropek_A",
-    "ropek_B",
-    "sdpa_A",
-    "sdpa_B",
-    "sig_A",
-    "sig_B",
-    "silu_A",
-    "silu_B",
-    "addh_A",
-    "addh_B",
-    "addout_A",
-    "addout_B",
+    "ln_A", "ln_B", "qproj_A", "qproj_B", "kproj_A", "kproj_B", "vproj_A", "vproj_B",
+    "oproj_A", "oproj_B", "qnorm_A", "qnorm_B", "knorm_A", "knorm_B",
+    "ropeq_A", "ropeq_B", "ropek_A", "ropek_B", "sdpa_A", "sdpa_B",
+    "sig_A", "sig_B", "silu_A", "silu_B", "addh_A", "addh_B", "addout_A", "addout_B",
 ]
 
 
@@ -850,13 +751,10 @@ def run_oneshot():
     xA = of(capA["block"][0]["in"][0], bf)
     xB = of(capB["block"][0]["in"][0], bf)
     ln = mk_rms(w["input_ln"])
-    qproj, kproj, vproj, oproj = (
-        mk_linear(w["attn.q_proj"]),
-        mk_linear(w["attn.k_proj"]),
-        mk_linear(w["attn.v_proj"]),
-        mk_linear(w["attn.o_proj"]),
-    )
+    pln = mk_rms(w["post_ln"])
+    qproj, kproj, vproj, oproj = mk_linear(w["attn.q_proj"]), mk_linear(w["attn.k_proj"]), mk_linear(w["attn.v_proj"]), mk_linear(w["attn.o_proj"])
     qnorm, knorm = mk_rms(w["attn.q_norm"]), mk_rms(w["attn.k_norm"])
+    gp_l, up_l, down_l = mk_linear(w["mlp.gate_proj"]), mk_linear(w["mlp.up_proj"]), mk_linear(w["mlp.down_proj"])
     rd = w["attn.rope"]
     offA = capA["rope"][0]["kw"]["offset"]
     offB = capB["rope"][0]["kw"]["offset"]
@@ -867,72 +765,23 @@ def run_oneshot():
         return r
 
     fns = {
-        "ln_A": lambda: ln(xA),
-        "ln_B": lambda: ln(xB),
-        "qproj_A": lambda: qproj(of(capA["input_ln"][0]["out"], bf)),
-        "qproj_B": lambda: qproj(of(capB["input_ln"][0]["out"], bf)),
-        "kproj_A": lambda: kproj(of(capA["input_ln"][0]["out"], bf)),
-        "kproj_B": lambda: kproj(of(capB["input_ln"][0]["out"], bf)),
-        "vproj_A": lambda: vproj(of(capA["input_ln"][0]["out"], bf)),
-        "vproj_B": lambda: vproj(of(capB["input_ln"][0]["out"], bf)),
-        "oproj_A": lambda: oproj(of(capA["o_proj"][0]["in"][0], bf)),
-        "oproj_B": lambda: oproj(of(capB["o_proj"][0]["in"][0], bf)),
-        "qnorm_A": lambda: qnorm(of(capA["q_norm"][0]["in"][0], bf)),
-        "qnorm_B": lambda: qnorm(of(capB["q_norm"][0]["in"][0], bf)),
-        "knorm_A": lambda: knorm(of(capA["k_norm"][0]["in"][0], bf)),
-        "knorm_B": lambda: knorm(of(capB["k_norm"][0]["in"][0], bf)),
-        "ropeq_A": lambda: mx.fast.rope(
-            of(capA["rope"][0]["in"][0], bf),
-            rd["dims"],
-            traditional=rd["traditional"],
-            base=rd["base"],
-            scale=rd["scale"],
-            offset=offA,
-        ),
-        "ropeq_B": lambda: mx.fast.rope(
-            of(capB["rope"][0]["in"][0], bf),
-            rd["dims"],
-            traditional=rd["traditional"],
-            base=rd["base"],
-            scale=rd["scale"],
-            offset=offB,
-        ),
-        "ropek_A": lambda: mx.fast.rope(
-            of(capA["rope"][1]["in"][0], bf),
-            rd["dims"],
-            traditional=rd["traditional"],
-            base=rd["base"],
-            scale=rd["scale"],
-            offset=offA,
-        ),
-        "ropek_B": lambda: mx.fast.rope(
-            of(capB["rope"][1]["in"][0], bf),
-            rd["dims"],
-            traditional=rd["traditional"],
-            base=rd["base"],
-            scale=rd["scale"],
-            offset=offB,
-        ),
-        "sdpa_A": lambda: mx.fast.scaled_dot_product_attention(
-            of(sdpaA["q"], bf),
-            of(sdpaA["k"], bf),
-            of(sdpaA["v"], bf),
-            scale=sdpaA["scale"],
-            mask="causal",
-        ),
-        "sdpa_B": lambda: mx.fast.scaled_dot_product_attention(
-            of(sdpaB["q"], bf),
-            of(sdpaB["k"], bf),
-            of(sdpaB["v"], bf),
-            scale=sdpaB["scale"],
-            mask=None,
-        ),
-        "sig_A": lambda: mx.sigmoid(gate_sig_mx(capA)),
-        "sig_B": lambda: mx.sigmoid(gate_sig_mx(capB)),
+        "ln_A": lambda: ln(xA), "ln_B": lambda: ln(xB),
+        "qproj_A": lambda: qproj(of(capA["input_ln"][0]["out"], bf)), "qproj_B": lambda: qproj(of(capB["input_ln"][0]["out"], bf)),
+        "kproj_A": lambda: kproj(of(capA["input_ln"][0]["out"], bf)), "kproj_B": lambda: kproj(of(capB["input_ln"][0]["out"], bf)),
+        "vproj_A": lambda: vproj(of(capA["input_ln"][0]["out"], bf)), "vproj_B": lambda: vproj(of(capB["input_ln"][0]["out"], bf)),
+        "oproj_A": lambda: oproj(of(capA["o_proj"][0]["in"][0], bf)), "oproj_B": lambda: oproj(of(capB["o_proj"][0]["in"][0], bf)),
+        "qnorm_A": lambda: qnorm(of(capA["q_norm"][0]["in"][0], bf)), "qnorm_B": lambda: qnorm(of(capB["q_norm"][0]["in"][0], bf)),
+        "knorm_A": lambda: knorm(of(capA["k_norm"][0]["in"][0], bf)), "knorm_B": lambda: knorm(of(capB["k_norm"][0]["in"][0], bf)),
+        "ropeq_A": lambda: mx.fast.rope(of(capA["rope"][0]["in"][0], bf), rd["dims"], traditional=rd["traditional"], base=rd["base"], scale=rd["scale"], offset=offA),
+        "ropeq_B": lambda: mx.fast.rope(of(capB["rope"][0]["in"][0], bf), rd["dims"], traditional=rd["traditional"], base=rd["base"], scale=rd["scale"], offset=offB),
+        "ropek_A": lambda: mx.fast.rope(of(capA["rope"][1]["in"][0], bf), rd["dims"], traditional=rd["traditional"], base=rd["base"], scale=rd["scale"], offset=offA),
+        "ropek_B": lambda: mx.fast.rope(of(capB["rope"][1]["in"][0], bf), rd["dims"], traditional=rd["traditional"], base=rd["base"], scale=rd["scale"], offset=offB),
+        "sdpa_A": lambda: mx.fast.scaled_dot_product_attention(of(sdpaA["q"], bf), of(sdpaA["k"], bf), of(sdpaA["v"], bf), scale=sdpaA["scale"], mask="causal"),
+        "sdpa_B": lambda: mx.fast.scaled_dot_product_attention(of(sdpaB["q"], bf), of(sdpaB["k"], bf), of(sdpaB["v"], bf), scale=sdpaB["scale"], mask=None),
+        "sig_A": lambda: mx.sigmoid(gate_sig_mx(capA)), "sig_B": lambda: mx.sigmoid(gate_sig_mx(capB)),
         "silu_A": lambda: mnn.silu(of(capA["gate_proj"][0]["out"], bf)) * of(capA["up_proj"][0]["out"], bf),
         "silu_B": lambda: mnn.silu(of(capB["gate_proj"][0]["out"], bf)) * of(capB["up_proj"][0]["out"], bf),
-        "addh_A": lambda: xA + of(capA["o_proj"][0]["out"], bf),
-        "addh_B": lambda: xB + of(capB["o_proj"][0]["out"], bf),
+        "addh_A": lambda: xA + of(capA["o_proj"][0]["out"], bf), "addh_B": lambda: xB + of(capB["o_proj"][0]["out"], bf),
         "addout_A": lambda: (xA + of(capA["o_proj"][0]["out"], bf)) + of(capA["down_proj"][0]["out"], bf),
         "addout_B": lambda: (xB + of(capB["o_proj"][0]["out"], bf)) + of(capB["down_proj"][0]["out"], bf),
     }
@@ -951,7 +800,7 @@ def run_prof():
     env["MODE"] = "oneshot"
     print("== m5 kernel dispatch table (rocprofv3 --kernel-trace, gfx1201) ==", flush=True)
     print(f"{'spec':<10} {'kernel':<70} {'grid':<14} {'workgroup':<12} {'LDS':<8} VGPR", flush=True)
-    for s in ONESHOT_SPECS:
+    for s in ONSHOT_SPECS:
         env["SPEC"] = s
         outdir = os.path.join(D, f"prof-m5-{s}")
         cmd = [ROCPROF, "--kernel-trace", "-o", outdir, PY, os.path.abspath(__file__)]

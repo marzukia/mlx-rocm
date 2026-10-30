@@ -1,58 +1,44 @@
 import pickle
-
-import mlx.core as mx
 import numpy as np
-
+import mlx.core as mx
 
 def npf(a):
     return np.asarray(mx.array(a).astype(mx.float32)).copy() if a is not None else None
-
 
 with open("/mnt/models/tmp/t880/cap-m7-s62.pkl", "rb") as f:
     c = pickle.load(f)
 
 for i in [0, 1, 2, 4]:
     ca = c["gdnA"][i]
-    cb1 = c["gdnB"][f"{i}_1"]
-    print(f"== GDN layer {i} ==")
+    cb1 = c["gdnB"]["%d_1" % i]
+    print("== GDN layer %d ==" % i)
     # shapes
-    for nm in [
-        "mx_gdn_update",
-        "py_gdn_update",
-        "norm",
-        "gdn_norm_gated",
-        "out_proj",
-        "normalize_qk",
-        "gdn_prep",
-        "conv1d",
-    ]:
+    for nm in ["mx_gdn_update", "py_gdn_update", "norm", "gdn_norm_gated", "out_proj", "normalize_qk", "gdn_prep", "conv1d"]:
         if nm in ca:
             r = ca[nm][0]
             so = r.get("out")
             sh = [npf(x).shape for x in so] if isinstance(so, list) else (npf(so).shape if so is not None else None)
-            print(f"  A {nm:<16} out shapes: {sh}")
+            print("  A %-16s out shapes: %s" % (nm, sh))
         if nm in cb1:
             r = cb1[nm][0]
             so = r.get("out")
             sh = [npf(x).shape for x in so] if isinstance(so, list) else (npf(so).shape if so is not None else None)
-            print(f"  B {nm:<16} out shapes: {sh}")
-
+            print("  B %-16s out shapes: %s" % (nm, sh))
 
 # ---- direct row-0 comparisons (shape-correct) ----
 def cmp(name, a, b):
     a = np.asarray(a, dtype=np.float32).ravel()
     b = np.asarray(b, dtype=np.float32).ravel()
     if a.size != b.size:
-        print(f"  {name:<12} SIZE MISMATCH {a.size} vs {b.size}")
+        print("  %-12s SIZE MISMATCH %d vs %d" % (name, a.size, b.size))
         return
     d = a - b
-    print(f"  {name:<12} n={np.count_nonzero(d != 0)}/{d.size} maxabs={np.abs(d).max() if d.size else 0.0:.3e}")
-
+    print("  %-12s n=%d/%d maxabs=%.3e" % (name, np.count_nonzero(d != 0), d.size, np.abs(d).max() if d.size else 0.0))
 
 for i in [0, 1, 2, 4]:
     ca = c["gdnA"][i]
-    cb1 = c["gdnB"][f"{i}_1"]
-    print(f"== layer {i} row 0 direct ==")
+    cb1 = c["gdnB"]["%d_1" % i]
+    print("== layer %d row 0 direct ==" % i)
     # ssm_out: A mx_gdn_update row 0 vs B mx_gdn_update
     a_ssm = npf(ca["mx_gdn_update"][0]["out"][0]) if "mx_gdn_update" in ca else None
     b_ssm = npf(cb1["mx_gdn_update"][0]["out"][0]) if "mx_gdn_update" in cb1 else None

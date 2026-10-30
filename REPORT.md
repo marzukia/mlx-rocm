@@ -534,7 +534,6 @@ t718c convention):
     propagation only). m3 pkl cross-check validates the capture
     (layer-3 k 0/91136; layer-4 gdn ssm 515560/524288).
 - G4 gate (`scripts/run-m6-g4.sh`, bench4 logic on venv-g4, 5 arms):
-  - vacuity-guarded (guard + ALLTOKS stream-format check: `scripts/run-m6-g4.sh` header, `bench/README.md` t638 audit).
   - pre-patch control (fresh baselines): m0 AR 69.31 tok/s, m2a MTP
     K=1 64.87 tok/s (ACCEPTED=389/512); M2-M0 FAIL first_div=148
     (= @149 1-indexed, the documented divergence) - gate confirmed
@@ -1289,3 +1288,549 @@ Artifacts on the guest: `/mnt/models/tmp/qmv-mr2-lx/` (bitexact ref/check
 logs + .npy refs, bench0/1 logs, rocprofv3 traces, parse/combos/gain logs),
 build log `/mnt/models/t889-build.log`, wheel `.so` in
 `/mnt/models/venv-t889` (build dir `/mnt/models/mlx-clone-mr`).
+
+## m8: full-state audit + T-dependence patch (t915)
+
+### P1: state inventory (static audit, no GPU)
+
+Guest stack audited: venv-g4 wheel 75ca881 (mlx-clone-mr; GDN tail
+fusion fbb7dc95 + t724c + t761), model qwen3_5 (32 layers,
+full_attention_interval=4 → 24 GDN + 8 FA; 32 v-heads, 16 k-heads,
+head 128, conv kernel 4, conv_dim 8192), MTP = single full-attention
+drafter with its own KVCache. Fused path (MLX_GDN_TAIL_FUSION=1,
+mask=None): gdn_prep (conv+silu, beta, g, qk_norm) → gated_delta
+(T<=8 → recurrent) → gdn_norm_gated.
+
+**State written by a draft/verify forward, per owner:**
+
+| # | state | owner | shape | write path | verify-path rollback (bench/mtp-bench3.py) | verdict |
+|---|-------|-------|-------|-----------|-------------------------------------------|---------|
+| 1 | conv_state | GDN ArraysCache[0] | (1,3,8192) bf16 | `cache[0] = mx.contiguous(conv_input[:, -3:, :])` (qwen3_next.py fused) | save_gdn/restore_gdn (ref restore) | covered (t893 n=0) |
+| 2 | ssm_state | GDN ArraysCache[1] | (1,32,128,128) f32 | `cache[1] = state` (recurrent out) | save_gdn/restore_gdn | covered (t893 n=0) |
+| 3 | lengths | GDN ArraysCache | None | never prepared (probe/bench) | carried in save_gdn | n/a (None) |
+| 4 | left_padding | GDN ArraysCache | None | never set | carried in save_gdn | n/a (None) |
+| 5 | keys | FA KVCache | (1,n_kv,T,hd) | update_and_fetch append | c.trim(2) | covered (t893 n=0) |
+| 6 | values | FA KVCache | (1,n_kv,T,hd) | update_and_fetch append | c.trim(2) | covered (t893 n=0) |
+| 7 | offset | FA KVCache | int | +1/forward; feeds RowInvariantRoPE position + k/v write slot | trim(2) restores | covered (m7: load-bearing, t14 4096/4096 drift when omitted) |
+| 8 | mtp keys | MTP KVCache | (1,16,T,256) | MTP draft forward | save_mtp/restore_mtp (m7, numpy forced-eval) | covered (m7 4096/4096 bit-exact) |
+| 9 | mtp values | MTP KVCache | (1,16,T,256) | MTP draft forward | save_mtp/restore_mtp | covered |
+| 10 | mtp offset | MTP KVCache | int | +1/draft; RoPE position | save_mtp/restore_mtp | covered |
+| 11 | position | global | — | no global counter; per-cache offset (FA #7, MTP #10); GDN position-free | per-cache | covered |
+| 12 | mask metadata | ArraysCache/KVCache | — | create_ssm_mask→lengths=None,left_padding=None→mask=None; create_attention_mask→causal/None | n/a | n/a (mask=None → fused kernel, no fallback) |
+| 13 | draft/sampler | MTP module | — | drafter is a stateless single forward (state = mtp_cache #8-10); argmax, no RNG | via #8-10 | covered |
+| 14 | allocator pool | ROCm hipMallocAsync | — | not model state; OOB reads in gdn_prep (below) land in pool memory | not restorable | suspect (deterministic within a run; see compute items) |
+
+**Compute-level T-dependence (fused path, S=2 verify vs S=1 decode):**
+
+| # | kernel (guest wheel 75ca881) | T-dependent quantity | row-0 impact | verdict |
+|---|------------------------------|--------------------|--------------|---------|
+| 15 | gdn_prep_kernel conv (gdn_prep.hip) | `conv_state[i * conv_dim + c]` with conv_dim = S*8192 (total input size), but conv_state row stride is 8192 (S=1 layout). S=2 row-0 reads [row0, row2, OOB] not [row0, row1, row2]; token-1 reads [row1, OOB, OOB] not [row2, in0, in1] | **row-0 T-dependent** (the m6 class) | NOT covered by rollback (compute, not state) — the leak |
+| 16 | gdn_prep_kernel conv_weight | `conv_weight[c*4+i]`, c up to S*8191, weight buffer 8192*4 → OOB for c>=8192 | token-1 only (row-0 in range) | NOT covered |
+| 17 | gdn_prep_kernel beta/g | `A_log[t]`, `dt_bias[t]` for t < S*32; A_log/dt_bias are (32,) → OOB for t>=32 | token-1 only (row-0 in range) | NOT covered |
+| 18 | gdn_qk_norm_kernel | one block per (token,head) row | row-invariant | OK |
+| 19 | r4d_gdn_recurrent_update | sequential t loop; row t reads only row-t inputs + state; grid (B,H,vs) independent of T | row-invariant | OK |
+| 20 | gdn_norm_gated_kernel | one block per (token,head) row | row-invariant | OK |
+| 21 | FA rope/SDPA | RowInvariantRoPE (m6 fix): per-row (offset+row) theta | row-invariant (m6) | OK |
+
+**P1 verdict:** all 14 state items are covered by the verify-path
+rollback (1-10, 11, 13; 3/4/12 are no-op Nones). The G4
+first_div=148 is a **compute-level** T-dependence in the GDN fused
+path, not a state leak. The row-0 T-dependence is item 15 (the conv
+in gdn_prep_kernel); items 16-17 are token-1-only OOB reads that the
+t893 state-identity (n=0) shows are benign in the current pool layout
+but are not row-invariant by construction. The patch (P3) makes the
+gdn_prep conv row-invariant (per-token causal sliding window) and the
+beta/g + conv_weight reads in-range for all S, preserving S=1
+bit-exactness (sequential k-order sum) and matching the unfused
+nn.Conv1d reference for all S.
+
+**P2 (single-fork probe, one GPU run): DONE (t915, venv-g4 75ca881, step 100,
+prev=11 draft=6278).** scripts/m8-state-audit.py (hook fixed: class-level
+__call__ + id(self) lookup; the salvaged instance-attr __call__ hook
+does not fire — dunders are looked up on the type).
+
+**Result DIFFERS from dbb6644 — exact delta reported before patching:**
+
+DYNAMIC PROOF (S=2 [prev,draft] vs two S=1 [prev],[draft], numpy
+forced-eval state capture):
+- GDN layers 0,1,2: conv n=0/24576, ssm n=0/524288 — **CLEAN** (bit-
+  identical; the GDN conv + recurrent kernel are row-0 T-invariant
+  given the same inputs — refutes the static-analysis hypothesis that
+  the gdn_prep conv_state indexing (conv_dim = S*8192 as the row
+  stride) is the row-0 T-dependence source; the OOB reads for row 0
+  (conv_state[1*16384+c]=row2, conv_state[2*16384+c]=OOB) evidently
+  return values that keep the row-0 conv + ssm bit-exact in this
+  pool layout, or the conv is not the source).
+- GDN layers 4,5,6,8,9,10,12,13,14,16,17,18,20,21,22,24,25,26,28,29,
+  30: conv n=16384/24576, ssm n=524288/524288 — **LEAK** (all ssm
+  elements differ; the GDN state is NOT bit-identical post-rollback
+  for layers 4+ — a consequence of the layer-3 input T-dependence,
+  not a rollback bug: the rollback restores the pre-fork state, but
+  the S=2 forward's layer-4+ inputs differ from the two-S=1 inputs
+  because layer 3's row-0 output is T-dependent).
+- FA layer 3: KV keys n=0/262144, values n=0/262144 — **CLEAN** (the
+  KV state is bit-identical; the m6 rope fix holds at the state
+  level).
+- FA layers 7,11,15,19,23,27,31: KV keys n=2048/262144, values
+  n=2048/262144 — **LEAK** (2048 = 16 heads * 128 = one token's k/v;
+  the draft token's k/v differs — a consequence of the upstream
+  T-dependence).
+- DYNAMIC PROOF verdict: **LEAK FOUND** (the state is NOT fully
+  bit-identical post-rollback — the GDN layers 4+ and FA layers 7+
+  leak; the GDN layers 0,1,2 and FA layer 3 are clean).
+
+COMPUTE-LEVEL (per-layer row-0 output S=2 vs S=1):
+- Layers 0,1,2 (GDN): n=0/4096 — **CLEAN** (row-0 T-invariant).
+- Layer 3 (FA): n=4096/4096 maxabs=2.287e+00 — **T-DEPENDENT** (the
+  FIRST diverging layer).
+- Layers 4-31: n=4096/4096 — T-DEPENDENT (propagation).
+- COMPUTE-LEVEL verdict: **first diverging layer = 3 (FA, not GDN)**.
+
+Row-0 logits (A[0,0] vs B1[0,0]): n=248320/248320 maxabs=2.443e+01
+(T-DEPENDENT, consistent with dbb6644's "row-0 logits differ on all
+248320 entries").
+
+**Root-cause re-localization (t915):** the G4 first_div=148 is a
+**compute-level FA (SDPA) T-dependence at layer 3**, NOT a GDN conv
+T-dependence and NOT a state-rollback leak. The GDN layers 0,1,2 are
+row-0 T-invariant (clean state + clean row-0 output). The FA layer 3
+has a clean KV state (n=0) but a T-dependent row-0 output (n=4096) —
+so the T-dependence is in the SDPA compute (the m6 rope fix holds at
+the state level; the SDPA kernel computes row 0's attention
+differently for S=2 vs S=1). The GDN state leak (layers 4+) and the
+FA state leak (layers 7+) are CONSEQUENCES of the layer-3 row-0
+T-dependence (the upstream input differs), not independent leaks.
+
+**P3 patch target (revised):** the SDPA kernel's row-0 T-dependence
+(the FA path), NOT the gdn_prep conv. The patch must make the SDPA
+row-0 attention T-invariant (row 0's attention over [cache keys, row 0
+key] must be bit-identical for S=2 and S=1). The gdn_prep conv
+T-dependence (the static-analysis hypothesis) is refuted by the probe
+(the GDN layers 0,1,2 are clean); it may still be a latent issue for
+other S values but is not the G4 first-div source.
+
+---
+
+## P3 (t966): root cause found - SDPA 1-pass kernel compile-time causal split (row-1 T-dependence)
+
+**Probe-discipline fix (this session):** all state snapshots are now
+numpy copies restored DTYPE-PRESERVING (`mx.array(numpy, dtype=orig)`).
+The P2/t915 "layer-3 row-0 T-dependence" was a probe artifact of the
+f32 GDN-restore (see P2 addendum above); with dtype-preserving restore
+the 148-fork re-run shows **row 0 fully clean and row 1 clean at the
+147 state** (PREDICTED token@148: mtp(l1A)=33443,
+ar(B2 S=1 [d])=33443 - the flow's token@148=33443 is reproduced, so
+the MTP-vs-AR divergence at 148 is NOT from any T-dependence AT the
+147 state; the state trajectories had already diverged earlier).
+
+**venv-g4 GDN source read:** the fused path (gdn_prep +
+mx.fast.gated_delta_update + gdn_norm_gated) is ALWAYS active in
+inference mode (MLX_GDN_TAIL_FUSION=1 default, no S gate) - both S=1
+and S=2 use the same fused kernel. The only dtype change in the
+mtp-bench3 flow is restore_mtp (MTP module KV, f32 on reject) - the
+MTP module is separate from the target; its f32 affects drafts only.
+
+**Per-verify-step state trace (m8-mtp-state-trace.py):** S=2 post-state
+vs 2xS=1 post-state at every one of 85 verify steps:
+- **first state leak at verify step 47** (reject step, t2=9249 !=
+  d=24051): GDN layer 16 first (conv 3.1e-2, ssm 96% of entries
+  ~2.8e-4 f32), layers 17-30 conv+ssm, then FA KV 15/19/23/27/31
+  keys+values (downstream). 4 leaking steps total (47, 61, x, 169) -
+  value-dependent.
+- **81 clean steps: the fused GDN kernel (gdn_prep +
+  gated_delta_update) is itself S-invariant (bit-exact S=2 vs 2xS=1
+  from identical inputs)** - every leak is downstream of an upstream
+  input change, not an independent GDN leak.
+
+**Step-47 fork bisection (m8-mtp148-bisect.py, per-layer FA captures,
+rowx key-matching fixed):**
+- ROW-0: all 32 layers + FA components clean (row-0 T-invariant
+  holds).
+- ROW-1: first T-dependent component = **FA15_sdpa_out n=1/4096
+  maxabs=9.766e-04 (one bf16 ulp)** - FA15 inputs (input_ln,
+  q/k/v proj+norm, rope, sdpa_q/k/v) all bit-identical.
+- FA3_sdpa_k "hit" in the first pass was a rowx artifact (kv-head-1
+  of A compared with kv-head-0 of B2); direct per-row comparison:
+  A vs B2 keys bit-identical (prefix n_diff_rows=0, fullslice
+  n=0/19200).
+- DYNAMIC PROOF: A post-state vs B1+B2 post-state = the trace leak
+  (GDN 16+ conv/ssm, KV 15+ keys/values) - consistent with the FA15
+  row-1 1-ulp input.
+
+**Mechanism (source read, venv wheel 75ca881b + vendor the earlier vendor base
+identical file):** `mlx/backend/rocm/scaled_dot_product_attention.hip`
+- the decode path (qL < 4) uses `kernel_sdpav_1pass<T, do_causal, D>`
+  with **`do_causal` a compile-time template parameter**: S=2
+  (mask="causal", N>1) dispatches the `std::true_type`
+  instantiation; S=1 (mask=None, N==1) dispatches
+  `std::false_type`. Two different compiled kernels with the same
+  per-row math; for row 1 (all keys visible in both - `use_key = i
+  <= kL-1` always true) the only difference is the codegen (f32
+  contraction/scheduling of the online-softmax accumulation), which
+  yields a value-dependent 1-ulp flip in bf16. Row 0 is
+  T-invariant (causal row 0 masks the last key - the earlier
+  isolation probe showed O1 (S=1) vs O2 (S=2 causal) row 0
+  bit-exact; the kernel is deterministic, O2 re-run bit-exact).
+- The 1-ulp FA15 row-1 flip contaminates the S=2 state (GDN 16+
+  conv/ssm via the fused path's f32 state accumulation), which
+  compounds over the remaining ~100 steps (4 injection points) until
+  the top-2 logits at 147/148 separate enough to flip argmax
+  (33443 vs 24296) - the G4 first_div=148. AR (m0, S=1, mask=None)
+  never runs the causal instantiation, so its state stays clean -
+  the MTP-vs-AR divergence.
+
+**P3 patch (patches/m8-sdpa1pass-single-kernel.diff):** remove the
+compile-time `do_causal` template parameter; pass it at runtime
+(`params.do_causal`); single instantiation per (dtype, D). The S=2
+causal row 1 and the S=1 no-mask row then use the SAME compiled
+code and are bit-identical for identical inputs (determinism
+proven); causal row 0 still masks the last key via the runtime
+branch (a no-op iteration - no accumulation change). No other kernel
+or the 2-pass prefill path is touched.
+
+**Verification (pending, post-rebuild):** (1) state trace:
+n_leak_steps must be 0 (was 4); (2) G4 5-arm: M2-M0-LOSSLESS MATCH
+(bit-exact; pre-patch FAIL first_div=148 a=33443 b=24296); (3) A/B
+MTP-vs-MTP 4096/4096 bit-exact regression (must stay); (4) bench
+TOKS_S AR / MTP K=1 / K=2 (baselines AR 69.65, MTP K=1 64.34).
+
+### P3 final results (one-round-max: first_div MOVED - report + end)
+
+**Patch + rebuild:** `patches/m8-sdpa1pass-single-kernel.diff` applied to a
+clean clone at `75ca881b` (`/mnt/models/tmp/mlx-m8`); wheel built
+(`/mnt/models/tmp/mlx-m8/dist-m8/mlx-0.32.3.dev20261029+75ca881b-...whl`)
+and installed (`.so` sha256 `b651be0a...`; pre-m8 backup
+`/tmp/libmlx.so.pre-m8` = `90cf8214...`, restored at the end).
+
+**SDPA patch verified (direct kernel tests, new .so):**
+- D=64 kL=80 f32, D=256 kL=76 f32, D=256 kL=75 (f32/f16/bf16):
+  S=2 causal row 1 vs S=1 no-mask row 0: **n=0** (bit-exact; pre-patch
+  1-ulp). Deterministic (re-runs n=0). Causal row 0 still masked
+  (row0 != row1). In-flow fresh-recompute: `freshA-r1 == flowA-r1`
+  (n=0), `freshB == flowB` (n=0), `S1(A-r1vals) == S2causal(A-r1vals)`
+  n=0 for ALL FA layers, not allocation-sensitive, not strided-layout
+  sensitive (layout changes absolute values, not T-invariance).
+  **The SDPA kernel is fixed: same q values, causal-row-1 (S=2) is now
+  bit-identical to no-mask (S=1).**
+
+**But the in-flow leak persists - first_div MOVED upstream:**
+- State trace (new .so, 3x deterministic): n_leak_steps=4 (steps 47,
+  61, ..., 169), first at verify 47 (REJECT, d=24051), token@148=33443
+  (unchanged).
+- Step-47 fork bisection (new .so): row 0 fully clean; row 1 first
+  divergence = FA15_sdpa_out n=1/4096 (1-ulp) - same as pre-patch.
+- Probe direct value check (new .so): **A's cached k vs B2's cached k
+  differ by exactly 1 element: (batch 0, kv-head 2, row 74 = draft row,
+  dim 32), a=-0.012207 vs b=-0.012268 (bf16 1-ulp; persists after a
+  bf16 round-trip - not a cast artifact).** All other FA layers' k:
+  n=0.
+- Root cause of that 1 element: **k_proj matmul T-dependence.**
+  `x @ W.T` with T=2 (verify row) vs T=1 (re-forward row) dispatches to
+  different ROCm kernels; direct test on the guest (random bf16,
+  1024x4096): T2-row1 vs T1 **n=1/4096 (1-ulp, 1.221e-04)**; T1
+  deterministic (rerun n=0). The bisection's earlier "k clean" evidence
+  was a probe bug: `rowx` collapses (B,H,S,D)->(S,D) and compared
+  kv-head 0 only (the diff is at head 2); and all instance-level
+  `__call__` hooks (k_norm/rope) were silently dead (instance-dict
+  `__call__` is bypassed by C-level tp_call), so "k_norm/rope n=0" was
+  never actually measured.
+- Also observed: the T=1 k_proj call on the real flow values raises a
+  divide-by-zero trap in libmlx.so (FPU trap, exit 136) - value-
+  specific, in the unpatched matmul code (not the SDPA patch).
+
+**GDN fused kernel: S-invariant.** 81/85 verify steps clean (identical
+inputs -> bit-exact S=2 vs 2xS=1); all 4 leaking steps are downstream
+of the FA15 k 1-ulp flip, not the GDN kernel itself.
+
+**Mechanism (final):** k_proj's T=2/T=1 kernel split puts 1 bf16-ulp of
+T-dependent noise into FA15's cached draft-row key (row 74) at 4
+reject-steps; the SDPA (patched or not) faithfully propagates it to the
+row-1 output; the S=2 GDN state then accumulates it at 4 injection
+points; ~100 steps of GDN recurrent amplification push the drift past
+1-ulp in the hidden state, flipping argmax at 148 (33443 MTP vs 24296
+AR). The SDPA patch removes one real T-dependence (proven bit-exact in
+isolation) but the matmul T-dependence is the remaining (and now
+primary) source; fixing it is a second-round item (M=1 vs M=2 qmm/qmv
+kernel unification in mlx core), out of scope for this round per the
+one-round-max rule (first_div moved: FA15_sdpa_out -> FA15_sdpa_k).
+
+**Gates (baseline .so, this session):**
+- G4 5-arm: M2-M0-LOSSLESS **FAIL first_div=148 a=33443 b=24296**
+  (deterministic, matches pre-session t866); M1-M0-CONTROL MATCH;
+  M1-M2A FAIL first_div=148 (a=24296 b=33443); M2-A-B MATCH;
+  M2-B-C MATCH. Bench: AR 69.57 tok/s (baseline 69.65), MTP K=1
+  65.44 tok/s (baseline 64.34), ACCEPTED=389/512.
+- A/B: **M6-AB-OK** - full-chain row-invariance all MATCH, first
+  diverging component NONE (m3 cross-checks match recorded values).
+- G4 red -> no K=2 bench (gate-conditional; K=1/AR numbers above).
+
+**End of round.** Next round (new ticket): patch the matmul M=1/M=2
+split (or force T=2 decode path for the re-forward row), rebuild,
+re-run state trace (expect n_leak_steps=0) + G4 + A/B.
+
+## m8 round 2 (t976): rope 1D/batched dispatch unification - first_div fix
+
+### Correction of the P3 attribution
+
+P3 attributed the FA15 1-ulp to "k_proj matmul T-dependence".
+**That attribution is wrong.** With wrapper-based (non-dead) probes on
+the SDPA-patched .so, the real-flow per-component audit shows:
+
+- `FA15_k_proj_0_out: n=0/4096` (4bit QMM - `qmv_wide_kernel` for both
+  M=1 and M=2, T-invariant by construction)
+- `FA15_k_norm_0_out: n=0/1024`, `FA15_q_norm_0_out: n=0/4096`
+- `FA15_rope_0_in/out: n=0` (q path)
+- **`FA15_rope_1_out: n=1/1024 (1 f32 ulp) - the FIRST row-1
+  divergence**, `FA15_rope_1_in: n=0`
+- everything downstream (SDPA, KV row 74 dim 32, GDN) is propagation of
+  that single rope element.
+
+So the 1-ulp enters at the **fused `mx.fast.rope`** (the model's
+`nn.RoPE` - qwen3_5's `rope_parameters` is non-None, so
+`rope_scaling` is non-None and the m6 RowInvariantRoPE path is
+bypassed), not at the matmul. (P3's direct random-bf16 matmul test did
+show a value-specific 1/4096 on one .so, but on the real flow values
+k_proj is n=0 and it is not the first divergence.)
+
+### Root cause: `RoPE::eval_gpu` 1D vs batched kernel split
+
+`mlx/backend/rocm/rope.hip:463`:
+
+```cpp
+bool single = in.flags().row_contiguous && B == 1 && T == 1;
+```
+
+T=1 row-contiguous input dispatches to the 1D single-token kernels
+(`rope_single_1d` / `rope_single_freqs_1d`); T>=2 dispatches to the
+batched `rope` / `rope_freqs` kernels. **The two kernels compile the
+same source expression (`rx1 = x1*cos - x2*sin`, `rx2 = x1*sin +
+x2*cos`, via `sincosf`) to different AMDGPU FMA-contraction patterns**
+(same .so, same launch config, identical inputs + position):
+
+- Standalone decisive test (wheel flags, gfx1201): T=2 row1 (batched)
+  vs T=1 (1D), same input, same pos: **25/256 elements differ by 1 f32
+  ulp, ALL in the upper-half `rx2` formula**; maxabs 1.192e-07.
+- Control: 1D vs 1D n=0; **batched T=2 vs batched T=1 n=0/256 (the
+  batched kernel is bit-identical across T)**.
+- Per-element instrumentation (x1, x2, sin, cos, theta, rx1, rx2, L,
+  batch_offset, in/out indices) is bit-identical for T=1 vs T=2 under
+  both -O2 and the wheel flags - the difference is pure codegen of the
+  contraction, not a value or index difference.
+- In the flow, the k-path input is row-contiguous for both arms (C
+  (1,4,1,256) / C (1,4,2,256)), so T=1 (the accepted re-forward) uses
+  the 1D kernel and T=2 (verify) the batched kernel -> the FA15 rope
+  1-ulp -> GDN accumulation at 4 reject-steps -> ~100 steps of GDN
+  recurrent amplification -> argmax flip at 148 (MTP 33443 vs AR
+  24296). Same mechanism P3 described, one component upstream.
+
+### Fix: force the batched kernel for all T
+
+`patches/m8-rope-single.diff` - `rope.hip:463`:
+
+```cpp
+- bool single = in.flags().row_contiguous && B == 1 && T == 1;
++ bool single = false;
+```
+
+Always the batched kernels (bit-identical across T, verified). The 1D
+path was a single-token decode fast-path with the same launch size
+(256 threads / 128 active) as the batched kernel at T=1 - no
+measurable performance cost. The 1D kernels remain in the tree for the
+CPU/Metal paths; only the ROCm GPU dispatch changes.
+
+### Build
+
+Fresh guest clone `/mnt/models/tmp/mlx-m8r2` from `75ca881b` (the m8
+wheel's base - not the vendor.json primary the earlier vendor base; `rope.hip` is
+byte-identical between the two, so the patch applies to both). Both
+patches in the working tree: `patches/m8-sdpa1pass-single-kernel.diff`
+(P3) + `patches/m8-rope-single.diff` (this round). Wheel:
+`/mnt/models/tmp/mlx-m8r2/dist-m8r2/mlx-0.32.3.dev20261029+75ca881b-...whl`
+(.so md5 `06044ea9b888...`; pre-m8r2 venv backup
+`/mnt/models/tmp/libmlx.so.pre-m8r2` = the baseline `90cf8214`-era
+.so, `af07d9069267...`).
+
+(Note: `/mnt/models/venv-g4/bin/pip` is a script with a shebang to
+**venv-g1** - installing "with venv-g4 pip" silently lands in venv-g1.
+Use `/mnt/models/venv-g4/bin/python -m pip`.)
+
+### Verification (all on the m8r2 .so, /mnt/models/qwen3-9b-mlx 4bit)
+
+**1. Direct kernel T-invariance (20 random trials, f32, D=256 partial
+rope dims=64, base 1e7):** T=2 row1 (pos 74) vs T=1 row0 (pos 74),
+same input: **0/20480, bit-exact.** (T=2 r0 vs T=1 r0 same pos also
+0/1024 per trial; passthrough dims 64+ exact.)
+
+**2. Flow probe (wrapper hooks, fork at verify token idx 47, A/B1/B2):**
+- `FA15_rope_1_out: n=0/1024` (was n=1 - the root-cause element)
+- **ROW-1 FIRST DIVERGING COMPONENT: None** (was FA15_rope_1_out);
+  ROW-0 first diverging: None
+- all FA layers' k_proj/k_norm/q_norm/rope: n=0
+- **DYNAMIC PROOF: NO LEAK (state exact)** (A post-state ==
+  B1+B2 post-state, GDN conv/ssm + KV keys/values all n=0)
+- k-path FUSED rope direct A-r1 vs B2-r0: n=0/1024; q-path n=0/4096
+- deterministic (re-run n=0)
+
+**3. State trace (all verify steps, 3x deterministic):**
+**n_leak_steps=0, first_leak=None** (pre-fix: 4, first at verify 47).
+
+**4. G4 5-arm gate: ALL MATCH.**
+- M2-M0-LOSSLESS (the m6 gate): **MATCH n=1024** (pre-fix:
+  FAIL first_div=148 a=33443 b=24296)
+- M1-M0-CONTROL: MATCH n=1024
+- M2-A-B: MATCH n=1024
+- M2-B-C: MATCH n=1024
+- (M1-M2A implied by the first two.) Deterministic (re-runs
+  identical).
+
+**5. A/B (diag-s62-m6 full chain): M6-AB-OK.** Full-chain
+row-invariance all MATCH, first diverging component NONE; m3
+cross-checks match recorded values (layer-3 k 0/91136; layer-4
+gdn ssm 515560/524288). The documented 1/4096 re-run-vs-capture
+DIFF (maxabs 9.766e-04 = 1 bf16 ulp at ~0.28) is the m5-artifact
+row-1 element vs the OLD T=2 kernel capture - expected per the
+harness docstring; row-invariance itself is MATCH n=4096.
+
+**Bench (G4 gate-conditional; 1024-token arms unless noted):**
+- AR (mtp-bench3, MLX_MTP=0): **69.75 tok/s** (baseline 69.65,
+  +0.10 - parity)
+- MTP K=1 (mtp-bench3, MLX_MTP=2): **60.79 / 60.98 tok/s**
+  (two runs; baseline 64.34, P3 m8 65.44; ACCEPTED 376/512 vs
+  P3's 389/512). The drop tracks the acceptance rate, NOT kernel
+  cost: isolated T=1 rope wall-time is identical between the m8r2
+  .so (batched) and the baseline .so (1D): 136.75 vs 136.18
+  us/call (T=2: 137.55 vs 137.00). The 1D->batched rounding
+  change at T=1 decode shifts which drafts match (376 vs 389
+  accepted), and MTP tok/s is acceptance-rate-limited.
+- MTP K=2 (mtp-bench5, MLX_MTP=3): **56.13 tok/s** (1399 tokens in
+  1024 verify steps, D1 73.2% / D2 65.3%, tok/step 1.732).
+  **K=2 lossless:** the K=2 stream is an exact prefix of a
+  2048-token AR run (prefix 1399, AR continues to 2048; the
+  1024-vs-1399 "len" note from the K=1-style cmp is a step-budget
+  artifact, not a divergence).
+
+### Hermetic gates (host)
+
+- `uv run ruff check .` / `uv run ruff format --check .`: this round's
+  files (scripts/m8-kproj-flowprobe.py, patches/m8-rope-single.diff)
+  are clean. Pre-existing at c04c34c (unchanged this round): 168 ruff
+  errors + 17 reformat diffs, all in committed as-run diagnostic
+  scripts (kept byte-identical to as-run evidence per repo convention;
+  no check-runs are configured on the GitHub repo, CI workflow
+  aspirational).
+- `uv run pytest -m "not gpu"`: **6 passed, 1 skipped** (PASS).
+- `uv run python scripts/size_ratchet.py --base HEAD`: 1 pre-existing
+  bloat (scripts/diag-s62-m7.py, 885 non-blank lines, identical at
+  HEAD; not in size-ratchet.json) - not touched this round;
+  m8-kproj-flowprobe.py is 658 non-blank (< 800).
+
+### Notes / open items
+
+- The plain-bf16-matmul M=1 gemv vs M=2 GEMM split (the P3 suspect)
+  remains as a value-specific 1-ulp possibility on some .so builds,
+  but (a) the QMM path (the model's k_proj) is T-invariant, (b) MTP's
+  plain-matmul k_proj only ever runs at T=1, and (c) on real flow
+  values k_proj is n=0 - so it does not gate the lossless path. Left
+  as a follow-up candidate (unify M=1/M=2 GEMM dispatch, or split
+  T=2 into 2xT=1) if a future value-specific case surfaces.
+- venv-g4 was restored to the pre-m8r2 baseline .so at the end
+  (backup convention per P3); the m8r2 wheel stays at
+  /mnt/models/tmp/mlx-m8r2/dist-m8r2/ for re-install
+  (`/mnt/models/venv-g4/bin/python -m pip install --force-reinstall
+  --no-deps`), and the pre-m8r2 baseline backup is at
+  /mnt/models/tmp/libmlx.so.pre-m8r2. Evidence logs on the guest:
+  /tmp/flowprobe-m8r2.txt, /tmp/state-trace-m8r2.txt,
+  /mnt/models/tmp/g4m8r2/ (g4 arms + m3 K=2 + m0-2k + ab.log).
+
+---
+
+# t992 — REBASE of PR #20 (worker/m8-full-state-audit) onto main @287aeb9
+
+## Result
+
+- **New head:** `d4d433c27d15a306a5dbc58ea8519b96816431a3` (branch `worker/m8-full-state-audit`,
+  force-with-lease pushed to gh; replaces the gate-passed head `11f38ca`).
+- **GitHub:** `gh pr view 20` → `mergeable=MERGEABLE`, `headRefOid=d4d433c`, state=OPEN
+  (mergeStateStatus=BLOCKED = branch-protection/review gate only, no conflicts).
+- All 20 branch commits survived the rebase onto 287aeb9 (merge-base now = 287aeb9).
+
+## Conflict resolution (11 stops, all mechanical)
+
+main gained #15/#16 (squashes of the branch's own m6/m7 work), #17/#18 (qmv), #9-#13
+since the fork (64b98b8). Conflicts and resolutions:
+
+| Commit | File(s) | Resolution |
+|---|---|---|
+| 543f085, accc9e2 | — | auto-dropped ("patch contents already upstream") |
+| 447c2d9 | `scripts/diag-s62-sdpa.py` (add/add) | branch version |
+| 7d1f5ad | `scripts/diag-s62-m5.py` (add/add) | branch version (t986 note: slimmer, 800 ≤ main's ratchet 949) |
+| 9847f5b | `scripts/run-m6-g4.sh` (add/add); `scripts/diag-s62-m6.py`; `REPORT.md` (4 hunks) | run-m6-g4.sh: branch version (266d407 updates it to main-identical later). diag-s62-m6.py: branch version. REPORT.md: main-only sections (t789/t771/Step-0/qmv) kept from upstream; the m6 section kept the branch's intermediate text so 266d407's updates apply cleanly (final m6 section text = main's, verified) |
+| 3b6c0bc | `scripts/diag-s62-m7.py` (add/add) | branch version (885 ≤ main's ratchet 904) |
+| 0bd8203 | `scripts/m7-{mtp,state}-probe.py`, `scripts/m7-probe1..5.py` (7× add/add) | branch versions (main's #16 versions are ruff-formatted copies of the same code) |
+| a5af599 | `scripts/m7-mtp2-probe.py` (add/add) | branch version |
+| 503c789 | `scripts/m7-g4-probe.py` (add/add) | branch version |
+| e8cb010 | `REPORT.md` (m7 section) | m7 section auto-merged (main's #16 m7 section is text-identical to the branch's modulo one trailing blank line); remaining hunk = main-only Step-0+qmv content kept |
+| c904b85 | `REPORT.md` (m8 section vs main's Step-0/qmv tail) | union: main's sections + branch's m8 section (m8 at file end) |
+| e4b8d88, c04c34c, 11f38ca | — | clean |
+
+No content was hand-edited. Main-only files (bench/qmv_mr*, bench/step0*, bench/t835*,
+bench/bench-g4d.sh, bench/README.md, patches/qmv-mr-lxhoist.diff, scripts/t789-*,
+scripts/apply-qmv-mr-lxhoist.py, reports/tail-fusion-gdn.md, WORKSTATE.md,
+qmm.hip, qmv_wide_mr_kernel.hip, tests/test_qmv_mr2_lx_instantiation.py) and main's
+`build-wheel.sh` / `vendor.json` / `size-ratchet.json` (2-entry ratchet) are all
+present at main's versions.
+
+## Classification: CONTENT-NEUTRAL
+
+Post-rebase tree = pre-rebase branch tree (`11f38ca`) + exactly main's base changes.
+Every branch-owned m7/m8 file is **byte-identical** to `11f38ca`, including all audited
+paths: `patches/m8-rope-single.diff`, `patches/m8-sdpa1pass-single-kernel.diff`,
+`patches/m6-ropeq-rowinvariant.diff`, `bench/mtp-bench3.py` (full-state MTP restore),
+`scripts/m8-{state-audit,sdpa-isolated,mtp148-bisect,mtp-state-trace,fa-bisect,kproj-flowprobe}.py`,
+`scripts/diag-s62-{m5,m6,m7,sdpa}.py`, all m7 probes, run-m6/m5 scripts. No edits to the
+sdpa patch / k_proj / rope / mtp-restore paths → only the 4 merge-blocking gates
+re-run (not the full t986 check-line set).
+
+Hermetic gates on the rebased tree: `uv run pytest -m "not gpu"` 12 passed + 1 skipped
+(6 new = main's test_qmv_mr2_lx_instantiation); size gate OK (2 ratcheted; branch m5/m7
+800/885 ≤ budgets 949/904); `scripts/m8-kproj-flowprobe.py` ruff clean (other m7/m8
+script reds = the pre-existing set, unchanged).
+
+## Guest re-verify (marzuki-neon, fresh build /mnt/models/tmp/mlx-m8rebase)
+
+- Fresh vendor clone @ pin `75ca881b2e82f7b4069c8564a203792aa16d8a29` (full sha verified
+  against the m8r2 clone); the two post-rebase patch files applied; patched
+  `rope.hip`/`scaled_dot_product_attention.hip` **md5-identical to the audited m8r2
+  clone** (ef1b0896…/b0f19b48…); full source `diff -r` = identical (only cosmetic
+  version-string + leftover build dirs).
+- Wheel built in 6 min (venv-g4 python, same CMAKE_ARGS as m8r2); .so md5 `a889fba4…`
+  (build-path/timestamp nondeterminism — source identical). Installed into venv-g4
+  (never venv-g1). venv-g4's `qwen3_next.py` already carries the RowInvariantRoPE patch
+  (required by the A/B gate). Lock: FREE at start; per-job `flock` hold; FREE at end.
+  No HSA faults in any log. venv-g4 .so restored to baseline (`af07d906…`) afterwards.
+- Evidence: `/mnt/models/tmp/m8rebase-ev/` (direct-kernels.out, flowprobe.out,
+  state-trace-run1/2.out, g4/, ab/).
+
+| Gate | Expect (t986) | Measured (fresh rebuild) |
+|---|---|---|
+| (a) direct k_proj T=1 vs T=2 | 0/160 + 0/160 | **0/160 (draft) + 0/160 (prev)**, all 8 FA layers × 20 trials; FA15 q/v 0/40; direct rope 0/20480; SDPA 6-config n=0 + determinism n=0 (ALL-N0) |
+| (a) in-flow | n=0/1024, FA15_rope_1_out n=0 | **k_proj/k_norm/rope n=0/1024 on all 8 FA layers; FA15_rope_1_out n=0/1024**; fork@idx47 clean |
+| (b) state trace | n_leak_steps=0, 2 runs identical, token@148=33443 | **n_leak_steps=0, first_leak=None, accepted 68/85 (both runs), token@148=33443 (both); run2 byte-identical to run1** |
+| (c) G4 5-arm | M2-M0-LOSSLESS MATCH n=1024 + 4 controls MATCH | **M2-M0-LOSSLESS MATCH n=1024; M1-M0-CONTROL, M1-M2A, M2-A-B, M2-B-C all MATCH n=1024**; bench AR 69.24 tok/s (baseline 69.65; t986 69.66 — parity), MTP K=1 61.06 tok/s, ACCEPTED 376/512 (same acceptance as t986 → consistent stream) |
+| (d) A/B | M6-AB-OK | **M6-AB-OK; first diverging component NONE; all 16 components MATCH; m3 cross-checks match (layer-3 k 0/91136; layer-4 gdn ssm 515560/524288); the documented m5 artifact 1/4096 (9.766e-04) present as expected**; ab.log byte-identical to t978's re-run log |
+
+## Verdict
+
+Rebase complete and clean: all 4 merge-blocking gates PASS on the fresh build of the
+rebased content. PR #20 is `MERGEABLE` at `d4d433c`. Ready for the peer merge
+(`--squash`; the t986 merge-mechanics notes still hold — m5/m7 resolve to the branch's
+versions, which the rebase has already made the branch's committed state, and main's
+size-ratchet.json is in the tree).
+
+## CI fix (post-mergeable, warden forensics run 40917873509)
+`lint-and-check` was red at d4d433c: 168 ruff errors (E501-dominated) in the 17 m7/m8
+as-run audit probe scripts (branch-introduced; main's CI is green). Fix = the repo's
+own as-run-evidence convention (np-rca-* precedent): all 17 flagged scripts added to
+`[tool.ruff] extend-exclude`, kept byte-identical to as-run evidence. `ruff check .`
+and `ruff format --check .` both clean at the new head. No kernel/patch/build input
+touched - the 4-gate evidence stands.

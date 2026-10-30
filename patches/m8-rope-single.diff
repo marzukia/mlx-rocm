@@ -1,0 +1,54 @@
+--- m8-rope-single.diff
+--- Targets: the vendor clone (vendor.json primary the earlier vendor base; the guest m8/m8r2
+--- clones are @ 75ca881b — rope.hip is byte-identical between the two, so
+--- the patch applies to both) — apply with:
+---   git apply patches/m8-rope-single.diff   (in the vendor clone)
+---
+--- Round-2 root cause (see REPORT.md): the report P3 attributed the
+--- FA15 1-ulp to "k_proj matmul T-dependence". That attribution is
+--- wrong: k_proj is 4bit QMM (qmv_wide_kernel for M=1 and M=2 —
+--- T-invariant, probe n=0) and MTP's plain-matmul k_proj only ever runs
+--- at T=1 (gemv, deterministic). The real diverging structure is the
+--- FUSED mx.fast.rope (nn.RoPE, used because qwen3_5's ModelArgs
+--- rope_parameters is non-None -> rope_scaling non-None -> the m6
+--- RowInvariantRoPE path is bypassed): RoPE::eval_gpu dispatches
+--- T=1 (row_contiguous, B==1) to rope_single_1d and T>=2 to the batched
+--- `rope` kernel. The two kernels compile the same source expression
+--- (rx2 = x1*sin + x2*cos) to different AMDGPU FMA-contraction
+--- patterns (same .so, same launch config, same inputs): on the 9070 XT
+--- (gfx1201, ROCm 10.1, wheel flags) T=2-row1 (batched) vs T=1 (1D)
+--- differ by 1 f32 ulp on 25/256 rx2 elements (repro: 1D vs 1D n=0,
+--- batched T=2 vs batched T=1 n=0/256, 1D vs batched 25/256, all in the
+--- upper-half rx2 formula). In the flow, the k-path input is row
+--- contiguous for both arms (C (1,4,1,256) / C (1,4,2,256)), so T=1
+--- uses the 1D kernel and T=2 the batched kernel -> the FA15 rope
+--- 1-ulp -> GDN accumulation -> argmax flip at 148.
+---
+--- Fix: force the batched kernel for all T (single = false). The batched
+--- kernel is bit-identical across T (verified 0/256). The 1D path was a
+--- single-token decode fast-path with the same launch size (256
+--- threads / 128 active), so no measurable cost.
+
+diff --git a/mlx/backend/rocm/rope.hip b/mlx/backend/rocm/rope.hip
+index 488a3ee6..d4fbbbf5 100644
+--- a/mlx/backend/rocm/rope.hip
++++ b/mlx/backend/rocm/rope.hip
+@@ -460,7 +460,17 @@ void RoPE::eval_gpu(
+   out_strides[2] = out.strides()[ndim - 1];
+ 
+   // Some flags to help us dispatch below
+-  bool single = in.flags().row_contiguous && B == 1 && T == 1;
++  // T-invariance fix (m8 round 2): the 1D single-token kernels
++  // (rope_single_1d / rope_single_freqs_1d) compile the same source
++  // expression (rx1/x2 = x1*cos -/+ x2*sin) to a different AMDGPU
++  // FMA-contraction pattern than the batched `rope`/`rope_freqs`
++  // kernels. Identical input + position therefore differ by 1 f32 ulp
++  // between T=1 (single) and T>=2 (batched) — breaking row-invariance
++  // in speculative verify (draft T=2 vs accepted T=1). Always use the
++  // batched kernels, which are bit-identical across T (verified 0/256
++  // flips on the 9070 XT; the 1D path was a decode fast-path with the
++  // same launch size, so no measurable cost).
++  bool single = false;
+   bool with_freqs = inputs.size() == 3;
+ 
+   encoder.set_input_array(donated ? out : in);
