@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""an earlier run short rocprof pass: dispatch the three fused GDN kernels (T=1 shapes) so a
+"""run-789 short rocprof pass: dispatch the three fused GDN kernels (T=1 shapes) so a
 rocprofv3 run can report the kernel names actually dispatched (rule 6)."""
 
 import os

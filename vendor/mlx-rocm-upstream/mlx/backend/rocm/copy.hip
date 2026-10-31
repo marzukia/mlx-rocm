@@ -21,6 +21,15 @@ extern void g1_check_hip(
     const char* call, hipError_t err, const char* phase = nullptr);
 } // namespace rocm
 
+namespace rocm {
+// G1B: neutral kernel target — replaces the original kernel at exec level
+// (ROCm 10.1 HIP has no hipGraphRemoveNode).
+__global__ void g1b_noop() {
+  // No shared memory, no params read. If this node faults, the fault is
+  // outside per-node kernel args.
+}
+} // namespace rocm
+
 namespace {
 // Env-gated (MLX_COUNT_COPIES) attribution of general copies by shape, to find
 // which model ops generate the copy_gg/copy_g kernels. Prints a histogram at exit.

@@ -17,7 +17,7 @@ def main():
     venv = sys.prefix
     pyver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     ldp = os.environ.get("LD_LIBRARY_PATH", "")
-    fusion = os.environ.get("MLX_GDN_TAIL_FUSION", "<unset>")  # read from env, not positional (an earlier run lesson)
+    fusion = os.environ.get("MLX_GDN_TAIL_FUSION", "<unset>")  # read from env, not positional (run-608 lesson)
     print(f"CONFIG: env venv={venv} python={pyver} LD_LIBRARY_PATH={ldp} MLX_GDN_TAIL_FUSION={fusion}", flush=True)
 
     ver = importlib.metadata.version("mlx")

@@ -410,8 +410,8 @@ void RoPE::eval_gpu(
   // in-place rotate. But if the input is donatable we can rotate the first
   // dims_ channels IN PLACE and leave the tail untouched — no copy at all, and
   // `out` simply adopts the input's (possibly strided) layout. Downstream ops
-  // (SDPA) accept non-contiguous q/k, so this is safe. (Port of ml-explore/mlx
-  // PR #3704, "RoPE without copy".)
+  // (SDPA) accept non-contiguous q/k, so this is safe. (Port of an upstream MLX PR,
+  // "RoPE without copy".)
   if (dims_ < D) {
     donated = true;
     if (in.is_donatable() && in.flags().row_contiguous) {
@@ -460,7 +460,17 @@ void RoPE::eval_gpu(
   out_strides[2] = out.strides()[ndim - 1];
 
   // Some flags to help us dispatch below
-  bool single = in.flags().row_contiguous && B == 1 && T == 1;
+  // T-invariance fix (m8 round 2): the 1D single-token kernels
+  // (rope_single_1d / rope_single_freqs_1d) compile the same source
+  // expression (rx1/x2 = x1*cos -/+ x2*sin) to a different AMDGPU
+  // FMA-contraction pattern than the batched `rope`/`rope_freqs`
+  // kernels. Identical input + position therefore differ by 1 f32 ulp
+  // between T=1 (single) and T>=2 (batched) — breaking row-invariance
+  // in speculative verify (draft T=2 vs accepted T=1). Always use the
+  // batched kernels, which are bit-identical across T (verified 0/256
+  // flips on the 9070 XT; the 1D path was a decode fast-path with the
+  // same launch size, so no measurable cost).
+  bool single = false;
   bool with_freqs = inputs.size() == 3;
 
   encoder.set_input_array(donated ? out : in);

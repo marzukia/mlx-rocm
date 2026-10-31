@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # mlx-rocm MVP smoke harness.
 #
-#   1. the build VM check: ssh reachability + rocm-smi (record GPU + toolchain)
+#   1. guest-a check: ssh reachability + rocm-smi (record GPU + toolchain)
 #   2. local (host-a): build the GEMM (host path) + run a small GEMM
-#   3. the build VM (the build VM, gfx1201): transfer tree, build with ROCm,
+#   3. guest-a (guest-a, gfx1201): transfer tree, build with ROCm,
 #      run the GPU GEMM + fp8 probe
 #
-# The the build VM phase is budgeted ~120 s total; if the build VM is unreachable or the
+# The guest-a phase is budgeted ~120 s total; if guest-a is unreachable or the
 # budget runs out, the failure mode is recorded and the script continues
-# (local results are still reported). Exit: 0 = local PASS & the build VM PASS,
-# 1 = local FAIL, 2 = local PASS but the build VM failed/skipped.
+# (local results are still reported). Exit: 0 = local PASS & guest-a PASS,
+# 1 = local FAIL, 2 = local PASS but guest-a failed/skipped.
 
 set -u
 cd "$(dirname "$0")/.."
@@ -37,8 +37,8 @@ LOCAL_STATUS=FAIL
 GUESTA_STATUS=UNKNOWN
 GUESTA_REASON=""
 
-# ---------------------------------------------------------------- the build VM check
-step "the build VM check: ssh ${GUESTA_USER}@${GUESTA_HOST} + rocm-smi"
+# ---------------------------------------------------------------- guest-a check
+step "guest-a check: ssh ${GUESTA_USER}@${GUESTA_HOST} + rocm-smi"
 GUESTA_INFO=$(
   "${SSH[@]}" "$GUESTA_USER@$GUESTA_HOST" \
     'rocm-smi 2>/dev/null | sed -n "/Concise Info/,/====/p" | tail -6; echo ---; command -v hipcc cmake | tr "\n" " "; echo; hipcc --version 2>/dev/null | head -1' \
@@ -47,12 +47,12 @@ GUESTA_INFO=$(
 GUESTA_RC=$?
 if [ $GUESTA_RC -eq 0 ] && ! grep -qE "Connection refused|No route to host|timed out|Could not resolve" <<<"$GUESTA_INFO"; then
   GUESTA_STATUS=OK
-  log "the build VM reachable; GPU/toolchain info:"
+  log "guest-a reachable; GPU/toolchain info:"
   sed 's/^/    /' <<<"$GUESTA_INFO" | tee -a "$LOG"
 else
   GUESTA_STATUS=DOWN
   GUESTA_REASON="ssh failed (rc=$GUESTA_RC): $(grep -m1 -E "Connection|route|timed out|resolve|refused" <<<"$GUESTA_INFO" | head -1)"
-  log "the build VM check failed: $GUESTA_REASON"
+  log "guest-a check failed: $GUESTA_REASON"
 fi
 
 # ---------------------------------------------------------------- local build
@@ -75,10 +75,10 @@ else
   log "local GEMM: FAIL (see $LOG)"
 fi
 
-# ---------------------------------------------------------------- the build VM GPU GEMM
+# ---------------------------------------------------------------- guest-a GPU GEMM
 if [ "$GUESTA_STATUS" = OK ]; then
   if within_budget; then
-    step "the build VM: transfer tree + build + GPU GEMM (budget ${GUESTA_BUDGET}s, elapsed $(( $(now) - GUESTA_START ))s)"
+    step "guest-a: transfer tree + build + GPU GEMM (budget ${GUESTA_BUDGET}s, elapsed $(( $(now) - GUESTA_START ))s)"
     if tar -C "$ROOT" --exclude .git --exclude build --exclude scripts/smoke-results --exclude dist \
         -cf - . \
       | "${SSH[@]}" "$GUESTA_USER@$GUESTA_HOST" \
@@ -113,12 +113,12 @@ if [ "$GUESTA_STATUS" = OK ]; then
   fi
 else
   GUESTA_STATUS=SKIPPED
-  GUESTA_REASON="$GUESTA_REASON (the build VM unreachable — GPU phase skipped)"
+  GUESTA_REASON="$GUESTA_REASON (guest-a unreachable — GPU phase skipped)"
 fi
 
 # ---------------------------------------------------------------- summary
 log "=================================================="
-log "SUMMARY: local=$LOCAL_STATUS the build VM=$GUESTA_STATUS ${GUESTA_REASON:+($GUESTA_REASON)}"
+log "SUMMARY: local=$LOCAL_STATUS guest-a=$GUESTA_STATUS ${GUESTA_REASON:+($GUESTA_REASON)}"
 log "log: $LOG"
 
 [ "$LOCAL_STATUS" = PASS ] || exit 1

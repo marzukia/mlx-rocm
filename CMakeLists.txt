@@ -4,7 +4,7 @@
 #   cmake -S . -B build && cmake --build build
 #   ./build/gemm_smoke host
 #
-# ROCm build (e.g. the build VM, RX 9070 XT / gfx1201):
+# ROCm build (e.g. guest-a, RX 9070 XT / gfx1201):
 #   cmake -S . -B build -DMLX_ROCM_WITH_HIP=ON && cmake --build build
 #   ./build/gemm_smoke hip
 #

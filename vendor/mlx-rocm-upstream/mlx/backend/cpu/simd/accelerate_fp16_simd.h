@@ -3,7 +3,7 @@
 #include "mlx/backend/cpu/simd/base_simd.h"
 
 #if MLX_SIMD_LIBRARY_VERSION < 6
-#include "mlx/backend/cpu/simd/the build VM_fp16_simd.h"
+#include "mlx/backend/cpu/simd/guest-a_fp16_simd.h"
 #endif
 
 namespace mlx::core::simd {

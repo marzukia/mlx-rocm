@@ -1,10 +1,10 @@
 # Adversarial review: k3-gdn-port (head 1155097, diff main..1155097)
 
-Reviewer: fresh K3-lane session (first review of this branch; prior an earlier run attempt
+Reviewer: fresh K3-lane session (first review of this branch; prior run-518 attempt
 died empty-final, no prior verdict carried). Read-only except this doc.
 Scope: R4D GDN linear-attention kernel port (chunk-scan + kkt_solve +
 recurrent_update + wmma helper, gated_delta_update.cpp wiring) + crash fix
-(allocator.cpp `shadow_chunked_copy` re-add of an earlier run/an earlier run chunked host-shadow
+(allocator.cpp `shadow_chunked_copy` re-add of run-451/run-460 chunked host-shadow
 staging). Report under review: reports/k3-gdn-crash-fix.md.
 
 Branch: 3 commits (2b28f2e R4D port, d9a5de7 WIP salvage, 1155097 fix+verify).
@@ -55,7 +55,7 @@ Size gate: `scripts/size_ratchet.py` scans `.py` only; C++/HIP are exempt,
   behavior" wording is about copy count, not mechanism. **MINOR (M4).**
 - **All three shadow sites covered** (ensure_host_shadow D2H,
   flush_host_shadow H2D, flush_all_dirty_shadows H2D), verified in diff.
-- **Crash fix itself.** The an earlier run/an earlier run root cause (per-chunk
+- **Crash fix itself.** The run-461/run-506 root cause (per-chunk
   `hipStreamDestroy` racing a never-promptly-retired KFD completion event)
   is removed by not destroying; the hang-avoidance property (fresh
   per-chunk stream + sync = per-chunk queue reset) is preserved. The
@@ -131,13 +131,13 @@ Verified-good:
   consistent with the fallback in fast.cpp (which also applies no scale)
   and with the exact T=1 numerics.
 
-## 3. Re-add vs an earlier run/an earlier run/an earlier run large-copy hang; knob=0 — VERDICT: PASS
+## 3. Re-add vs run-444/run-454/run-458 large-copy hang; knob=0 — VERDICT: PASS
 
 - The hang lineage was single large (≥300 MB) shadow copies stalling in
   `kfd_wait_on_events` with the GPU idle. The re-add keeps every staging
-  copy ≤100 MB by default — the an earlier run per-chunk queue reset is the
+  copy ≤100 MB by default — the run-460 per-chunk queue reset is the
   hang-avoidance property and it is preserved. The only behavior change vs
-  an earlier run is the removed `hipStreamDestroy`, which fixes the segfault without
+  run-460 is the removed `hipStreamDestroy`, which fixes the segfault without
   touching the chunking. No new hang mode is introduced: each chunk is
   synced before the next, so no chunk inherits a queue with a pending
   un-retired event.
@@ -146,7 +146,7 @@ Verified-good:
   safe default-off position. Default (100 MB) is the hang-avoiding
   position. PASS.
 - Caveat (inherent, not a regression): the hang was *intermittent* in the
-  an earlier run lineage, so 20 clean 300 MB copies is evidence, not proof, that the
+  run-444 lineage, so 20 clean 300 MB copies is evidence, not proof, that the
   default chunk size is hang-free at, say, 2 GB. The 16/16→0/16 concurrent
   crash result is the load-bearing verification and it is the right one for
   the segfault.
@@ -188,7 +188,7 @@ Numerics ran B=1, Hk=4/Hv=8 (ratio 2), Dk=Dv=128, T∈{1,3} only:
   (consecutive tids, width 32 — always intra-wave).
 - No BLOCKER found. No silent-miscompute path found outside M1 (which
   throws loudly).
-- Git-history corroboration of the report's root cause: bd061d6 (an earlier run)
+- Git-history corroboration of the report's root cause: bd061d6 (run-460)
   has `hipStreamDestroy(stream)` at line 920 inside
   `chunked_copy_stream_separated` (the segfaulting design); 85b521e
   (the re-land) has zero chunked-copy references (the masking re-land);
@@ -216,7 +216,7 @@ Counts: 0 BLOCKER, 1 MAJOR, 7 MINOR.
 ## Verdict: **PASS**
 
 The crash fix is correct and verified with the right hammer (load-gated
-16/16 → 0/16), the hang-avoidance property of the an earlier run chunking is
+16/16 → 0/16), the hang-avoidance property of the run-460 chunking is
 preserved, and the GDN port is numerically verified (T=1 exact vs fallback,
 T=3 within 1 bf16 ulp, f32-exact reference cross-check). The one MAJOR
 (M1, ratio 5/7 gate/launcher mismatch) is a real gate-contract bug but

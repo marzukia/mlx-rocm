@@ -1,13 +1,13 @@
 #!/bin/bash
-# an earlier run (method-correction doc 2026-10-28, section 4 step 1, lever 1
-# follow-up; REPORT.md section 6.4/7.6 pointer): an earlier run LX-hoist A/B gates.
+# run-889 (method-correction doc 2026-10-28, section 4 step 1, lever 1
+# follow-up; REPORT.md section 6.4/7.6 pointer): run-852 LX-hoist A/B gates.
 #
 # (a) LOSSLESS: MR+hoist kernel bit-exact vs the per-row qmv_wide_kernel
 #     at identical inputs (maxdiff 0.0, raw-uint16 equality) — the
 #     reference is generated in the SAME wheel with MLX_QMV_NO_MR=1
 #     (per-row wide kernel), so both sides are the same code.
 # (b) GAIN >= 3%: per-combo kernel-time gain, LX=1 (hoist) vs LX=0
-#     (an earlier run path), one fresh process per env (an earlier run convention), identical
+#     (run-825 path), one fresh process per env (run-835 convention), identical
 #     combo sequence, per-position pairing; the down shape (K=12288,
 #     wide fallback for both envs) is the drift control.
 # (c) CONFIG: printed + asserted per run (doc rule 6) — the CONFIG lines
@@ -15,9 +15,9 @@
 #     names actually dispatched; this runner asserts the expected kernel
 #     family per shape + the template instantiation from the full symbol
 #     name (mangled Lb0/Lb1 or demangled — non-vacuous on this
-#     toolchain's mangled names; an earlier run MINOR-2 fix).
+#     toolchain's mangled names; run-903 MINOR-2 fix).
 #
-# Usage (ON the build VM):
+# Usage (ON guest-a):
 #   bash qmv_mr2_lx_run.sh <python>
 #     python: interpreter with the wheel under test on its path
 #            (venv-d python + PYTHONPATH=$MODELS/wheel-qmv2)
@@ -33,11 +33,11 @@ WARMUP=10
 REPS=50
 mkdir -p $T
 
-# Orphan-lock class (an earlier run incident): kill our children on any exit.
+# Orphan-lock class (run-852 incident): kill our children on any exit.
 CHILDREN=""
 trap 'for c in $CHILDREN; do kill $c 2>/dev/null; done; wait 2>/dev/null' EXIT INT TERM
 
-echo "=== an earlier run ENV: py=$PY wheel=$($PY -c 'import mlx.core as mx; print(mx.__version__)') ==="
+echo "=== run-889 ENV: py=$PY wheel=$($PY -c 'import mlx.core as mx; print(mx.__version__)') ==="
 $PY -c "import mlx.core as mx; print('DEVICE:', mx.rocm.device_name() if hasattr(mx.rocm,'device_name') else 'n/a')" 2>/dev/null || true
 
 # --- gate (a): lossless — bit-exact vs per-row wide kernel ---------------
@@ -71,8 +71,8 @@ grep -E "^COMBO:" $T/parse0.log $T/parse1.log
 
 # --- gate (c): config assertions (kernel names actually dispatched) ------
 # The template-instantiation check is non-vacuous on the mangled names
-# rocprofv3 actually reports (mangled Lb0 = an earlier run path / Lb1 = hoist, or
-# demangled ", false>" / ", true>"; an earlier run MINOR-2 fix — the an earlier run check
+# rocprofv3 actually reports (mangled Lb0 = run-825 path / Lb1 = hoist, or
+# demangled ", false>" / ", true>"; run-903 MINOR-2 fix — the run-889 check
 # was a no-op for mangled names). Proven non-vacuous offline by
 # tests/test_qmv_mr2_lx_instantiation.py.
 python3 $HERE/qmv_mr2_lx_instantiation.py $T/combos0.json $T/combos1.json || { echo "CONFIG-ASSERT-FAIL"; exit 1; }
@@ -81,5 +81,5 @@ python3 $HERE/qmv_mr2_lx_instantiation.py $T/combos0.json $T/combos1.json || { e
 python3 $HERE/qmv_mr2_lx_analyze.py $T/combos0.json $T/combos1.json > $T/gain.log 2>&1
 RC=$?
 cat $T/gain.log
-echo "=== an earlier run DONE (gain-gate rc=$RC) ==="
+echo "=== run-889 DONE (gain-gate rc=$RC) ==="
 exit $RC

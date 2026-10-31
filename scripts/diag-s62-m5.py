@@ -14,7 +14,7 @@ BOTH variants:
   variant A: one T=2 verify forward  [[279, 3545]]  (row 1 = token 3545)
   variant B: two T=1 forwards        [[279]] then [[3545]]
 
-The layer-3 block (qwen3_5.DecoderLayer, full_attention; the an earlier runc-patched
+The layer-3 block (qwen3_5.DecoderLayer, full_attention; the run-718c-patched
 venv model, $MODELS/venv-d; linear layers are 4-bit quantized, group 64):
 
   x   = block input (the GDN-2 block output / residual stream)
@@ -91,7 +91,7 @@ MAX_TOKENS = int(os.environ.get("DIAG_MAX", "160"))
 EOS = 248044
 MODE = os.environ.get("MODE", "ab")
 SPEC = os.environ.get("SPEC", "")
-D = os.environ.get("CAP_DIR", f"{MODELS}/tmp/an earlier run")
+D = os.environ.get("CAP_DIR", f"{MODELS}/tmp/run-785")
 M3_PKL = os.path.join(D, "cap-m3-s62.pkl")
 M4_PKL = os.path.join(D, "cap-m4-sdpa.pkl")
 M5_PKL = os.path.join(D, "cap-m5-s62.pkl")

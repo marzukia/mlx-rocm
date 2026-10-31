@@ -1,9 +1,9 @@
-# an earlier run partial findings (salvage 2026-10-27, session ended mid-turn at wall 2574s)
+# run-605 partial findings (salvage 2026-10-27, session ended mid-turn at wall 2574s)
 
 RCA of F1: MTP draft uncorrelated with target (rank ~206k-248k/248320, corr ~-0.02..-0.05).
 Status: numpy reference BUILT but NOT validated. E3/E4 ground-truth experiments NEVER RAN.
 
-## Established during an earlier run
+## Established during run-605
 1. **Norm convention**: the mlx port uses RMSNorm weights = HF_raw + 1 (i.e. the 4bit model
    files store (w-1)). Verified on 4 trunk norms (input 0.0331->1.0331, post -0.1126->0.8875,
    L5 0.1194->1.1195, final 1.1398->2.1398). The original numpy port used HF raw -> 8.5x
@@ -41,7 +41,7 @@ Status: numpy reference BUILT but NOT validated. E3/E4 ground-truth experiments 
 ## Assets
 - np-rca-np.py: numpy trunk+MTP (modes: track/e1/mtp/e3/e4), bf16 shards, f32 math, layer-by-layer < 12GB
 - np-rca-mlx-l0.py / -norms.py / -perlayer.py / -mtpnorms.py / -normconv.py: mlx-side probes
-- Guest: ssh -o BatchMode=yes -J operator@<tailnet-ip> the build VM@<guest-ip>
+- Guest: ssh -o BatchMode=yes -J operator@<tailnet-ip> guest-a@<guest-ip>
   (scripts also live in /tmp on the guest; HF shards /models/hf-qwen3-9b/, mlx venv /models/venv-a,
   4bit model /models/qwen3-9b-mlx, mtp file model-mtp.safetensors 973MB f32)
 - E2 mlx reference: t1=271('\n\n') t2=8160('Here'); target top8: [(8160,18.88),(248068,18.38),(760,16.25),...]

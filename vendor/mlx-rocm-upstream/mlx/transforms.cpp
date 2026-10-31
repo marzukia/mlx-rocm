@@ -136,10 +136,10 @@ array eval_impl(std::vector<array> outputs, bool async) {
                 "[eval] Attempting to eval an array without a primitive.\n"
                 "If you are compiling a function, make sure all the inputs "
                 "and outputs are captured:\n"
-                "https://ml-explore.github.io/mlx/build/html/usage/compile.html#pure-functions.\n"
+                "https://mlx-project.github.io/mlx/build/html/usage/compile.html#pure-functions.\n"
                 "If you are not using compile, this may be a bug. "
                 "Please file an issue here:\n"
-                "https://github.com/ml-explore/mlx/issues.");
+                "https://github.com/mlx-project/mlx/issues.");
           }
           if (a.primitive().stream() != in.primitive().stream()) {
             bool device_switch =

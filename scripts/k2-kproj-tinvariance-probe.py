@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""an earlier run gate (a): direct k_proj T-invariance probe (audit repro on the lane wheel).
+"""run-1014 gate (a): direct k_proj T-invariance probe (audit repro on the lane wheel).
 
 The #20 m8 audit (P3) localized the MTP flow 1-ulp to the k_proj matmul
 T=2-vs-T=1 dispatch (direct test: random bf16 1024x4096, T2-row1 vs T1
-n=1/4096, 1-ulp 1.221e-04). m8 round 2 (an earlier run) corrected the flow
+n=1/4096, 1-ulp 1.221e-04). m8 round 2 (run-976) corrected the flow
 attribution (the flow 1-ulp was in the fused mx.fast.rope; the model's
 k_proj is 4-bit QMM - qmv_wide_kernel for M=1 and M=2, T-invariant per
-row by construction) and the m8rebase lane wheel re-verified D1 n=0 (an earlier run:
+row by construction) and the m8rebase lane wheel re-verified D1 n=0 (run-992:
 direct-kernels.out). This probe re-runs the audit's direct test on the
-current lane wheel (t29k/venv-m8, libmlx.so sha256[:12]=de6de5f154c0).
+current lane wheel (run-1012-29k/venv-m8, libmlx.so sha256[:12]=de6de5f154c0).
 
 Parts:
   D1: the model's ACTUAL k_proj (QuantizedLinear 4bit/64, all 8 FA layers):
@@ -20,7 +20,7 @@ Parts:
       x (T, 1024) @ W.T with W (4096, 1024) (the audit's "1024x4096"
       orientation). Per-trial T2-row1 vs T1-row0. Informational: the plain
       M=1 gemv vs M=2 GEMM split may flip 1 ulp value-specifically on
-      some .so builds (an earlier run open item); the flow's k_proj is QMM, so D2
+      some .so builds (run-976 open item); the flow's k_proj is QMM, so D2
       does not gate the lossless path.
   D3: determinism: one representative comparison per part is re-run; the
       re-run must be bit-identical to the first (n=0).

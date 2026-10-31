@@ -1,13 +1,13 @@
-# K3 Phase 1 re-run: GDN segfault fix + numerics (gfx1201, the build VM)
+# K3 Phase 1 re-run: GDN segfault fix + numerics (gfx1201, guest-a)
 
-Date: 2026-10-26 (guest UTC). Submitter: submitter (worker an earlier run).
-Scope: fix the an earlier run GDN bf16 `copy_general_general` segfault, verify GDN numerics
+Date: 2026-10-26 (guest UTC). Submitter: submitter (worker run-515).
+Scope: fix the run-506 GDN bf16 `copy_general_general` segfault, verify GDN numerics
 (recurrent + chunk paths vs the op-loop fallback and an f32 reference). No tok/s
 benches (separate 1200 s phase-2 run).
 
 ## Guest environment note
 
-All GPU work ran on **the build VM** (<guest-ip> via `operator@<tailnet-ip>`
+All GPU work ran on **guest-a** (<guest-ip> via `operator@<tailnet-ip>`
 jumphost) under `flock /models/gpu-bench.lock`. ROCm 10.1, RX 9070 XT
 (gfx1201). **The guest runs a 32-CU partition of the 54-CU card** (HIP bind log:
 `cus=32 warp=32 lds=64KB`) — every timing/occupancy observation from this guest
@@ -16,7 +16,7 @@ venv `/models/venv-k3`.
 
 ## 1. The crash and backtrace status
 
-an earlier run: 4× `Segmentation fault (core dumped)` in the 04:11 wheel during GDN bf16
+run-506: 4× `Segmentation fault (core dumped)` in the 04:11 wheel during GDN bf16
 numerics verify, deterministic at the smallest case via
 `flock … python k3_repro.py recurrent` (output ends `graph built / Segmentation
 fault`).
@@ -24,15 +24,15 @@ fault`).
 Backtrace status: **not captured live.** On the re-run the crash did not
 reproduce in any configuration:
 
-| hammer | 04:11 wheel (an earlier run chunked copy, has `chunked_copy_stream_separated`) |
+| hammer | 04:11 wheel (run-460 chunked copy, has `chunked_copy_stream_separated`) |
 |---|---|
 | plain `k3_repro.py recurrent` ×25 | 0 crashes |
 | under `gdb` ×15 (`-ex run -ex bt`) | 0 crashes, `Inferior exited normally` |
 | accumulation loop ×10 | 0 crashes |
 | concurrent (4 procs × 4) | **16/16 crashed** — the crash mode |
 
-No cores were on disk (`ulimit -c 0` in the guest shell; the an earlier run cores were not
-preserved). The an earlier run gdb backtrace (release build, imprecise symbolization)
+No cores were on disk (`ulimit -c 0` in the guest shell; the run-506 cores were not
+preserved). The run-461 gdb backtrace (release build, imprecise symbolization)
 pointed at `allocator.cpp:908/923` — the per-chunk `hipMemcpyAsync`/stream
 lifecycle region of `chunked_copy_stream_separated` (bd061d6 lines 894–929).
 The crash is **load-gated, not code-deterministic**: it fired 4× in a row at
@@ -42,24 +42,24 @@ the day.
 
 ## 2. Root cause
 
-1. The an earlier run/an earlier run patch added **chunked host-shadow staging copies**
+1. The run-451/run-460 patch added **chunked host-shadow staging copies**
    (`chunked_copy_stream_separated`, ≤100 MB chunks, `MLX_ROCM_D2H_CHUNK_MB`
-   override) to avoid the an earlier run/an earlier run lineage: single large (≥300 MB, 1.2 GB
+   override) to avoid the run-444/run-454 lineage: single large (≥300 MB, 1.2 GB
    model-weight scale) shadow copies intermittently hanging in
    `kfd_wait_on_events` with the GPU idle on gfx1201/ROCm 10.1.
 2. That design **created and destroyed a stream per chunk**. On this
    gfx1201/ROCm 10.1 configuration the KFD completion event of an async copy is
-   not retired promptly (the an earlier run/an earlier run/an earlier run hang lineage); destroying the
+   not retired promptly (the run-444/run-454/run-458 hang lineage); destroying the
    per-chunk stream while its event is still pending races the runtime
-   stream/event bookkeeping → segfault in the copy path (an earlier run, an earlier run backtrace
+   stream/event bookkeeping → segfault in the copy path (run-506, run-461 backtrace
    at the chunked-copy region).
 3. The re-land `85b521e` **dropped the chunked copy entirely** (git: 37e2834
-   chunk ≤100 MB, d82ce84 async chunked, bd061d6 an earlier run salvage — all with chunked
-   refs; 85b521e and everything after: 0). The 07:44 wheel (an earlier run instrumented
+   chunk ≤100 MB, d82ce84 async chunked, bd061d6 run-460 salvage — all with chunked
+   refs; 85b521e and everything after: 0). The 07:44 wheel (run-511 instrumented
    build) therefore had plain single-shot `hipMemcpy` shadow copies and could not
    crash — but it silently lost the hang-avoidance property for large copies.
 
-So: the an earlier run crash is a **an earlier run stream-lifecycle bug** (per-chunk
+So: the run-506 crash is a **run-460 stream-lifecycle bug** (per-chunk
 `hipStreamDestroy` vs never-retired KFD event), and the re-land masked it by
 removing the chunking.
 
@@ -72,8 +72,8 @@ as `shadow_chunked_copy()`:
   i.e. the pre-chunking behavior).
 - Each chunk on its own **freshly created** stream: `hipMemcpyAsync` +
   `hipStreamSynchronize` — the per-chunk queue reset is the hang-avoidance
-  property (an earlier run, kept).
-- **No `hipStreamDestroy`** — the an earlier run/an earlier run segfault fix. One small bounded
+  property (run-460, kept).
+- **No `hipStreamDestroy`** — the run-461/run-506 segfault fix. One small bounded
   leak per chunk per shadow copy (a 1.2 GB copy leaks 12 streams; negligible for
   a server process) in exchange for no stream-lifecycle race. Streams (and their
   KFD events) live to process exit, matching how the main copy path already
@@ -83,7 +83,7 @@ as `shadow_chunked_copy()`:
 - Applied at all three shadow-copy sites: `ensure_host_shadow` (D2H),
   `flush_host_shadow` (H2D), `flush_all_dirty_shadows` (H2D).
 
-`mlx/backend/rocm/gated_delta_update.cpp`: kept the an earlier run `MLX_GDN_DEBUG`
+`mlx/backend/rocm/gated_delta_update.cpp`: kept the run-511 `MLX_GDN_DEBUG`
 instrumentation (env-gated fprintf of buffer pointers around the GDN eval; no
 behavior change when unset).
 
@@ -135,7 +135,7 @@ match the Python fallback and f32 reference within bf16 tolerance.**
 
 ## 5. Follow-ups (not blocking)
 
-- The an earlier run trigger was load-gated (16/16 concurrent on the 04:11 wheel, 0×
+- The run-506 trigger was load-gated (16/16 concurrent on the 04:11 wheel, 0×
   serialized); set `ulimit -c unlimited` in the guest bench shell so the next
   occurrence leaves a core.
 - Bounded stream leak in `shadow_chunked_copy` (documented above); a shared

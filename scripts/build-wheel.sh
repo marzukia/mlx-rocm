@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the mlx wheel with the ROCm backend for gfx1201 (RX 9070 XT).
-# Runs ON the build VM (ROCm 10.1 guest userland; add -DCMAKE_PREFIX_PATH=/opt/rocm/core-10.1 — see docs/quickstart.md). Clones the pinned vendor (vendor.json) if not present.
+# Runs ON guest-a (ROCm 10.1 guest userland; add -DCMAKE_PREFIX_PATH=/opt/rocm/core-10.1 — see docs/quickstart.md). Clones the pinned vendor (vendor.json) if not present.
 set -euo pipefail
 
 VENDOR_DIR="${MLX_VENDOR_DIR:-$HOME/vendor/mlx}"
@@ -21,7 +21,7 @@ fi
 cd "$VENDOR_DIR"
 git fetch --depth 1 origin "$REF" && git checkout -q FETCH_HEAD
 
-# Fail loudly if the checked-out commit is not the vendor.json pin (an earlier run: the pin's
+# Fail loudly if the checked-out commit is not the vendor.json pin (run-789: the pin's
 # ref and sha can disagree when the pinned sha was never pushed to the fork).
 if [ -n "$PIN_SHA" ]; then
   CHECKED_SHA="$(git rev-parse HEAD)"

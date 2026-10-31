@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""an earlier run: parse an earlier run bench logs -> in-run bar table.
+"""run-835: parse run-835 bench logs -> in-run bar table.
 
 Input: the 16 bench-<K>x<N>-M<M>.log files (each ends with the
 qmv_mr_parse.py QMV: line). Output: per-shape table with in-run M-ratios

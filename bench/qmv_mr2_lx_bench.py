@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""an earlier run: decode QMV A/B bench — an earlier run LX hoist (MLX_QMV_MR_LX=1) vs the
-an earlier run path (MLX_QMV_MR_LX=0), one process per env (fresh process per run,
-the an earlier run convention). GB/s from rocprofv3 kernel time + bytes moved
+"""run-889: decode QMV A/B bench — run-852 LX hoist (MLX_QMV_MR_LX=1) vs the
+run-825 path (MLX_QMV_MR_LX=0), one process per env (fresh process per run,
+the run-835 convention). GB/s from rocprofv3 kernel time + bytes moved
 (method doc section 2 rule 2: NEVER per-op latency including host op
 creation / mx.eval).
 
@@ -13,7 +13,7 @@ gate, so it runs the per-row qmv_wide_kernel for BOTH env values),
 
 Run under:  rocprofv3 -d <out> -f json --kernel-trace -- python
     qmv_mr2_lx_bench.py
-Env: MLX_QMV_MR_LX (0 = an earlier run path, 1 = an earlier run hoist; the dispatch gate
+Env: MLX_QMV_MR_LX (0 = run-825 path, 1 = run-852 hoist; the dispatch gate
     enables the hoist only when K % 1024 == 0 for 4-bit), QMV_WARMUP
     (default 10), QMV_REPS (default 50).
 

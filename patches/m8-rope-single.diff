@@ -1,6 +1,6 @@
 --- m8-rope-single.diff
---- Targets: the vendor clone (vendor.json primary the earlier vendor base; the guest m8/m8r2
---- clones are @ 75ca881b — rope.hip is byte-identical between the two, so
+--- Targets: the vendor clone (vendor.json primary = the vendor ref; the guest m8/m8r2
+--- clones are @ 75ca881b, the self-repo pin — rope.hip is byte-identical between the two, so
 --- the patch applies to both) — apply with:
 ---   git apply patches/m8-rope-single.diff   (in the vendor clone)
 ---
