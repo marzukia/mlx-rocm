@@ -129,3 +129,45 @@ kernel=1022 memcpy=16):
   answer whether the ExecUpdate/refresh path stages the new values
   (stale exec packet, rocm-systems#10714 class) or the fault is
   content/ordering at the baked VAs.
+
+---
+## Addendum 5 (2026-11-01, t1082, probes r43-r44 + the slot-wrapper fix)
+
+- r43 (keep=4 + EXECDUMP + NODDUMP + SENTINEL): the Squeeze divergence
+  is gone (the ported micro-step gate works). The fault is at the FIRST
+  REPLAY, gather_rows_kernel, addr 0x750c8229d000 = a0 + idx*rowlen*2
+  with idx ~ -3.8e5: the idx arg (a1) is the ZERO slot
+  (0x7535da200900), holding arena garbage. G1P: slot1 dev=4096 (the
+  capture-step value) vs host=4352 — the blocking pre-launch H2D did
+  not order against the graph (see below). Source-graph values stable
+  (endrec == replay for all 8 dumped nodes): not a stale ExecUpdate.
+- Mechanism (from the graph's own node args): n2 is a 512xint32
+  gather (row = 2 KB) whose out is the 256 B slot2 wrapper. The row
+  spans [slot2, slot2+0x800) and overflows into the adjacent zero
+  slot [slot2+0x200, ...). Nothing re-zeroes the zero slot after the
+  capture step's launch, so the replay's first gather reads a bf16
+  bit pattern as an index -> off-arena fault. Same class as the
+  t1074 keep=2 copy_gg_dynamic_nd fault (its dyn-offset input is the
+  zero slot, read after n2's overflow).
+- Two fixes (both in the pre-launch slot path, plus the layout):
+  1. The idx/zero slot is re-cleared (hipMemsetAsync on the launch
+     stream) before EVERY graph launch. It is a dyn-offset/idx
+     input that must read 0 at graph start; the capture step's
+     kernels can leave garbage in it and nothing re-zeroed it.
+  2. The value-slot and zero-slot wrappers grow from 256 B to 4 KB
+     (decode_value_slot / decode_zero_slot / reserve_wrappers): the
+     observed gather rows (up to 2 KB) then stay inside their own
+     wrapper and cannot spill into the zero slot mid-graph. A
+     pre-launch memset alone is insufficient — the overflow happens
+     DURING the graph (r44: pre-launch G1P shows zero dev=0, the
+     capture launch still faults in copy_gg_dynamic_nd after n2's
+     mid-graph overflow).
+  3. The pre-launch slot H2D moves from a blocking hipMemcpy (legacy
+     default stream, which does not order against the non-blocking
+     decode stream — r43's stale slot1) to hipMemcpyAsync on the
+     launch stream; the host buffers are pinned, so the async copy
+     is safe and stream-ordered before the graph.
+- r44 (full 1738 graph, no bisect): 2-op micro-step capture+replay
+  clean; the 1738 capture launch faults in copy_gg_dynamic_nd
+  (APERTURE_VIOLATION) — before the 4 KB wrapper change. r45 (with
+  the 4 KB wrappers) is the verification run.
