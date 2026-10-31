@@ -730,18 +730,8 @@ void RocmAllocator::free(Buffer buffer, bool force) {
   }
   if (buf->data && decode_arena_.contains(buf->data)) {
     // Arena window check: the HBM is arena-owned (never freed here).
-    // The deque-owned wrappers (arena_alloc returns &wrappers[i]; the
-    // Buffer wrapping it is non-owning) need a no-op free - a delete
-    // there frees a pointer into the deque storage (glibc "free():
-    // invalid pointer", t1095 p1). Heap RocmBuffers whose data merely
-    // falls inside the 2 GB arena window (unified-pool buffers; t1097:
-    // two distinct heap structs for the same 2 B gather out, both
-    // deleted -> UAF, SEGV in CopyableHipEvent::record with this in a
-    // reused HIP error string) must NOT be deleted either: contains()
-    // cannot tell true arena data from pool addresses in the window.
-    // The 1cf60ec plain return is the safe behavior; the per-free 56 B
-    // struct leak for false-positive pool buffers is accepted (the
-    // a8fd141 item-1 delete is reverted by this round).
+    // The deque-owned wrappers (arena_alloc returns &wrappers[i]; the Buffer wrapping it is non-owning) need a no-op free - a delete there frees a pointer into the deque storage (glibc "free(): invalid pointer", t1095 p1). Heap RocmBuffers whose data merely falls inside the 2 GB arena window (unified-pool buffers; t1097: two distinct heap structs for the same 2 B gather out, both deleted -> UAF, SEGV in CopyableHipEvent::record with this in a reused HIP error string) must NOT be deleted either: contains() cannot tell true arena data from pool addresses in the window.
+    // The 1cf60ec plain return is the safe behavior; the per-free 56 B struct leak for false-positive pool buffers is accepted (the a8fd141 item-1 delete is reverted by this round).
     return;
   }
   if (getenv("MLX_WORKER_DEBUG")) {
@@ -941,11 +931,7 @@ RocmAllocator::decode_value_slot(int index) {
   }
   DecodeValueSlotState& st = decode_value_slot_state_[index];
   if (st.host && st.base != decode_arena_.base) {
-    // The arena base was reallocated (capacity growth / deferred
-    // teardown): the old device slot is gone with it, and the captured
-    // exec that referenced it was destroyed by the same event. The
-    // Buffer is non-owning; the device memory is part of the arena
-    // base (freed whole).
+    // The arena base was reallocated (capacity growth / deferred teardown): the old device slot is gone with it, and the captured exec that referenced it was destroyed by the same event. The Buffer is non-owning; the device memory is part of the arena base (freed whole).
     st.buf = Buffer{nullptr};
     (void)hipFree(st.host);
     st.host = nullptr;
@@ -953,13 +939,8 @@ RocmAllocator::decode_value_slot(int index) {
     st.base = nullptr;
   }
   if (!st.host) {
-    // Buffer is non-owning; the arena's wrappers own the RocmBuffer
-    // (and free() is a no-op for arena-allocated memory).
-    // 4 KB wrapper: a decode gather writes its whole row into the slot
-    // (observed row sizes up to 2 KB, e.g. the 512xint32 lm-head
-    // gather). A 256 B wrapper let that row spill into the adjacent
-    // wrapper (the idx/zero slot), which a later kernel then read as
-    // an index / dyn offset -> off-arena (aperture) fault.
+    // Buffer is non-owning; the arena's wrappers own the RocmBuffer (and free() is a no-op for arena-allocated memory).
+    // 4 KB wrapper: a decode gather writes its whole row into the slot (observed row sizes up to 2 KB, e.g. the 512xint32 lm-head gather). A 256 B wrapper let that row spill into the adjacent wrapper (the idx/zero slot), which a later kernel then read as an index / dyn offset -> off-arena (aperture) fault.
     RocmBuffer* b = arena_alloc(4096);
     if (!b) {
       return {Buffer{nullptr}, nullptr};
@@ -977,10 +958,7 @@ RocmAllocator::decode_value_slot(int index) {
   return {st.buf, st.host, st.data};
 }
 
-// Reserve `n` wrapper slots (4 KB each, the decode value/zero slot
-// wrapper size) without allocating them: keeps capture and replay
-// steps at identical relative offsets when the reserved slots are only
-// allocated on one side (see gd_step_prepare).
+// Reserve `n` wrapper slots (4 KB each, the decode value/zero slot wrapper size) without allocating them: keeps capture and replay steps at identical relative offsets when the reserved slots are only allocated on one side (see gd_step_prepare).
 void RocmAllocator::decode_arena_reserve_wrappers(size_t n) {
   auto& a = decode_arena_;
   std::lock_guard lock(mutex_);
@@ -997,9 +975,7 @@ void RocmAllocator::decode_arena_reserve_wrappers(size_t n) {
   a.high_water = std::max(a.high_water, a.offset);
 }
 
-// The default stream (the decode graph's stream) is available via the
-// allocator's device; the memset + sync run once per arena incarnation,
-// before the capture window (gd_step_prepare calls this first).
+// The default stream (the decode graph's stream) is available via the allocator's device; the memset + sync run once per arena incarnation, before the capture window (gd_step_prepare calls this first).
 RocmAllocator::DecodeValueSlot
 RocmAllocator::decode_zero_slot() {
   std::lock_guard lock(mutex_);
@@ -1041,11 +1017,7 @@ size_t RocmAllocator::decode_value_slot3_cursor(size_t size) {
   return off;
 }
 
-// gfx1201 / ROCm 10.1: a single large host-shadow staging copy (>=300 MB;
-// the 1.2 GB model-weight scale) intermittently hangs in kfd_wait_on_events
-// with the GPU idle (run-444/run-454 lineage). Keep each staging copy at or below
-// the safe size. Override with MLX_ROCM_D2H_CHUNK_MB (0 = single copy, the
-// pre-chunking behavior).
+// gfx1201 / ROCm 10.1: a single large host-shadow staging copy (>=300 MB; the 1.2 GB model-weight scale) intermittently hangs in kfd_wait_on_events with the GPU idle (run-444/run-454 lineage). Keep each staging copy at or below the safe size. Override with MLX_ROCM_D2H_CHUNK_MB (0 = single copy, the pre-chunking behavior).
 static size_t host_shadow_chunk_bytes() {
   static const size_t chunk = [] {
     const char* e = std::getenv("MLX_ROCM_D2H_CHUNK_MB");
@@ -1061,29 +1033,12 @@ static size_t host_shadow_chunk_bytes() {
   return chunk;
 }
 
-// run-515 (k3): chunked host-shadow staging copy. Each chunk is issued on its
-// own freshly created stream (hipMemcpyAsync + hipStreamSynchronize) so no
-// chunk inherits a queue with a pending un-retired KFD completion event —
-// the per-chunk queue reset is the hang-avoidance property (run-460).
-//
-// run-461-class segfault fix: the run-460 design also DESTROYED the per-chunk
-// stream (hipStreamDestroy). On gfx1201 the KFD completion event of an
-// async copy is not retired promptly; destroying the per-chunk stream while
-// that event is still pending races the runtime stream/event bookkeeping and
-// segfaults in this function (run-506: core x4 in the GDN bf16 D2H, backtrace
-// at the chunked-copy region). The stream is therefore intentionally NOT
-// destroyed: one small bounded leak per chunk per shadow copy (a 1.2 GB
-// copy leaks 12 streams; negligible for a server process) in exchange for
-// no stream-lifecycle race.
+// run-515 (k3): chunked host-shadow staging copy. Each chunk is issued on its own freshly created stream (hipMemcpyAsync + hipStreamSynchronize) so no chunk inherits a queue with a pending un-retired KFD completion event — the per-chunk queue reset is the hang-avoidance property (run-460).
+// run-461-class segfault fix: the run-460 design also DESTROYED the per-chunk stream (hipStreamDestroy). On gfx1201 the KFD completion event of an async copy is not retired promptly; destroying the per-chunk stream while that event is still pending races the runtime stream/event bookkeeping and segfaults in this function (run-506: core x4 in the GDN bf16 D2H, backtrace at the chunked-copy region). The stream is therefore intentionally NOT destroyed: one small bounded leak per chunk per shadow copy (a 1.2 GB copy leaks 12 streams; negligible for a server process) in exchange for no stream-lifecycle race.
 static hipError_t shadow_chunked_copy(void* dst, const void* src, size_t size,
                                      hipMemcpyKind kind) {
   const size_t chunk = host_shadow_chunk_bytes();
-  // run-517: small copies use the legacy single-shot sync hipMemcpy (no stream,
-  // no leak). The run-444/run-454/run-458 hang was size-dependent (>=300 MB single
-  // copies in kfd_wait_on_events); the pre-K3 wheel ran 9B loads (1856
-  // small flushes) on plain hipMemcpy with no hang. Large copies keep the
-  // run-460 chunked fresh-stream path (hang-avoidance) with the run-515 no-destroy
-  // (bounded leak: a few streams per large copy, not per small flush).
+  // run-517: small copies use the legacy single-shot sync hipMemcpy (no stream, no leak). The run-444/run-454/run-458 hang was size-dependent (>=300 MB single copies in kfd_wait_on_events); the pre-K3 wheel ran 9B loads (1856 small flushes) on plain hipMemcpy with no hang. Large copies keep the run-460 chunked fresh-stream path (hang-avoidance) with the run-515 no-destroy (bounded leak: a few streams per large copy, not per small flush).
   if (size <= chunk) {
     return hipMemcpy(dst, src, size, kind);
   }

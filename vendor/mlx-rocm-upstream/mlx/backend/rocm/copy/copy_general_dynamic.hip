@@ -107,9 +107,7 @@ void copy_general_dynamic(
   encoder.set_output_array(out);
   
   int ndim = shape.size();
-  // The copy covers the data (shape) elements; the dynamic offsets are
-  // added on top of the computed position, so iterating out.size() would
-  // index past the destination buffer (the offset shifts the writes).
+  // The copy covers the data (shape) elements; the dynamic offsets are added on top of the computed position, so iterating out.size() would index past the destination buffer (the offset shifts the writes).
   // Matches copy_general's data_size.
   size_t size = 0;
   for (auto v : shape) {
