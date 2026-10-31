@@ -107,14 +107,10 @@ static inline uint64_t g1x_safe_read8(void* v) {
   return *reinterpret_cast<uint64_t*>(v);
 }
 
-// G1KSL: tiny kernel that writes one int64 (kernel launches are
-// reliably delivered on this vGPU; H2D memcpys apparently are not).
+// G1KSL: tiny kernel that writes one int64 (kernel launches are reliably delivered on this vGPU; H2D memcpys apparently are not).
 __global__ void g1_slot_write_kernel(int64_t* dst, uint64_t val);
 
-// G1E (v2): dump the SOURCE graph's kernel arg values for the first N
-// kernel nodes. ROCm 10.1's HIP has no exec GetParams/GetNodes (only
-// hipGraphKernelNodeGetParams + hipGraphExecKernelNodeSetParams), so the
-// exec's own staged values are probed with the G1S sentinel instead.
+// G1E (v2): dump the SOURCE graph's kernel arg values for the first N kernel nodes. ROCm 10.1's HIP has no exec GetParams/GetNodes (only hipGraphKernelNodeGetParams + hipGraphExecKernelNodeSetParams), so the exec's own staged values are probed with the G1S sentinel instead.
 static void g1e_source_dump(hipGraph_t g, const char* tag) {
   if (std::getenv("MLX_G1_EXECDUMP") == nullptr &&
       std::getenv("MLX_G1_NODEDUMP") == nullptr)
@@ -157,14 +153,7 @@ static void g1e_source_dump(hipGraph_t g, const char* tag) {
   }
 }
 
-// G1S: sentinel — does the exec's packet pick up a SetParams change made
-// at (re)capture time? Re-points the first kernel node's out arg (arg2
-// of the 6-arg gather_rows signature) at a zeroed scratch buffer, then
-// after the launch checks who was written: scratch written -> the exec
-// staged the NEW value (ExecUpdate/SetParams propagated, the values are
-// not stale); scratch untouched -> the exec still has the OLD out
-// pointer (stale ExecUpdate packet, rocm-systems#10714 class). Armed
-// only on the pre-existing-exec (ExecUpdate) path.
+// G1S: sentinel — does the exec's packet pick up a SetParams change made at (re)capture time? Re-points the first kernel node's out arg (arg2 of the 6-arg gather_rows signature) at a zeroed scratch buffer, then after the launch checks who was written: scratch written -> the exec staged the NEW value (ExecUpdate/SetParams propagated, the values are not stale); scratch untouched -> the exec still has the OLD out pointer (stale ExecUpdate packet, rocm-systems#10714 class). Armed only on the pre-existing-exec (ExecUpdate) path.
 struct g1s_state_t {
   void* scratch = nullptr;
   size_t n = 512;
@@ -264,13 +253,7 @@ static void g1s_check(hipStream_t st) {
   (void)hipMemset(g1s_state.scratch, 0, g1s_state.n * 8);
 }
 
-// Pre-launch slot H2D: the slot H2D memcpy nodes recorded during stream
-// capture do not reliably deliver the current host value before the graph
-// kernels read the slot device buffer (r15-r19: APERTURE fault on the
-// first graph launch with a stale/garbage slot value). Issue the H2D as a
-// plain stream op immediately before hipGraphLaunch on the same stream so
-// it is ordered before every graph node. Redundant (same value) if the
-// in-graph memcpy nodes do work. MLX_G1_NO_PREH2D=1 disables.
+// Pre-launch slot H2D: the slot H2D memcpy nodes recorded during stream capture do not reliably deliver the current host value before the graph kernels read the slot device buffer (r15-r19: APERTURE fault on the first graph launch with a stale/garbage slot value). Issue the H2D as a plain stream op immediately before hipGraphLaunch on the same stream so it is ordered before every graph node. Redundant (same value) if the in-graph memcpy nodes do work. MLX_G1_NO_PREH2D=1 disables.
 static void g1_prelaunch_slot_h2d(hipStream_t st) {
   if (!graph_decode_mode())
     return;
@@ -291,12 +274,7 @@ static void g1_prelaunch_slot_h2d(hipStream_t st) {
             (void*)g1_slot_write_kernel, dim3(1), dim3(1), kargs, 0, st);
         g1_check_hip("hipLaunchKernel (pre-launch slot write, kernel)", e);
       } else {
-        // Async on the launch stream: a blocking hipMemcpy lands on the
-        // legacy default stream, which does NOT order against the
-        // non-blocking decode stream (r43: slot1 still held the
-        // capture-step value at readback). The host buffers are pinned,
-        // so the async H2D is safe and stream-ordered before the graph
-        // launch below.
+        // Async on the launch stream: a blocking hipMemcpy lands on the legacy default stream, which does NOT order against the non-blocking decode stream (r43: slot1 still held the capture-step value at readback). The host buffers are pinned, so the async H2D is safe and stream-ordered before the graph launch below.
         hipError_t e = hipMemcpyAsync(
             sl.data, sl.host, sizeof(int64_t), hipMemcpyHostToDevice, st);
         g1_check_hip("hipMemcpyAsync (pre-launch slot H2D)", e);
@@ -308,9 +286,7 @@ static void g1_prelaunch_slot_h2d(hipStream_t st) {
       }
     }
   }
-  // The idx (zero) slot must read 0 at every launch: the capture step's
-  // kernels can leave arena garbage in it (and nothing re-zeroes it),
-  // which a gather then reads as an index -> off-arena fault address.
+  // The idx (zero) slot must read 0 at every launch: the capture step's kernels can leave arena garbage in it (and nothing re-zeroes it), which a gather then reads as an index -> off-arena fault address.
   auto zs = alc.decode_zero_slot();
   if (zs.data) {
     hipError_t e = hipMemsetAsync(zs.data, 0, sizeof(int64_t), st);
@@ -321,13 +297,7 @@ static void g1_prelaunch_slot_h2d(hipStream_t st) {
     }
   }
 }
-// G1H2D: record each in-graph H2D memcpy node's (host_src, dev_dst,
-// bytes) into the slot's staging list and neutralize the node (0-byte
-// copy) so it cannot overwrite the pre-launch-delivered value mid-graph
-// with a stale one. Runs once per capture, on the source graph BEFORE
-// the exec is (re)instantiated, so the instantiated exec carries the
-// neutralized nodes. The [g1m] memcpy lines (original params) are dumped
-// here so the diagnostic shows the values as captured.
+// G1H2D: record each in-graph H2D memcpy node's (host_src, dev_dst, bytes) into the slot's staging list and neutralize the node (0-byte copy) so it cannot overwrite the pre-launch-delivered value mid-graph with a stale one. Runs once per capture, on the source graph BEFORE the exec is (re)instantiated, so the instantiated exec carries the neutralized nodes. The [g1m] memcpy lines (original params) are dumped here so the diagnostic shows the values as captured.
 void CommandEncoder::decode_capture_record_neutralize_h2d(int slot,
                                                        hipGraph_t g) {
   slot &= 1;
@@ -380,8 +350,7 @@ void CommandEncoder::decode_capture_record_neutralize_h2d(int slot,
               (int)mp.kind, sp, dp, bytes);
       fflush(stderr);
     }
-    // Neutralize: 0-byte copy = no-op, so the in-graph node can no
-    // longer overwrite the pre-launch-delivered value with a stale one.
+    // Neutralize: 0-byte copy = no-op, so the in-graph node can no longer overwrite the pre-launch-delivered value with a stale one.
     mp.extent.width = 0;
     mp.extent.height = 0;
     mp.extent.depth = 0;
@@ -399,11 +368,7 @@ void CommandEncoder::decode_capture_record_neutralize_h2d(int slot,
     fflush(stderr);
   }
 }
-// G1H2D: re-deliver the recorded in-graph H2D staging values on the
-// launch stream immediately before hipGraphLaunch (same pattern as
-// g1_prelaunch_slot_h2d): a plain stream op ordered before every graph
-// node, so the device staging buffer holds the current host value when
-// the graph's kernels read it.
+// G1H2D: re-deliver the recorded in-graph H2D staging values on the launch stream immediately before hipGraphLaunch (same pattern as g1_prelaunch_slot_h2d): a plain stream op ordered before every graph node, so the device staging buffer holds the current host value when the graph's kernels read it.
 void CommandEncoder::g1_prelaunch_recorded_h2d(int slot, hipStream_t st) {
   slot &= 1;
   if (!graph_decode_mode())
@@ -428,9 +393,7 @@ void record_inline_launch() {
 }
 
 // Per-arch op/MB caps for the build graph. Tunable via env.
-// The earlier "corrupts at >3 nodes" was actually one bad op (Concatenate,
-// whose multi-copy kernels corrupt when co-grouped); it is now graph-split in
-// gpu::eval (is_graph_split_op), so large graphs are correct again.
+// The earlier "corrupts at >3 nodes" was actually one bad op (Concatenate, whose multi-copy kernels corrupt when co-grouped); it is now graph-split in gpu::eval (is_graph_split_op), so large graphs are correct again.
 static std::pair<int, int> get_graph_limits() {
   int ops = env::max_ops_per_buffer(50);
   int mb = env::max_mb_per_buffer(200);
@@ -1714,8 +1677,7 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
             }
             if (is_gather) {
               // args 1..5 of gather_rows_kernel, guarded read (the arg
-              // value buffers are host-side; a raw deref faulted the host
-              // on one vGPU run).
+              // value buffers are host-side; a raw deref faulted the host on one vGPU run).
               for (int a = 1; a < 6; ++a) {
                 void* v = kparr[a];
                 if (!v)
@@ -1976,13 +1938,10 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
     }
   }
   // G1E: read back the exec's staged arg values right before the
-  // first launch (end of record) — a mismatch vs the source graph's
-  // values (above, [nd]) is a stale ExecUpdate/instantiate packet.
+  // first launch (end of record) — a mismatch vs the source graph's values (above, [nd]) is a stale ExecUpdate/instantiate packet.
   if (std::getenv("MLX_G1_EXECDUMP") || std::getenv("MLX_G1_NODEDUMP"))
     g1e_source_dump(g, "endrec");
-  // G1M: node-type histogram + memcpy-node params of the captured graph
-  // (diagnostic: are the slot H2D memcpy nodes in the graph, and where
-  // do they point?).
+  // G1M: node-type histogram + memcpy-node params of the captured graph (diagnostic: are the slot H2D memcpy nodes in the graph, and where do they point?).
   if (std::getenv("MLX_G1_MEMDUMP")) {
     size_t qn = nn;
     std::vector<hipGraphNode_t> mn(nn);
@@ -1994,15 +1953,10 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
           continue;
         if (ty == hipGraphNodeTypeMemcpy) {
           ++mcn;
-          // The memcpy param dump (with the original, pre-neutralization
-          // src/dst/bytes) happens in decode_capture_record_neutralize_h2d
-          // (before the exec is instantiated); here we only count the node
-          // for the histogram (the params are 0 after neutralization).
+          // The memcpy param dump (with the original, pre-neutralization src/dst/bytes) happens in decode_capture_record_neutralize_h2d (before the exec is instantiated); here we only count the node for the histogram (the params are 0 after neutralization).
           hipMemcpy3DParms mp;
           if (false && hipGraphMemcpyNodeGetParams(mn[i], &mp) == hipSuccess) {
-            // Pointers can be host (H2D src) or device; tag each so a
-            // (nil) src vs a real one is visible, and name the node's
-            // predecessor kernel so the enqueuing op is identifiable.
+            // Pointers can be host (H2D src) or device; tag each so a (nil) src vs a real one is visible, and name the node's predecessor kernel so the enqueuing op is identifiable.
             auto ptag = [](const void* p) -> const char* {
               if (!p)
                 return "nil";
@@ -2052,8 +2006,7 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
           }
         } else if (ty == hipGraphNodeTypeKernel) {
           ++kcn;
-          // Full sequence dump: name every kernel node so the memcpy
-          // nodes' neighbours (the enqueueing op) are identifiable.
+          // Full sequence dump: name every kernel node so the memcpy nodes' neighbours (the enqueueing op) are identifiable.
           hipKernelNodeParams kp;
           if (hipGraphKernelNodeGetParams(mn[i], &kp) == hipSuccess &&
               kp.func) {
@@ -2082,11 +2035,8 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
       fflush(stderr);
     }
   }
-  // G1P: slot readback happens AFTER the pre-launch slot write (below),
-  // just before hipGraphLaunch, so it sees the value the graph kernels
-  // will actually read.
-  // G1K: first kernel node's dyn-offset arg values (diagnostic: where does
-  // the kernel's dyn offset pointer argument point?).
+  // G1P: slot readback happens AFTER the pre-launch slot write (below), just before hipGraphLaunch, so it sees the value the graph kernels will actually read.
+  // G1K: first kernel node's dyn-offset arg values (diagnostic: where does the kernel's dyn offset pointer argument point?).
   if (std::getenv("MLX_G1_MEMDUMP")) {
     size_t qn = nn;
     std::vector<hipGraphNode_t> mn(nn);
@@ -2117,8 +2067,7 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
             return 0;
           return *reinterpret_cast<uint64_t*>(p);
         };
-        // The dynamic-copy node: args 12/13 are pointers to the
-        // dyn-offset slot buffers (device VAs in [2^57, 2^61)).
+        // The dynamic-copy node: args 12/13 are pointers to the dyn-offset slot buffers (device VAs in [2^57, 2^61)).
         uint64_t v12 = read_at(ka[12]);
         uint64_t v13 = read_at(ka[13]);
         auto dev_va = [](uint64_t v) {
@@ -2139,8 +2088,7 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
       }
     }
   }
-  // Stream capture records WITHOUT executing — run the exec once to actually
-  // compute the record token's logits/state.
+  // Stream capture records WITHOUT executing — run the exec once to actually compute the record token's logits/state.
   if (std::getenv("MLX_G1_NO_LAUNCH")) {
     fprintf(stderr, "[g1n] NO_LAUNCH: skipping hipGraphLaunch (slot %d)\n", slot);
     fflush(stderr);
@@ -2195,8 +2143,7 @@ bool CommandEncoder::decode_capture_replay(int slot) {
   if (!decode_cap_exec_[slot])
     return false;
   device_.make_current();
-  // G1E: read back the exec's staged arg values before every replay
-  // launch (stale-packet check across recaptures).
+  // G1E: read back the exec's staged arg values before every replay launch (stale-packet check across recaptures).
   if (std::getenv("MLX_G1_EXECDUMP") || std::getenv("MLX_G1_NODEDUMP"))
     g1e_source_dump(decode_cap_graph_[slot], "replay");
   g1_prelaunch_slot_h2d(static_cast<hipStream_t>(stream_));
@@ -2245,19 +2192,14 @@ void CommandEncoder::commit() {
     ExecSlot* used_slot = nullptr;
     // Reuse a drained exec (inflight==0) for an identical kernel sequence. In
     // decode-mode the whole-forward graph recurs every token, so refresh the
-    // cached exec's params in one hipGraphExecUpdate; otherwise (or if
-    // ExecUpdate fails) reinstantiate into the slot. The slot owns the source
-    // graph + arg Packs for the exec's life (CLR stores kernelParams by
-    // pointer).
+    // cached exec's params in one hipGraphExecUpdate; otherwise (or if ExecUpdate fails) reinstantiate into the slot. The slot owns the source graph + arg Packs for the exec's life (CLR stores kernelParams by pointer).
     static const bool prefill_replay_cu = [] {
       const char* e = std::getenv("MLX_GRAPH_PREFILL_REPLAY");
       return e && e[0] == '1';
     }();
     const bool use_execupdate = graph_decode_mode() || prefill_replay_cu;
     auto& pool = exec_pool_[graph_nodes_key_ + ":" + graph_deps_key_];
-    // For the stable decode topology, grow the pool to N execs (skip reuse
-    // until then) so replay always finds a drained slot despite completion-flag
-    // lag.
+    // For the stable decode topology, grow the pool to N execs (skip reuse until then) so replay always finds a drained slot despite completion-flag lag.
     static const size_t replay_slots = [] {
       const char* e = std::getenv("MLX_GRAPH_REPLAY_SLOTS");
       return e ? std::max<size_t>(2, std::atoi(e)) : 4;

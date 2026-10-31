@@ -32,10 +32,7 @@ struct AttnParams {
   int64_t O_strides[3];
   int64_t M_strides[4]; // Mask strides [B, H, qL, kL]
   bool has_mask;
-  // Decode exec-cache replay: when non-null, K_seq_len is read from
-  // this persistent device slot (an H2D memcpy from a pinned host
-  // buffer, rewritten each replay step) instead of the baked-by-value
-  // kL above.
+  // Decode exec-cache replay: when non-null, K_seq_len is read from this persistent device slot (an H2D memcpy from a pinned host buffer, rewritten each replay step) instead of the baked-by-value kL above.
   const int64_t* kL_slot;
   AttnParams() : kL_slot(nullptr) {}
 };
@@ -448,8 +445,7 @@ void sdpa_flash(
   o.set_data(mlx::core::rocm::malloc_async(o.nbytes(), encoder));
 
   // Decode exec-cache replay: kL changes every decode step, so in
-  // decode mode it rides a persistent value slot (H2D memcpy recorded
-  // at capture; the host value is rewritten each replay step).
+  // decode mode it rides a persistent value slot (H2D memcpy recorded at capture; the host value is rewritten each replay step).
   rocm::RocmAllocator::DecodeValueSlot sl;
   if (rocm::graph_decode_mode() && s.device == Device::gpu) {
     sl = rocm::allocator().decode_value_slot(0);

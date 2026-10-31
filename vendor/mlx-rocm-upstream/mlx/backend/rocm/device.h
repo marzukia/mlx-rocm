@@ -58,11 +58,7 @@ class CommandEncoder {
   void set_input_array(const array& arr);
   void set_output_array(const array& arr);
 
-  // Exec-cache replay (decode): during a replay decode step the whole
-  // step's kernels run via one hipGraphLaunch, so per-op launches on
-  // the stream are suppressed. The graph nodes recorded at the initial
-  // capture re-run them; per-step values ride on the persistent value
-  // slots (RocmAllocator::decode_value_slot).
+  // Exec-cache replay (decode): during a replay decode step the whole step's kernels run via one hipGraphLaunch, so per-op launches on the stream are suppressed. The graph nodes recorded at the initial capture re-run them; per-step values ride on the persistent value slots (RocmAllocator::decode_value_slot).
   void set_decode_replay_suppress(bool v) {
     decode_replay_suppress_.store(v, std::memory_order_relaxed);
   }
@@ -97,9 +93,7 @@ class CommandEncoder {
       return;
     }
     constexpr size_t num = sizeof...(Params);
-    // Copy the argument VALUES (and the pointer array) into a heap pack;
-    // the graph/instantiation or the captured node keeps a reference to
-    // pack->ptrs past the caller's frame.
+    // Copy the argument VALUES (and the pointer array) into a heap pack; the graph/instantiation or the captured node keeps a reference to pack->ptrs past the caller's frame.
     struct Pack {
       std::tuple<std::decay_t<Params>...> vals;
       std::array<void*, (num > 0 ? num : 1)> ptrs;
@@ -336,11 +330,7 @@ class CommandEncoder {
   // H2D memcpy source) at these slot-owned copies.
   std::vector<std::shared_ptr<void>> decode_cap_keepalive_[2];
   // G1H2D: the in-graph H2D memcpy nodes (per-step host staging value
-  // uploads, e.g. the dynamic-offset slot) are not reliably delivered on
-  // this vGPU. At capture we record each node's (host_src, dev_dst,
-  // bytes), neutralize the node (0-byte copy) so it cannot overwrite the
-  // freshly delivered value mid-graph with a stale one, and re-deliver the
-  // value pre-launch on the launch stream (g1_prelaunch_recorded_h2d).
+  // uploads, e.g. the dynamic-offset slot) are not reliably delivered on this vGPU. At capture we record each node's (host_src, dev_dst, bytes), neutralize the node (0-byte copy) so it cannot overwrite the freshly delivered value mid-graph with a stale one, and re-deliver the value pre-launch on the launch stream (g1_prelaunch_recorded_h2d).
   struct G1H2DRec {
     void* host_src;
     void* dev_dst;
@@ -524,8 +514,7 @@ void CommandEncoder::launch_kernel(F&& func) {
   }
   // Residual ops not migrated to add_kernel_node (library GEMM, JIT module
   // kernels, memsets) can't be HIP graph kernel nodes. Graph-split:
-  // flush+launch the accumulated graph, run this op immediately on the same
-  // stream (ordered after the graph), and start the next graph fresh.
+  // flush+launch the accumulated graph, run this op immediately on the same stream (ordered after the graph), and start the next graph fresh.
   if (use_hip_graphs()) {
     static const bool capture_lib = [] {
       const char* e = std::getenv("MLX_GRAPH_PREFILL_REPLAY");

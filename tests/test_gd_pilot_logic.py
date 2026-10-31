@@ -12,7 +12,6 @@ If the machine has no C++ compiler (g++/c++/clang++), the compile-and-
 run test skips; the source-presence test always runs.
 """
 
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -21,15 +20,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "tests" / "cpp" / "gd_pilot_logic_test.cpp"
-HDR = (
-    ROOT
-    / "vendor"
-    / "mlx-rocm-upstream"
-    / "mlx"
-    / "backend"
-    / "rocm"
-    / "graph_decode_pilot_logic.h"
-)
+HDR = ROOT / "vendor" / "mlx-rocm-upstream" / "mlx" / "backend" / "rocm" / "graph_decode_pilot_logic.h"
 
 
 def _cc() -> str | None:
@@ -48,7 +39,7 @@ def test_pilot_logic_header_and_test_exist():
     src = SRC.read_text()
     assert '#include "graph_decode_pilot_logic.h"' in src
     hdr = HDR.read_text()
-    incs = [l for l in hdr.splitlines() if l.startswith("#include")]
+    incs = [ln for ln in hdr.splitlines() if ln.startswith("#include")]
     assert all("hip" not in i.lower() for i in incs), "the logic header must stay HIP-free (its #includes)"
 
 
@@ -56,16 +47,8 @@ def test_eval_cpp_mirrors_the_pilot_logic():
     # The transition logic must live in the header (unit-tested), and
     # eval.cpp must consume it (not carry a second copy of the arming
     # state machine).
-    eval_src = (
-        ROOT
-        / "vendor"
-        / "mlx-rocm-upstream"
-        / "mlx"
-        / "backend"
-        / "rocm"
-        / "eval.cpp"
-    ).read_text()
-    assert "graph_decode_pilot_logic.h\"" in eval_src
+    eval_src = (ROOT / "vendor" / "mlx-rocm-upstream" / "mlx" / "backend" / "rocm" / "eval.cpp").read_text()
+    assert 'graph_decode_pilot_logic.h"' in eval_src
     assert "GdPilotLogic" in eval_src
     for call in ("first_op(", "op(", "replay_end(", "capture_end(", "eager_end(", "arm_replay(", "discard_rearm("):
         assert call in eval_src, f"eval.cpp must call the logic's {call}"
@@ -87,5 +70,5 @@ def test_pilot_logic_transitions():
     assert "all checks passed" in r2.stdout
     # The check count guards against a vacuous test: the main must
     # report the single success line and nothing else.
-    lines = [l for l in r2.stdout.splitlines() if l.strip()]
+    lines = [ln for ln in r2.stdout.splitlines() if ln.strip()]
     assert len(lines) == 1, lines
