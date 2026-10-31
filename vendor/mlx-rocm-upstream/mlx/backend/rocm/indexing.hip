@@ -26,6 +26,18 @@ namespace rocm {
 extern void g1_check_hip(
     const char* call, hipError_t err, const char* phase = nullptr);
 
+// K3 gate (t1099 A/B): MLX_GD_K3OFF=1 disables the K3 small-gather
+// slot-3 out routing AND the n_rows==1 zero-slot idx redirect, i.e.
+// restores the pre-K3 behavior (stable-arena out buffer, original idx
+// buffer) for a controlled on/off A/B of the zero-slot idx redirect.
+static bool gd_k3_off() {
+  static const bool off = [] {
+    const char* e = std::getenv("MLX_GD_K3OFF");
+    return e != nullptr && e[0] == '1';
+  }();
+  return off;
+}
+
 // General gather kernel - handles arbitrary indexing
 template <typename T, typename IdxT, int NIDX>
 __global__ void gather_general_kernel(
@@ -605,7 +617,9 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
   // each other in-graph (a decode step has several fast_rows gathers),
   // and no row overflows into an adjacent wrapper. Out > 4 KB keeps
   // the stable-address arena buffer (the row fits its own block there).
-  if (rocm::graph_decode_mode() && out.nbytes() <= 4096) {
+  // MLX_GD_K3OFF=1 disables this (and the idx redirect below) for the
+  // t1099 on/off A/B.
+  if (rocm::graph_decode_mode() && !gd_k3_off() && out.nbytes() <= 4096) {
     auto sl3 = rocm::allocator().decode_value_slot(3);
     size_t off = rocm::allocator().decode_value_slot3_cursor(out.nbytes());
     if (sl3.data && off < 4096) {
@@ -703,7 +717,8 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
       // session with an active arena) would read idx[1..] from the
       // never-cleared part of the 4 KB zero-slot wrapper (garbage index
       // -> off-range src row read). Keep the original idx buffer then.
-      if (rocm::graph_decode_mode() && out.nbytes() <= 4096 && n_rows == 1) {
+      if (rocm::graph_decode_mode() && !gd_k3_off() &&
+          out.nbytes() <= 4096 && n_rows == 1) {
         h_indices[0] = rocm::allocator().decode_zero_slot().data;
       }
       dim3 grid((unsigned int)n_rows);
