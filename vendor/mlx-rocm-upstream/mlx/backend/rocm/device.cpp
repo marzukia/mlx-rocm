@@ -110,6 +110,59 @@ static inline uint64_t g1x_safe_read8(void* v) {
 // reliably delivered on this vGPU; H2D memcpys apparently are not).
 __global__ void g1_slot_write_kernel(int64_t* dst, uint64_t val);
 
+// G1E: read back the exec's staged kernel-param values (the packet the
+// hardware will actually dispatch) for the first N kernel nodes and
+// compare with the source graph's values — a mismatch is a stale
+// hipGraphExecUpdate / hipGraphInstantiate packet (rocm-systems#10714
+// silent-success class). Diagnostic only.
+static void g1e_exec_dump(hipGraphExec_t exec, hipGraph_t src, const char* tag) {
+  if (std::getenv("MLX_G1_EXECDUMP") == nullptr &&
+      std::getenv("MLX_G1_NODEDUMP") == nullptr)
+    return;
+  int nmax = 8;
+  if (const char* e = std::getenv("MLX_G1_EXECDUMP_N"))
+    nmax = std::atoi(e);
+  std::vector<hipGraphNode_t> nodes(1024);
+  size_t qn = nodes.size();
+  if (hipGraphExecGetNodes(exec, nodes.data(), &qn) != hipSuccess) {
+    (void)hipGetLastError();
+    qn = 0;
+    if (src) {
+      qn = nodes.size();
+      if (hipGraphGetNodes(src, nodes.data(), &qn) != hipSuccess) {
+        (void)hipGetLastError();
+        qn = 0;
+      }
+    }
+  }
+  for (size_t i = 0; i < qn && i < (size_t)nmax; ++i) {
+    hipGraphNode_t nd = nodes[i];
+    hipGraphNodeType ty = (hipGraphNodeType)0;
+    if (hipGraphNodeGetType(nd, &ty) != hipSuccess ||
+        ty != hipGraphNodeTypeKernel)
+      continue;
+    hipKernelNodeParams kp;
+    if (hipGraphExecKernelNodeGetParams(exec, nd, &kp) != hipSuccess) {
+      (void)hipGetLastError();
+      continue;
+    }
+    char buf[512];
+    int off = 0;
+    auto** ka = static_cast<void**>(kp.kernelParams);
+    if (ka) {
+      for (int a = 0; a < 6; ++a) {
+        void* v = ka[a];
+        uint64_t val = v ? g1x_safe_read8(v) : 0;
+        off += snprintf(buf + off, sizeof(buf) - off, " a%d=%016llx", a,
+                        (unsigned long long)val);
+      }
+    }
+    fprintf(stderr, "[g1e] %s n%zu grid=%u,%u,%u%s\n",
+            tag, i, kp.gridDim.x, kp.gridDim.y, kp.gridDim.z, buf);
+    fflush(stderr);
+  }
+}
+
 // Pre-launch slot H2D: the slot H2D memcpy nodes recorded during stream
 // capture do not reliably deliver the current host value before the graph
 // kernels read the slot device buffer (r15-r19: APERTURE fault on the
@@ -1365,9 +1418,12 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
             "[nd] arena base=%p cap=%zu hw=%zu off=%zu\n",
             ab, al.decode_arena_capacity(), al.decode_arena_high_water(),
             al.decode_arena_offset());
+    int ndump_n = 8;
+    if (const char* en = std::getenv("MLX_G1_NODUMP_N"))
+      ndump_n = std::atoi(en);
     std::vector<hipGraphNode_t> nodes(nn);
     if (hipGraphGetNodes(g, nodes.data(), &nn) == hipSuccess) {
-      for (size_t i = 0; i < nn; ++i) {
+      for (size_t i = 0; i < nn && i < (size_t)ndump_n; ++i) {
         hipGraphNodeType ty;
         if (hipGraphNodeGetType(nodes[i], &ty) != hipSuccess)
           continue;
@@ -1433,14 +1489,16 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
               }
             }
             if (is_gather) {
-              // args 2..5 are always valid for gather_rows_kernel
+              // args 1..5 of gather_rows_kernel, guarded read (the arg
+              // value buffers are host-side; a raw deref faulted the host
+              // on one vGPU run).
               for (int a = 1; a < 6; ++a) {
                 void* v = kparr[a];
                 if (!v)
                   continue;
                 fprintf(stderr,
                         "[nd]  kp[%d]=%p u64=%016llx\n",
-                        a, v, (unsigned long long)*(uint64_t*)v);
+                        a, v, (unsigned long long)g1x_safe_read8(v));
               }
             }
           }
@@ -1687,6 +1745,11 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
       }
     }
   }
+  // G1E: read back the exec's staged arg values right before the
+  // first launch (end of record) — a mismatch vs the source graph's
+  // values (above, [nd]) is a stale ExecUpdate/instantiate packet.
+  if (std::getenv("MLX_G1_EXECDUMP") || std::getenv("MLX_G1_NODEDUMP"))
+    g1e_exec_dump(decode_cap_exec_[slot], g, "endrec");
   // G1M: node-type histogram + memcpy-node params of the captured graph
   // (diagnostic: are the slot H2D memcpy nodes in the graph, and where
   // do they point?).
@@ -1826,6 +1889,11 @@ bool CommandEncoder::decode_capture_replay(int slot) {
   if (!decode_cap_exec_[slot])
     return false;
   device_.make_current();
+  // G1E: read back the exec's staged arg values before every replay
+  // launch (stale-packet check across recaptures).
+  if (std::getenv("MLX_G1_EXECDUMP") || std::getenv("MLX_G1_NODEDUMP"))
+    g1e_exec_dump(decode_cap_exec_[slot], decode_cap_graph_[slot],
+                  "replay");
   g1_prelaunch_slot_h2d(static_cast<hipStream_t>(stream_));
   CHECK_HIP_ERROR(hipGraphLaunch(decode_cap_exec_[slot], stream_));
   worker_->commit(stream_);
