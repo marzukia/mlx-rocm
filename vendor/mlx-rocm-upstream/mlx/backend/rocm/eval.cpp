@@ -4,6 +4,7 @@
 #include "mlx/backend/rocm/allocator.h"
 #include "mlx/backend/rocm/device.h"
 #include "mlx/backend/rocm/event.h"
+#include "mlx/backend/rocm/graph_decode_pilot_logic.h"
 #include "mlx/primitives.h"
 #include "mlx/scheduler.h"
 
@@ -63,17 +64,14 @@ long g1_trace_ops_limit() {
   return lim;
 }
 
-struct GraphDecodePilot {
-  enum class Arming { Cold, PrefillSeen, Cooldown };
+using rocm::GdPilotLogic;  // the unit-tested pilot state machine
+
+struct GraphDecodePilot : public GdPilotLogic {
+  // The pure state machine (arming streak, kind gating, replay
+  // divergence, step-end resolution) lives in the unit-tested
+  // GdPilotLogic base (graph_decode_pilot_logic.h); this struct adds
+  // the HIP-facing bookkeeping (arena, encoder, slot data).
   std::mutex mu;
-  Arming arming{Arming::Cold};
-  bool active{false};        // decode arena is on
-  bool next_capture{false};  // the next step is a capture step
-  long step_ops{0};         // evals in the current (default-stream) step
-  long small_streak{0};
-  long prev_small_ops{0};
-  long capture_ref_ops{0};  // shape the captured graph must match
-  std::string candidate_first_op;  // first op of the last real eager step
   long step_seq{0};        // slot parity for the captured execs
   size_t arena_cap{0};
   bool arena_realloc{false};  // deferred: arena base must be (re)allocated
@@ -83,15 +81,8 @@ struct GraphDecodePilot {
 
   // --- Exec-cache replay: capture once per shape, then replay the
   // cached graph (hipGraphLaunch) instead of re-capturing every step.
-  bool replay_armed{false}; // next small step: replay, not capture
-  long replay_slot{-1};    // slot holding the last good captured exec
-  std::string step_first_name;  // first op name of this step
-  std::vector<std::string> ref_names;     // captured step's op-name sequence
   std::vector<std::string> capture_names;  // names recorded during a capture
   void* capture_slot_data[5]{nullptr};  // slot VAs baked into the exec
-  enum class Kind { Eager, Capture, Replay };
-  Kind step_kind{Kind::Eager};
-  bool step_diverged{false}; // op sequence diverged from the capture
   // Per-step CPU cost of the replay path (first op -> graph launch).
   double cpu_total_ms{0.0};
   long cpu_n{0};
@@ -115,6 +106,10 @@ struct GraphDecodePilot {
 
 GraphDecodePilot& pilot() {
   static GraphDecodePilot p;
+  p.big_ops = [] {
+    const char* e = std::getenv("MLX_ROCM_GRAPH_DECODE_BIG_OPS");
+    return e ? std::max<long>(100, std::atol(e)) : 4000;
+  }();
   return p;
 }
 
@@ -124,14 +119,6 @@ bool gd_env_enabled() {
     return v && std::string(v) == "1";
   }();
   return e;
-}
-
-long gd_big_ops() {
-  static const long t = [] {
-    const char* e = std::getenv("MLX_ROCM_GRAPH_DECODE_BIG_OPS");
-    return e ? std::max<long>(100, std::atol(e)) : 4000;
-  }();
-  return t;
 }
 
 size_t gd_arena_cap() {
@@ -150,10 +137,6 @@ bool gd_is_default_stream(Stream s) {
   }
   auto ds = default_stream(d);
   return s.device == ds.device && s.index == ds.index;
-}
-
-bool gd_shape_match(long a, long b) {
-  return std::abs(a - b) <= std::max<long>(64, b / 4);
 }
 
 void gd_tear_down(GraphDecodePilot& p) {
@@ -351,9 +334,9 @@ bool gd_step_is_big(const array& arr) {
 // advances the arming state machine for the next step.
 void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
   auto& enc = rocm::get_command_encoder(s);
-  const bool big = ops >= gd_big_ops();
+  const bool big = ops >= p.big_ops;
   p.step_seq++;
-  if (p.active && p.step_kind == GraphDecodePilot::Kind::Replay) {
+  if (p.active && p.step_kind == GdPilotLogic::Kind::Replay) {
     // This step replayed the cached exec (per-op launches were
     // suppressed). Time the CPU side (first op -> graph launch).
     double dt = std::chrono::duration<double, std::milli>(
@@ -362,8 +345,9 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
     p.cpu_total_ms += dt;
     p.cpu_n++;
     p.cpu_max_ms = std::max(p.cpu_max_ms, dt);
-    bool ok = !p.step_diverged && !big;
-    if (ok && rocm::allocator().decode_arena_overflowed()) {
+    const auto end =
+        p.replay_end(ops, rocm::allocator().decode_arena_overflowed());
+    if (end == GdPilotLogic::ReplayEnd::GrowArena) {
       // Some allocations escaped the arena: same treatment as the
       // capture-time overflow — this step's launch is best-effort, the
       // next small step re-captures with a bigger arena.
@@ -384,7 +368,7 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
       p.next_capture = true;
       p.replay_armed = false;
       (void)enc.decode_capture_replay((int)p.replay_slot);
-    } else if (ok) {
+    } else if (end == GdPilotLogic::ReplayEnd::Launch) {
       if (std::getenv("MLX_G1Y_DEBUG") != nullptr && p.cpu_n < 4) {
         auto rstream = static_cast<hipStream_t>(enc.stream());
         for (int i = 0; i < 4; ++i) {
@@ -440,30 +424,32 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
       }
       p.next_capture = false;
     } else {
-      // Diverged (or oversized mid-step): the prefix ran via the
-      // graph, the suffix ran eagerly and produced this step's real
-      // outputs. Launch the graph (its prefix is correct; its suffix
-      // nodes write stale slots no one reads) and re-arm: the next
-      // small step is a fresh capture (new reference).
+      // ReplayEnd::Discard: diverged or big — do NOT launch the
+      // cached exec (see GdPilotLogic::ReplayEnd in
+      // graph_decode_pilot_logic.h for the full argument: its node
+      // sequence is the capture step's, not this step's, so a launch
+      // would re-run a stale sequence — on divergence, its suffix
+      // nodes re-write the same persistent state buffers (KV rows,
+      // hidden state, identical arena VAs) after the eager suffix,
+      // which itself ran on the suppressed prefix's stale arena
+      // intermediates; on a big step, the step's real outputs would
+      // never be computed). Discard: this step's token is lost, the
+      // state is not clobbered by a stale-sequence launch, and the
+      // re-arm makes the next small step a fresh capture (a new
+      // reference) that overwrites the exec.
       p.log(
-          "graph decode: replay diverged (ops=%ld, big=%d, div=%d); "
-          "prefix launched, re-capturing",
+          "graph decode: replay step discarded (ops=%ld, big=%d, "
+          "div=%d); token lost, re-capturing",
           ops,
           (int)big,
           (int)p.step_diverged);
-      (void)enc.decode_capture_replay((int)p.replay_slot);
-      p.arming = GraphDecodePilot::Arming::PrefillSeen;
-      p.small_streak = 0;
-      p.prev_small_ops = -1;
-      p.next_capture = false;
-      p.replay_armed = false;
+      p.discard_rearm();
     }
-    p.step_kind = GraphDecodePilot::Kind::Eager;
-    p.step_diverged = false;
+    p.step_done();
     enc.set_decode_replay_suppress(false);
     return;
   }
-  if (p.active && p.step_kind == GraphDecodePilot::Kind::Capture) {
+  if (p.active && p.step_kind == GdPilotLogic::Kind::Capture) {
     // This step was captured: end the capture, refresh (ExecUpdate) or
     // re-instantiate the slot's exec, and launch it (the only real
     // execution of this step's kernels).
@@ -492,15 +478,16 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
       p.small_streak = 0;
       return;
     }
-    if (!gd_shape_match(ops, p.capture_ref_ops)) {
-      if (ops < 100) {
-        // A micro step started as a capture candidate: launch its
-        // recorded (1-op) graph — that is exactly this step — and keep
-        // the capture armed: the next real step re-captures.
-        p.log("graph decode: micro step (ops=%ld); launched, re-capturing next", ops);
-        (void)enc.decode_capture_replay((int)(p.step_seq & 1));
-        return;
-      }
+    if (p.capture_end(ops) == GdPilotLogic::CaptureEnd::MicroLaunch) {
+      // A micro step started as a capture candidate: launch its
+      // recorded (1-op) graph — that is exactly this step — and keep
+      // the capture armed: the next real step re-captures.
+      p.log("graph decode: micro step (ops=%ld); launched, re-capturing next", ops);
+      (void)enc.decode_capture_replay((int)(p.step_seq & 1));
+      p.step_done();
+      return;
+    }
+    if (p.capture_end(ops) == GdPilotLogic::CaptureEnd::Cooldown) {
       p.log(
           "graph decode: shape mismatch (ops=%ld ref=%ld); cooling down",
           ops,
@@ -509,6 +496,7 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
       p.next_capture = false;
       p.arming = GraphDecodePilot::Arming::Cooldown;
       p.small_streak = 0;
+      p.step_done();
       return;
     }
     if (rocm::allocator().decode_arena_overflowed()) {
@@ -541,60 +529,30 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
     // Arm the exec cache: from the next small step on, replay this
     // exec (hipGraphLaunch) instead of re-capturing. The exec lives
     // in the slot end_record just wrote (post-increment parity).
-    p.replay_slot = p.step_seq & 1;
+    p.arm_replay(p.step_seq & 1);
     for (int i = 0; i < 4; ++i) {
       p.capture_slot_data[i] = rocm::allocator().decode_value_slot(i).data;
     }
     p.capture_slot_data[4] = rocm::allocator().decode_zero_slot().data;
     p.ref_names = std::move(p.capture_names);
-    p.replay_armed = true;
-    p.next_capture = false;
     p.log(
         "graph decode: exec cache armed (ops=%ld, slot=%ld, %zu ref names)",
         ops,
         p.replay_slot,
         p.ref_names.size());
+    p.step_done();
     return;
   }
-  // Eager step: advance the arming state machine.
-  if (ops >= 100) {
-    p.candidate_first_op = p.step_first_name;
-  }
-  //
-  // NOTE: the original design required a "big" (prefill) step before arming,
-  // but a step's OP COUNT does not scale with sequence length — prefill and
-  // decode steps of the same model have (near-)identical op counts (~350 for
-  // 0.6B, ~1,070 for 9B, both far below the 4000 "big" threshold), so the
-  // big-step requirement can never be satisfied and the pilot would stay Cold
-  // forever. Instead: arm after two consecutive small steps with matching op
-  // counts, with or without a big step seen first. A big step (if one ever
-  // appears) still resets the streak.
-  if (big) {
-    p.arming = GraphDecodePilot::Arming::PrefillSeen;
-    p.small_streak = 0;
-    return;
-  }
-  // Micro step (a between-step scalar eval, a cache resize, ...): do not
-  // disturb the arming streak (it interleaves with the 1740-op decode
-  // steps); it is not a capture candidate either.
-  if (ops < 100) {
-    return;
-  }
-  p.small_streak++;
-  if (p.small_streak == 1) {
-    p.prev_small_ops = ops;
-  } else if (p.small_streak == 2 && gd_shape_match(ops, p.prev_small_ops)) {
-    p.capture_ref_ops = p.prev_small_ops;
-    p.next_capture = true;  // next small step is the capture step
+  // Eager step: advance the arming state machine (the logic lives in
+  // the unit-tested GdPilotLogic base: the candidate update, the big
+  // reset, the micro no-op, the two-consecutive-small-steps arming).
+  if (p.eager_end(ops)) {
     p.log(
         "graph decode: armed (small steps %ld/%ld ops); capturing next",
         p.prev_small_ops,
         ops);
-  } else if (p.small_streak == 2) {
-    // No match: slide the window.
-    p.prev_small_ops = ops;
-    p.small_streak = 1;
   }
+  p.step_done();
 }
 
 // A decode step's first op is an embedding-lookup Gather, but a
@@ -622,60 +580,47 @@ bool gd_step_is_embedding_lookup(const array& arr) {
 // the partial capture on every op (decode_capture_begin's defensive
 // end+discard) and the recorded step would end up 0 nodes.
 void gd_on_op(GraphDecodePilot& p, const array& arr, Stream s) {
+  const std::string name = arr.primitive().name();
   if (p.step_ops == 0) {
-    p.step_first_name = arr.primitive().name();
-    if (gd_step_is_big(arr)) {
-      // T>1 step: run it fully eager; re-arm on the next small step.
-      p.step_kind = GraphDecodePilot::Kind::Eager;
-      p.next_capture = false;
-      p.replay_armed = false;
-    } else if (p.active && p.replay_armed && p.replay_slot >= 0 &&
-               !p.ref_names.empty() &&
-               p.ref_names[0] == arr.primitive().name() &&
-               gd_step_is_embedding_lookup(arr)) {
-      p.step_kind = GraphDecodePilot::Kind::Replay;
-      p.replay_armed = false;
+    // Choose the step kind (the logic lives in the unit-tested
+    // GdPilotLogic base: T>1 eager, the replay arm with the
+    // embedding-lookup gate, the capture candidate match) and start
+    // the per-op tracking. Re-beginning per op would discard the
+    // partial capture on every op (decode_capture_begin's defensive
+    // end+discard) and the recorded step would end up 0 nodes.
+    p.first_op(name, gd_step_is_big(arr),
+               gd_step_is_embedding_lookup(arr));
+    if (p.step_kind == GdPilotLogic::Kind::Replay) {
       gd_begin_replay(p, s);
-    } else if (p.next_capture &&
-               p.candidate_first_op == arr.primitive().name()) {
-      // p.active may be false here: the capture's prepare is what
-      // activates the arena for the first time. A step whose first op
-      // does not match the candidate's (a between-step scalar eval,
-      // a cache resize, ...) runs eager; the flag stays set.
-      p.step_kind = GraphDecodePilot::Kind::Capture;
+    } else if (p.step_kind == GdPilotLogic::Kind::Capture) {
       gd_begin_capture(p, s);
-    } else {
-      p.step_kind = GraphDecodePilot::Kind::Eager;
     }
-  } else if (p.step_kind == GraphDecodePilot::Kind::Replay &&
-             !p.step_diverged) {
-    // Validate this op against the captured reference (strict name
-    // sequence). On the first divergence, run the rest of the step
-    // eagerly (the graph's prefix still launches at step end).
-    if (p.step_ops >= (long)p.ref_names.size() ||
-        p.ref_names[p.step_ops] != arr.primitive().name()) {
-      p.step_diverged = true;
-      if (p.step_ops < (long)p.ref_names.size())
-        p.log(
-            "graph decode: replay diverged at op %ld (replay=%s, "
-            "captured=%s)",
-            p.step_ops,
-            arr.primitive().name(),
-            p.ref_names[p.step_ops].c_str());
-      else
-        p.log(
-            "graph decode: replay diverged at op %ld (%s, past the "
-            "captured %zu ops)",
-            p.step_ops,
-            arr.primitive().name(),
-            p.ref_names.size());
-      rocm::get_command_encoder(s).set_decode_replay_suppress(false);
-    }
+  } else if (p.op(name)) {
+    // The first divergence (strict name sequence vs the captured
+    // reference; a KVCache resize inserts extra ops): run the rest
+    // of the step eagerly. The diverged op is the previous one
+    // (op() already counted it); the step-end discards the stale
+    // exec instead of launching it.
+    const long at = p.step_ops - 1;
+    if (at < (long)p.ref_names.size())
+      p.log(
+          "graph decode: replay diverged at op %ld (replay=%s, "
+          "captured=%s)",
+          at,
+          name.c_str(),
+          p.ref_names[at].c_str());
+    else
+      p.log(
+          "graph decode: replay diverged at op %ld (%s, past the "
+          "captured %zu ops)",
+          at,
+          name.c_str(),
+          p.ref_names.size());
+    rocm::get_command_encoder(s).set_decode_replay_suppress(false);
   }
-  if (p.step_kind == GraphDecodePilot::Kind::Capture) {
-    p.capture_names.push_back(arr.primitive().name());
+  if (p.step_kind == GdPilotLogic::Kind::Capture) {
+    p.capture_names.push_back(name);
   }
-  p.step_ops++;
 }
 
 void graph_decode_pilot(array& arr) {
