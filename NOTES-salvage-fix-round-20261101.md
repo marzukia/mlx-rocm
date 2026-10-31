@@ -42,13 +42,20 @@ buffers is accepted and documented in the code.
   known pre-existing stale-replay behavior, not a regression).
 - 14-token gate (clean env, GPROBE_N=14): PASS — full stream, no
   `free(): invalid pointer`, no SEGV (p1 fixed).
-- CI parity: ruff check/format, size ratchet (origin/main), pytest 21 passed /
-  1 skipped.
+- CI parity: ruff check/format, size ratchet (origin/main), pytest 21 passed / 1 skipped.
+
+## Debug env (definition) + [g1h] recorded-line evidence
+
+"Debug env" (as used in the Verification above and in the t1097 probe runs) = `MLX_G1_MEMDUMP=1 MLX_G1_H2DLOG=1`, exactly as the t1097 dead-run probe was launched in venv-m8 (`MLX_G1_MEMDUMP=1 MLX_G1_H2DLOG=1 ... python ggraph-probe.py`). Quoted verbatim from the t1097 probe log (session record), the [g1h] recorded lines showing the 16-node re-delivery active in the dead-run probe (eight identical lines, one per recorded 8-byte staging value):
+
+    [g1h] recorded 0x78bdc9806000 <- 0x78c3e9cd8000 (8)
+
 
 ## Pre-existing issues found (not fixed this round, documented)
 
-- 8-byte OOB read in the `read_at` lambda (allocator.cpp, MLX_G1_MEMDUMP-gated
-  debug path): present in 1cf60ec (ASan), not introduced by a8fd141.
+- 8-byte OOB read in the `read_at` lambda (device.cpp, the G1K block, the
+  MLX_G1_MEMDUMP-gated debug path): present in 1cf60ec (ASan), not introduced
+  by a8fd141.
 - a8fd141 REPORT.md "Verify" block cites 12:59 runs that used the older
   dist-t1074a44 wheel (pre-1cf60ec, no record_neutralize) — doc inaccuracy.
 
