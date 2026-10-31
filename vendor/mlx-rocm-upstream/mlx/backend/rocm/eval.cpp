@@ -249,6 +249,18 @@ bool gd_step_prepare(GraphDecodePilot& p, Stream s) {
     (void)rocm::allocator().decode_value_slot(i);
   }
   (void)rocm::allocator().decode_zero_slot();
+  // K3 (t1082): when the slots are CACHED (the arena already exists)
+  // the reserved 5 wrappers are not consumed by slot allocation, and
+  // the step re-allocations then start at 0x5000 — aliasing the slot
+  // wrappers (0x5000..0x9FFF): a step buffer clobbers a slot value
+  // (the gather idx / zero slot, the dyn copy offsets) in-graph, and
+  // the layout differs from the first capture step (slots fresh,
+  // starting at 0xA000). Reserve 5 more when the slots were cached —
+  // the step layout is then identical to the first capture's, and
+  // the VAs the graph baked in stay valid at replay.
+  if (rocm::allocator().decode_arena_offset() == 5 * 4096) {
+    rocm::allocator().decode_arena_reserve_wrappers(5);
+  }
   rocm::set_graph_decode_mode(true);
   if (std::getenv("MLX_G1Y_DEBUG") != nullptr) {
     auto& al = rocm::allocator();

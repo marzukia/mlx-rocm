@@ -172,6 +172,13 @@ class RocmAllocator : public allocator::Allocator {
   // would shift the arena layout (and add a node), breaking the
   // replay step's stable addresses. Zeroed once per arena incarnation.
   DecodeValueSlot decode_zero_slot();
+  // K3 (t1082): per-step cursor into the 4 KB value slot 3 (gather
+  // out). Each small gather's row is placed at a distinct 256 B
+  // aligned offset so rows do not clobber each other in-graph (a
+  // decode step has several fast_rows gathers). Returns the row's
+  // offset, or the 4 KB capacity if it does not fit (the caller
+  // falls back to a stable-arena buffer). Reset with the arena.
+  size_t decode_value_slot3_cursor(size_t size);
 
   bool train_arena_begin(size_t capacity, int device, void* stream) {
     return decode_arena_begin(capacity, device, stream);
@@ -235,6 +242,7 @@ class RocmAllocator : public allocator::Allocator {
   };
   DecodeValueSlotState decode_value_slot_state_[4];
   DecodeValueSlotState decode_zero_state_;
+  size_t decode_slot3_cursor_{0};
 };
 
 RocmAllocator& allocator();

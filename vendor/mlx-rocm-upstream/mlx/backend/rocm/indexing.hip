@@ -599,7 +599,31 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& s = stream();
   auto& encoder = rocm::get_command_encoder(s);
 
-  out.set_data(mlx::core::rocm::malloc_async(out.nbytes(), encoder));
+  // K3 (t1082): in graph decode mode, a small gather out goes to the
+  // persistent 4 KB value slot 3, each row at a distinct 256 B offset
+  // (a per-step cursor, reset with the arena): rows do not clobber
+  // each other in-graph (a decode step has several fast_rows gathers),
+  // and no row overflows into an adjacent wrapper. Out > 4 KB keeps
+  // the stable-address arena buffer (the row fits its own block there).
+  if (rocm::graph_decode_mode() && out.nbytes() <= 4096) {
+    auto sl3 = rocm::allocator().decode_value_slot(3);
+    size_t off = rocm::allocator().decode_value_slot3_cursor(out.nbytes());
+    if (sl3.data && off < 4096) {
+      auto* rb = new rocm::RocmBuffer{
+          static_cast<uint8_t*>(sl3.data) + off,
+          out.nbytes(),
+          /*is_managed=*/true,
+          /*device=*/-1,
+          nullptr,
+          false,
+          nullptr};
+      out.set_data(mlx::core::allocator::Buffer{rb});
+    } else {
+      out.set_data(mlx::core::rocm::malloc_async(out.nbytes(), encoder));
+    }
+  } else {
+    out.set_data(mlx::core::rocm::malloc_async(out.nbytes(), encoder));
+  }
   if (out.size() == 0) {
     return;
   }
@@ -667,6 +691,15 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   {
     if (fast_rows) {
+      // K3 (graph decode): read the index from the zero slot — zero-cleared
+      // before every launch (g1_prelaunch_slot_h2d), so the graph reads the
+      // cleared buffer. Pairs with the small-out routing above: only there
+      // is the idx chunk clobbered by a >256B row. >4KB rows keep the
+      // stable-address arena out (row fits its own block), so the per-step
+      // idx buffer is left untouched.
+      if (rocm::graph_decode_mode() && out.nbytes() <= 4096) {
+        h_indices[0] = rocm::allocator().decode_zero_slot().data;
+      }
       int64_t n_rows = total / (int64_t)slice_size;
       dim3 grid((unsigned int)n_rows);
       dim3 blk(256);
