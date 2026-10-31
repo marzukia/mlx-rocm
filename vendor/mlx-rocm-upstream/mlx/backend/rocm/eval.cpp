@@ -627,10 +627,20 @@ void gd_on_op(GraphDecodePilot& p, const array& arr, Stream s) {
     if (p.step_ops >= (long)p.ref_names.size() ||
         p.ref_names[p.step_ops] != arr.primitive().name()) {
       p.step_diverged = true;
-      p.log(
-          "graph decode: replay diverged at op %ld (%s)",
-          p.step_ops,
-          arr.primitive().name());
+      if (p.step_ops < (long)p.ref_names.size())
+        p.log(
+            "graph decode: replay diverged at op %ld (replay=%s, "
+            "captured=%s)",
+            p.step_ops,
+            arr.primitive().name(),
+            p.ref_names[p.step_ops].c_str());
+      else
+        p.log(
+            "graph decode: replay diverged at op %ld (%s, past the "
+            "captured %zu ops)",
+            p.step_ops,
+            arr.primitive().name(),
+            p.ref_names.size());
       rocm::get_command_encoder(s).set_decode_replay_suppress(false);
     }
   }

@@ -124,17 +124,13 @@ static void g1e_exec_dump(hipGraphExec_t exec, hipGraph_t src, const char* tag) 
     nmax = std::atoi(e);
   std::vector<hipGraphNode_t> nodes(1024);
   size_t qn = nodes.size();
-  if (hipGraphExecGetNodes(exec, nodes.data(), &qn) != hipSuccess) {
+  if (!src || hipGraphGetNodes(src, nodes.data(), &qn) != hipSuccess) {
     (void)hipGetLastError();
     qn = 0;
-    if (src) {
-      qn = nodes.size();
-      if (hipGraphGetNodes(src, nodes.data(), &qn) != hipSuccess) {
-        (void)hipGetLastError();
-        qn = 0;
-      }
-    }
   }
+  // hipGraphExecKernelNodeGetParams takes the SOURCE graph's node handles
+  // (the same convention hipGraphExecKernelNodeSetParams uses; the
+  // exec-specific GetNodes/GetParams variants are not in ROCm 10.1).
   for (size_t i = 0; i < qn && i < (size_t)nmax; ++i) {
     hipGraphNode_t nd = nodes[i];
     hipGraphNodeType ty = (hipGraphNodeType)0;
