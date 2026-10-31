@@ -21,6 +21,7 @@ tests/test_qmv_mr2_lx_instantiation.py
 vendor/mlx-rocm-upstream/CMakeLists.upstream.txt
 vendor/mlx-rocm-upstream/LICENSE.upstream
 vendor/mlx-rocm-upstream/README.md
+vendor/mlx-rocm-upstream/REPORT.md
 vendor/mlx-rocm-upstream/ci/build_rocm.yml
 vendor/mlx-rocm-upstream/mlx/CMakeLists.txt
 vendor/mlx-rocm-upstream/mlx/allocator.h
