@@ -915,6 +915,101 @@ void RocmAllocator::decode_arena_end() {
   decode_arena_.active = false;
 }
 
+RocmAllocator::DecodeValueSlot
+RocmAllocator::decode_value_slot(int index) {
+  if (index < 0 || index >= 4) {
+    return {Buffer{nullptr}, nullptr};
+  }
+  std::lock_guard lock(mutex_);
+  if (!decode_arena_.active) {
+    return {Buffer{nullptr}, nullptr};
+  }
+  DecodeValueSlotState& st = decode_value_slot_state_[index];
+  if (st.host && st.base != decode_arena_.base) {
+    // The arena base was reallocated (capacity growth / deferred
+    // teardown): the old device slot is gone with it, and the captured
+    // exec that referenced it was destroyed by the same event. The
+    // Buffer is non-owning; the device memory is part of the arena
+    // base (freed whole).
+    st.buf = Buffer{nullptr};
+    (void)hipFree(st.host);
+    st.host = nullptr;
+    st.data = nullptr;
+    st.base = nullptr;
+  }
+  if (!st.host) {
+    // Buffer is non-owning; the arena's wrappers own the RocmBuffer
+    // (and free() is a no-op for arena-allocated memory).
+    RocmBuffer* b = arena_alloc(sizeof(int64_t));
+    if (!b) {
+      return {Buffer{nullptr}, nullptr};
+    }
+    int64_t* host = nullptr;
+    if (hipHostMalloc(&host, sizeof(int64_t)) != hipSuccess) {
+      (void)hipGetLastError();
+      return {Buffer{nullptr}, nullptr};
+    }
+    st.buf = Buffer{b};
+    st.data = b->data;
+    st.host = host;
+    st.base = decode_arena_.base;
+  }
+  return {st.buf, st.host, st.data};
+}
+
+// Reserve `n` wrapper slots (256 B each, the arena_alloc alignment)
+// without allocating them: keeps capture and replay steps at identical
+// relative offsets when the reserved slots are only allocated on one
+// side (see gd_step_prepare).
+void RocmAllocator::decode_arena_reserve_wrappers(size_t n) {
+  auto& a = decode_arena_;
+  std::lock_guard lock(mutex_);
+  if (!a.active || !a.base || n == 0) {
+    return;
+  }
+  size_t adv = n * 256;
+  if (a.offset + adv > a.capacity) {
+    a.overflowed = true;
+    return;
+  }
+  a.offset += adv;
+  a.next_wrapper += n;
+  a.high_water = std::max(a.high_water, a.offset);
+}
+
+// The default stream (the decode graph's stream) is available via the
+// allocator's device; the memset + sync run once per arena incarnation,
+// before the capture window (gd_step_prepare calls this first).
+RocmAllocator::DecodeValueSlot
+RocmAllocator::decode_zero_slot() {
+  std::lock_guard lock(mutex_);
+  if (!decode_arena_.active) {
+    return {Buffer{nullptr}, nullptr, nullptr};
+  }
+  DecodeValueSlotState& st = decode_zero_state_;
+  if (st.host && st.base != decode_arena_.base) {
+    st = DecodeValueSlotState{};
+  }
+  if (!st.host) {
+    RocmBuffer* b = arena_alloc(sizeof(int64_t));
+    if (!b) {
+      return {Buffer{nullptr}, nullptr, nullptr};
+    }
+    hipError_t me = hipMemsetAsync(b->data, 0, sizeof(int64_t), 0);
+    (void)hipStreamSynchronize(0);
+    (void)hipGetLastError();
+    if (me != hipSuccess) {
+      (void)hipGetLastError();
+      return {Buffer{nullptr}, nullptr, nullptr};
+    }
+    st.buf = Buffer{b};
+    st.data = b->data;
+    st.host = reinterpret_cast<int64_t*>(1);  // sentinel: allocated
+    st.base = decode_arena_.base;
+  }
+  return {st.buf, st.host, st.data};
+}
+
 // gfx1201 / ROCm 10.1: a single large host-shadow staging copy (>=300 MB;
 // the 1.2 GB model-weight scale) intermittently hangs in kfd_wait_on_events
 // with the GPU idle (run-444/run-454 lineage). Keep each staging copy at or below

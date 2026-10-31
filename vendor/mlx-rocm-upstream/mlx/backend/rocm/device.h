@@ -58,6 +58,18 @@ class CommandEncoder {
   void set_input_array(const array& arr);
   void set_output_array(const array& arr);
 
+  // Exec-cache replay (decode): during a replay decode step the whole
+  // step's kernels run via one hipGraphLaunch, so per-op launches on
+  // the stream are suppressed. The graph nodes recorded at the initial
+  // capture re-run them; per-step values ride on the persistent value
+  // slots (RocmAllocator::decode_value_slot).
+  void set_decode_replay_suppress(bool v) {
+    decode_replay_suppress_.store(v, std::memory_order_relaxed);
+  }
+  bool decode_replay_suppress() const {
+    return decode_replay_suppress_.load(std::memory_order_relaxed);
+  }
+
   template <typename F>
   void launch_kernel(F&& func);
 
@@ -78,6 +90,12 @@ class CommandEncoder {
       dim3 block_dim,
       uint32_t smem_bytes,
       Params&&... params) {
+    // Replay mode: the recorded graph node is the only execution;
+    // launching again on the stream would double-run the kernel.
+    if (!use_hip_graphs() && decode_replay_suppress() &&
+        !g_decode_capturing.load(std::memory_order_relaxed)) {
+      return;
+    }
     constexpr size_t num = sizeof...(Params);
     // Copy the argument VALUES (and the pointer array) into a heap pack;
     // the graph/instantiation or the captured node keeps a reference to
@@ -220,6 +238,7 @@ class CommandEncoder {
   HipStream stream_;
   std::unique_ptr<Worker> worker_;
   int node_count_{0};
+  std::atomic<bool> decode_replay_suppress_{false};
   std::vector<std::shared_ptr<array::Data>> temporaries_;
   std::unordered_set<const array::Data*> temporary_ptrs_;
 
@@ -483,6 +502,12 @@ inline auto thrust_policy(hipStream_t stream) {
 template <typename F>
 void CommandEncoder::launch_kernel(F&& func) {
   device_.make_current();
+  // Replay mode: the recorded graph node (hipMemcpy/hipMemset/
+  // hipLaunchKernel) is the only execution.
+  if (!use_hip_graphs() && decode_replay_suppress() &&
+      !g_decode_capturing.load(std::memory_order_relaxed)) {
+    return;
+  }
   // Residual ops not migrated to add_kernel_node (library GEMM, JIT module
   // kernels, memsets) can't be HIP graph kernel nodes. Graph-split:
   // flush+launch the accumulated graph, run this op immediately on the same

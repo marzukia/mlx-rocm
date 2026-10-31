@@ -23,6 +23,8 @@
 namespace mlx::core {
 
 namespace rocm {
+extern void g1_check_hip(
+    const char* call, hipError_t err, const char* phase = nullptr);
 
 // General gather kernel - handles arbitrary indexing
 template <typename T, typename IdxT, int NIDX>
@@ -1255,16 +1257,53 @@ void SliceUpdate::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   // Do copy for None reduce type
   if (reduce_type_ == SliceUpdate::None) {
-    copy_gpu_inplace(
-        /* const array& src = */ upd,
-        /* array& dst = */ out,
-        /* const Shape& data_shape = */ upd.shape(),
-        /* const Strides& i_strides = */ upd.strides(),
-        /* const Strides& o_strides = */ out_strides,
-        /* int64_t i_offset = */ 0,
-        /* int64_t o_offset = */ data_offset,
-        /* CopyType ctype = */ CopyType::GeneralGeneral,
-        /* const Stream& s = */ stream());
+    // Decode exec-cache replay: the write offset (the KV row) changes
+    // every step, so in decode mode it rides a persistent value slot
+    // (H2D memcpy recorded at capture; host rewritten each replay step
+    // before the graph launch). The copy grid covers the whole output,
+    // so the slice is written redundantly — idempotent.
+    rocm::RocmAllocator::DecodeValueSlot sl;
+    if (rocm::graph_decode_mode() && stream().device == Device::gpu) {
+      sl = rocm::allocator().decode_value_slot(1);
+    }
+    int64_t* off_dev =
+        sl.data ? static_cast<int64_t*>(sl.data) : nullptr;
+    if (off_dev) {
+      *sl.host = data_offset;
+      auto& encoder = rocm::get_command_encoder(stream());
+      encoder.launch_kernel(
+          [off_dev, host = sl.host](hipStream_t st) {
+            hipError_t e = hipMemcpyAsync(
+                off_dev, host, sizeof(int64_t), hipMemcpyHostToDevice, st);
+            rocm::g1_check_hip(
+                "hipMemcpyAsync (decode slot H2D: slice o_offset)", e);
+          });
+      auto dyn_off = array({1}, int64, nullptr, {});
+      dyn_off.set_data(sl.buf);
+      copy_gpu_inplace(
+          /* const array& src = */ upd,
+          /* array& dst = */ out,
+          /* const Shape& data_shape = */ upd.shape(),
+          /* const Strides& i_strides = */ upd.strides(),
+          /* const Strides& o_strides = */ out_strides,
+          /* int64_t i_offset = */ 0,
+          /* int64_t o_offset = */ 0,
+          /* CopyType ctype = */ CopyType::GeneralGeneral,
+          /* const Stream& s = */ stream(),
+          /* std::optional<array> dynamic_offset_in = */ std::nullopt,
+          /* std::optional<array> dynamic_offset_out = */ dyn_off);
+    } else {
+      copy_gpu_inplace(
+          /* const array& src = */ upd,
+          /* array& dst = */ out,
+          /* const Shape& data_shape = */ upd.shape(),
+          /* const Strides& i_strides = */ upd.strides(),
+          /* const Strides& o_strides = */ out_strides,
+          /* int64_t i_offset = */ 0,
+          /* int64_t o_offset = */ data_offset,
+          /* CopyType ctype = */ CopyType::GeneralGeneral,
+          /* const Stream& s = */ stream());
+    }
     return;
   }
 

@@ -791,6 +791,11 @@ void CommandEncoder::add_module_kernel_node(
     std::shared_ptr<void> args_keepalive) {
   if (!use_hip_graphs()) {
     device_.make_current();
+    // Replay mode: the recorded graph node is the only execution.
+    if (decode_replay_suppress() &&
+        !g_decode_capturing.load(std::memory_order_relaxed)) {
+      return;
+    }
     // G1X: same dangling-arg problem as add_kernel_node_raw — persist the
     // arg values when the caller did not already keep them alive.
     void* g1x_params = params;

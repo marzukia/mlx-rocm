@@ -107,7 +107,17 @@ void copy_general_dynamic(
   encoder.set_output_array(out);
   
   int ndim = shape.size();
-  size_t size = out.size();
+  // The copy covers the data (shape) elements; the dynamic offsets are
+  // added on top of the computed position, so iterating out.size() would
+  // index past the destination buffer (the offset shifts the writes).
+  // Matches copy_general's data_size.
+  size_t size = 0;
+  for (auto v : shape) {
+    size = size ? size * static_cast<size_t>(v) : static_cast<size_t>(v);
+  }
+  if (size == 0) {
+    size = out.size();
+  }
   
   int block_size = 256;
   int num_blocks = (size + block_size - 1) / block_size;
@@ -119,6 +129,21 @@ void copy_general_dynamic(
   void* out_ptr_base = gpu_ptr<void>(out);
   const int64_t* dyn_offset_in_ptr = gpu_ptr<int64_t>(dynamic_offset_in);
   const int64_t* dyn_offset_out_ptr = gpu_ptr<int64_t>(dynamic_offset_out);
+
+  // G1Y diagnostic: dump dynamic-copy kernel args + slot readback.
+  if (std::getenv("MLX_G1Y_DEBUG") && rocm::graph_decode_mode() &&
+      dyn_offset_out_ptr) {
+    static int nd = 0;
+    if (nd++ < 4) {
+      auto sl = rocm::allocator().decode_value_slot(1);
+      fprintf(stderr,
+              "[g1] copydyn in=%p out=%p size=%zu din=%p dout=%p "
+              "*host=%lld\n",
+              in_ptr_base, out_ptr_base, size, dyn_offset_in_ptr,
+              dyn_offset_out_ptr,
+              sl.host ? (long long)*sl.host : -1LL);
+    }
+  }
   
   // For ndim <= 3, pass shape and strides as kernel arguments (no device memory needed)
   if (ndim <= 3) {
