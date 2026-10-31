@@ -14,6 +14,8 @@
 
 namespace mlx::core {
 namespace rocm {
+extern void g1_check_hip(
+    const char* call, hipError_t err, const char* phase = nullptr);
 
 struct AttnParams {
   int B;
@@ -30,6 +32,12 @@ struct AttnParams {
   int64_t O_strides[3];
   int64_t M_strides[4]; // Mask strides [B, H, qL, kL]
   bool has_mask;
+  // Decode exec-cache replay: when non-null, K_seq_len is read from
+  // this persistent device slot (an H2D memcpy from a pinned host
+  // buffer, rewritten each replay step) instead of the baked-by-value
+  // kL above.
+  const int64_t* kL_slot;
+  AttnParams() : kL_slot(nullptr) {}
 };
 
 // Standard flash attention kernel (D_q == D_v, no array mask)
@@ -91,7 +99,8 @@ __global__ __launch_bounds__(BLOCK_M) void kernel_sdpa_flash_opt(
   __shared__ T K_sh[BLOCK_N][D];
   __shared__ T V_sh[BLOCK_N][D];
 
-  const int K_seq_len = params.kL;
+  const int K_seq_len =
+      params.kL_slot ? static_cast<int>(*params.kL_slot) : params.kL;
 
   for (int k_seq_start = 0; k_seq_start < K_seq_len; k_seq_start += BLOCK_N) {
     if constexpr (do_causal) {
@@ -257,7 +266,8 @@ __global__ __launch_bounds__(BLOCK_M) void kernel_sdpa_flash_mla(
   __shared__ T K_sh[BLOCK_N][D_Q];
   __shared__ T V_sh[BLOCK_N][D_V];
 
-  const int K_seq_len = params.kL;
+  const int K_seq_len =
+      params.kL_slot ? static_cast<int>(*params.kL_slot) : params.kL;
 
   for (int k_seq_start = 0; k_seq_start < K_seq_len; k_seq_start += BLOCK_N) {
     if constexpr (do_causal) {
@@ -437,6 +447,24 @@ void sdpa_flash(
 
   o.set_data(mlx::core::rocm::malloc_async(o.nbytes(), encoder));
 
+  // Decode exec-cache replay: kL changes every decode step, so in
+  // decode mode it rides a persistent value slot (H2D memcpy recorded
+  // at capture; the host value is rewritten each replay step).
+  rocm::RocmAllocator::DecodeValueSlot sl;
+  if (rocm::graph_decode_mode() && s.device == Device::gpu) {
+    sl = rocm::allocator().decode_value_slot(0);
+  }
+  int64_t* kL_dev = sl.data ? static_cast<int64_t*>(sl.data) : nullptr;
+  if (kL_dev) {
+    *sl.host = kL;
+    encoder.launch_kernel(
+        [kL_dev, host = sl.host](hipStream_t st) {
+          hipError_t e = hipMemcpyAsync(
+              kL_dev, host, sizeof(int64_t), hipMemcpyHostToDevice, st);
+          rocm::g1_check_hip("hipMemcpyAsync (decode slot H2D: sdpa kL)", e);
+        });
+  }
+
   rocm::AttnParams params;
   params.B = B;
   params.H = H;
@@ -444,6 +472,7 @@ void sdpa_flash(
   params.D_v = D_v;
   params.qL = qL;
   params.kL = kL;
+  params.kL_slot = kL_dev;
   params.gqa_factor = gqa_factor;
   params.scale = scale;
   params.Q_strides[0] = q.strides(0);

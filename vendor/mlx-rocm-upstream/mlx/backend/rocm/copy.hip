@@ -108,6 +108,16 @@ void copy_gpu_inplace(
     // Create zero offset arrays for missing dynamic offsets
     // We need to allocate and initialize on GPU to avoid hipDeviceSynchronize
     if (!dynamic_offset_in) {
+      // Decode mode: a persistent zeroed buffer (per-step malloc + memset
+      // would shift the arena layout and add a node, breaking replay's
+      // stable addresses).
+      auto z = rocm::allocator().decode_zero_slot();
+      if (z.data) {
+        dynamic_offset_in = array({1}, int64, nullptr, {});
+        dynamic_offset_in->set_data(z.buf);
+      }
+    }
+    if (!dynamic_offset_in) {
       dynamic_offset_in = array({1}, int64, nullptr, {});
       dynamic_offset_in->set_data(mlx::core::rocm::malloc_async(sizeof(int64_t), encoder));
       encoder.add_temporary(*dynamic_offset_in);
@@ -118,6 +128,13 @@ void copy_gpu_inplace(
         rocm::g1_check_hip("hipMemsetAsync (copy dynamic_offset_in)", ms);
         (void)ms;
       });
+    }
+    if (!dynamic_offset_out) {
+      auto z = rocm::allocator().decode_zero_slot();
+      if (z.data) {
+        dynamic_offset_out = array({1}, int64, nullptr, {});
+        dynamic_offset_out->set_data(z.buf);
+      }
     }
     if (!dynamic_offset_out) {
       dynamic_offset_out = array({1}, int64, nullptr, {});
@@ -226,8 +243,10 @@ template <typename T, int VEC>
 __global__ void kv_append_kernel(
     const T* __restrict__ k, const T* __restrict__ v,
     T* __restrict__ dk, T* __restrict__ dv,
+    const int64_t* off_slot,
     int64_t k_row_stride, int64_t v_row_stride,
     int64_t dk_row_stride, int64_t dv_row_stride,
+    int64_t dk_t_stride, int64_t dv_t_stride,
     int64_t n_rows, int64_t d) {
   int64_t nvec = n_rows * (d / VEC);
   int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -239,7 +258,13 @@ __global__ void kv_append_kernel(
   int64_t row = j / (d / VEC);
   int64_t col = (j % (d / VEC)) * VEC;
   const T* src = is_v ? (v + row * v_row_stride + col) : (k + row * k_row_stride + col);
-  T* dst = is_v ? (dv + row * dv_row_stride + col) : (dk + row * dk_row_stride + col);
+  // off_slot: decode exec-cache replay — the per-step write offset
+  // (T rows) is read from a persistent device slot; legacy callers
+  // pass nullptr (the base was pre-advanced, strides are 0).
+  const int64_t off = off_slot ? *off_slot : 0;
+  T* dst = is_v
+      ? (dv + off * dv_t_stride + row * dv_row_stride + col)
+      : (dk + off * dk_t_stride + row * dk_row_stride + col);
   // K2 review NIT-9: both VEC==8 (8 x 16-bit) and VEC==4 (4 x 32-bit) are
   // 16-byte uint4 copies; VEC only affects addressing, so a single block.
   uint4 val = *reinterpret_cast<const uint4*>(src);
@@ -251,8 +276,10 @@ template <typename T>
 __global__ void kv_append_scalar_kernel(
     const T* __restrict__ k, const T* __restrict__ v,
     T* __restrict__ dk, T* __restrict__ dv,
+    const int64_t* off_slot,
     int64_t k_row_stride, int64_t v_row_stride,
     int64_t dk_row_stride, int64_t dv_row_stride,
+    int64_t dk_t_stride, int64_t dv_t_stride,
     int64_t n_rows, int64_t d) {
   int64_t total = 2 * n_rows * d;
   int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -264,7 +291,10 @@ __global__ void kv_append_scalar_kernel(
   int64_t row = j / d;
   int64_t col = j % d;
   const T* src = is_v ? (v + row * v_row_stride + col) : (k + row * k_row_stride + col);
-  T* dst = is_v ? (dv + row * dv_row_stride + col) : (dk + row * dk_row_stride + col);
+  const int64_t off = off_slot ? *off_slot : 0;
+  T* dst = is_v
+      ? (dv + off * dv_t_stride + row * dv_row_stride + col)
+      : (dk + off * dk_t_stride + row * dk_row_stride + col);
   *dst = *src;
 }
 
@@ -307,9 +337,27 @@ void KVAppend::eval_gpu(
   int64_t v_row_stride = v.strides()[1];
   int64_t dk_row_stride = ck.strides()[1];
   int64_t dv_row_stride = cv.strides()[1];
-  // Advance the dst base to the write offset (T stride * offset).
-  int64_t dk_base = offset_ * ck.strides()[2];
-  int64_t dv_base = offset_ * cv.strides()[2];
+  // Advance the dst base to the write offset (T stride * offset) —
+  // or, in decode mode, pass the base and let the kernel read the
+  // per-step offset from the persistent value slot (rewritten from
+  // the host each replay step before the graph launch).
+  rocm::RocmAllocator::DecodeValueSlot sl;
+  if (rocm::graph_decode_mode()) {
+    sl = rocm::allocator().decode_value_slot(2);
+  }
+  int64_t* off_dev = sl.data ? static_cast<int64_t*>(sl.data) : nullptr;
+  int64_t dk_base = off_dev ? 0 : offset_ * ck.strides()[2];
+  int64_t dv_base = off_dev ? 0 : offset_ * cv.strides()[2];
+  if (off_dev) {
+    *sl.host = offset_;
+    encoder.launch_kernel(
+        [off_dev, host = sl.host](hipStream_t st) {
+          hipError_t e = hipMemcpyAsync(
+              off_dev, host, sizeof(int64_t), hipMemcpyHostToDevice, st);
+          rocm::g1_check_hip(
+              "hipMemcpyAsync (decode slot H2D: kv_append offset)", e);
+        });
+  }
 
   encoder.set_input_array(k);
   encoder.set_input_array(v);
@@ -330,7 +378,9 @@ void KVAppend::eval_gpu(
             dim3(nblocks), dim3(BLOCK), 0,
             gpu_ptr<DT>(k), gpu_ptr<DT>(v),
             gpu_ptr<DT>(ok) + dk_base, gpu_ptr<DT>(ov) + dv_base,
+            off_dev,
             k_row_stride, v_row_stride, dk_row_stride, dv_row_stride,
+            ck.strides()[2], cv.strides()[2],
             n_rows, D);
       } else {
         encoder.add_kernel_node(
@@ -338,7 +388,9 @@ void KVAppend::eval_gpu(
             dim3(nblocks), dim3(BLOCK), 0,
             gpu_ptr<DT>(k), gpu_ptr<DT>(v),
             gpu_ptr<DT>(ok) + dk_base, gpu_ptr<DT>(ov) + dv_base,
+            off_dev,
             k_row_stride, v_row_stride, dk_row_stride, dv_row_stride,
+            ck.strides()[2], cv.strides()[2],
             n_rows, D);
       }
     } else {
@@ -349,7 +401,9 @@ void KVAppend::eval_gpu(
           dim3(nblocks), dim3(BLOCK), 0,
           gpu_ptr<DT>(k), gpu_ptr<DT>(v),
           gpu_ptr<DT>(ok) + dk_base, gpu_ptr<DT>(ov) + dv_base,
+          off_dev,
           k_row_stride, v_row_stride, dk_row_stride, dv_row_stride,
+          ck.strides()[2], cv.strides()[2],
           n_rows, D);
     }
   };
