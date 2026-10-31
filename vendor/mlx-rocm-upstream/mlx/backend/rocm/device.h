@@ -335,6 +335,20 @@ class CommandEncoder {
   // which is dead by replay; end_record re-points every kernel node (and
   // H2D memcpy source) at these slot-owned copies.
   std::vector<std::shared_ptr<void>> decode_cap_keepalive_[2];
+  // G1H2D: the in-graph H2D memcpy nodes (per-step host staging value
+  // uploads, e.g. the dynamic-offset slot) are not reliably delivered on
+  // this vGPU. At capture we record each node's (host_src, dev_dst,
+  // bytes), neutralize the node (0-byte copy) so it cannot overwrite the
+  // freshly delivered value mid-graph with a stale one, and re-deliver the
+  // value pre-launch on the launch stream (g1_prelaunch_recorded_h2d).
+  struct G1H2DRec {
+    void* host_src;
+    void* dev_dst;
+    size_t bytes;
+  };
+  std::vector<G1H2DRec> g1h2d_recs_[2];
+  void g1_prelaunch_recorded_h2d(int slot, hipStream_t st);
+  void decode_capture_record_neutralize_h2d(int slot, hipGraph_t g);
 };
 
 class Device {
