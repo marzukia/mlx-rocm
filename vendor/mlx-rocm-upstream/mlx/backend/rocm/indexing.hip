@@ -619,7 +619,7 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
   // K3 (t1082): in graph decode mode, a small gather out goes to the
   // persistent 4 KB value slot 3, each row at a distinct 256 B offset (a per-step cursor, reset with the arena): rows do not clobber each other in-graph (a decode step has several fast_rows gathers), and no row overflows into an adjacent wrapper. Out > 4 KB keeps the stable-address arena buffer (the row fits its own block there).
   // MLX_GD_K3OFF=1 disables this (and the idx redirect below) for the t1099 on/off A/B.
-  if (rocm::graph_decode_mode() && !gd_k3_off() && out.nbytes() <= 4096) {
+  if (rocm::graph_decode_mode() && !rocm::gd_k3_off() && out.nbytes() <= 4096) {
     auto sl3 = rocm::allocator().decode_value_slot(3);
     size_t off = rocm::allocator().decode_value_slot3_cursor(out.nbytes());
     if (sl3.data && off < 4096) {
@@ -709,7 +709,7 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
       int64_t n_rows = total / (int64_t)slice_size;
       // Only idx[0] is zero-cleared (the per-launch memset clears one
       // element); an n_rows>1 fast_rows gather (an eager T>1 step in a session with an active arena) would read idx[1..] from the never-cleared part of the 4 KB zero-slot wrapper (garbage index -> off-range src row read). Keep the original idx buffer then.
-      if (rocm::graph_decode_mode() && !gd_k3_off() && !gd_k3_idxoff() &&
+      if (rocm::graph_decode_mode() && !rocm::gd_k3_off() && !rocm::gd_k3_idxoff() &&
           out.nbytes() <= 4096 && n_rows == 1) {
         h_indices[0] = rocm::allocator().decode_zero_slot().data;
       }
