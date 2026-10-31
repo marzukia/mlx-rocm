@@ -148,7 +148,7 @@ __device__ inline __half float2half(float x) {
   return __float2half(x);
 }
 
-__device__ inline float bfloarun-162float(hip_bfloat16 x) {
+__device__ inline float bfloat162float(hip_bfloat16 x) {
   return bf16_to_float(x);
 }
 

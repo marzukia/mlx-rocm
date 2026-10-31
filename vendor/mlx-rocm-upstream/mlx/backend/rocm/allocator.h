@@ -117,6 +117,16 @@ class RocmAllocator : public allocator::Allocator {
   void* decode_arena_base_ptr() const {
     return decode_arena_.base;
   }
+  // G1V: ownership-map accessors for fault-VA attribution (diagnostic).
+  const std::deque<RocmBuffer>& decode_arena_wrappers() const {
+    return decode_arena_.wrappers;
+  }
+  size_t decode_arena_floor_offset() const {
+    return decode_arena_.floor_offset;
+  }
+  size_t decode_arena_floor_wrapper() const {
+    return decode_arena_.floor_wrapper;
+  }
 
     bool in_decode_arena(void* p) const {
     return decode_arena_.contains(p);
@@ -141,6 +151,34 @@ class RocmAllocator : public allocator::Allocator {
   bool decode_arena_overflowed() const {
     return decode_arena_.overflowed;
   }
+
+  // A persistent per-step value slot for decode exec-cache replay:
+  // a small stable arena buffer + a pinned host buffer. The initial
+  // capture records an H2D memcpy (host->device) and the kernel reads
+  // the device buffer; the CPU re-writes the host value each replay
+  // step before the graph launch, so per-step values (the KV write
+  // offset, the SDPA K length) reach the replayed graph. host==nullptr
+  // when the decode arena is inactive (legacy by-value path).
+  struct DecodeValueSlot {
+    Buffer buf{nullptr};  // persistent (never freed), valid iff host != nullptr
+    int64_t* host{nullptr};  // pinned
+    void* data{nullptr};  // device data pointer (buf wraps the RocmBuffer;
+                          // ptr() is the wrapper, data is the kernel-facing VA)
+  };
+  DecodeValueSlot decode_value_slot(int index);
+  void decode_arena_reserve_wrappers(size_t n);
+  // A persistent 8-byte device buffer holding 0, for the dynamic-copy
+  // "missing offset" case in decode mode: a per-step malloc + memset
+  // would shift the arena layout (and add a node), breaking the
+  // replay step's stable addresses. Zeroed once per arena incarnation.
+  DecodeValueSlot decode_zero_slot();
+  // K3 (t1082): per-step cursor into the 4 KB value slot 3 (gather
+  // out). Each small gather's row is placed at a distinct 256 B
+  // aligned offset so rows do not clobber each other in-graph (a
+  // decode step has several fast_rows gathers). Returns the row's
+  // offset, or the 4 KB capacity if it does not fit (the caller
+  // falls back to a stable-arena buffer). Reset with the arena.
+  size_t decode_value_slot3_cursor(size_t size);
 
   bool train_arena_begin(size_t capacity, int device, void* stream) {
     return decode_arena_begin(capacity, device, stream);
@@ -196,6 +234,15 @@ class RocmAllocator : public allocator::Allocator {
   // Track buffers with dirty host shadows (CPU wrote, needs flush to VRAM).
   std::unordered_set<RocmBuffer*> dirty_shadows_;
   DecodeArena decode_arena_;
+  struct DecodeValueSlotState {
+    Buffer buf{nullptr};
+    int64_t* host{nullptr};
+    void* data{nullptr};  // device data pointer (see DecodeValueSlot::data)
+    void* base{nullptr};  // arena base at allocation time
+  };
+  DecodeValueSlotState decode_value_slot_state_[4];
+  DecodeValueSlotState decode_zero_state_;
+  size_t decode_slot3_cursor_{0};
 };
 
 RocmAllocator& allocator();

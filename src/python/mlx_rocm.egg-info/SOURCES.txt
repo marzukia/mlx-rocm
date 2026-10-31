@@ -15,12 +15,14 @@ src/python/mlx_rocm.egg-info/SOURCES.txt
 src/python/mlx_rocm.egg-info/dependency_links.txt
 src/python/mlx_rocm.egg-info/top_level.txt
 tests/test_gates.py
+tests/test_gd_pilot_logic.py
 tests/test_gdn_fuse.py
 tests/test_gpu.py
 tests/test_qmv_mr2_lx_instantiation.py
 vendor/mlx-rocm-upstream/CMakeLists.upstream.txt
 vendor/mlx-rocm-upstream/LICENSE.upstream
 vendor/mlx-rocm-upstream/README.md
+vendor/mlx-rocm-upstream/REPORT.md
 vendor/mlx-rocm-upstream/ci/build_rocm.yml
 vendor/mlx-rocm-upstream/mlx/CMakeLists.txt
 vendor/mlx-rocm-upstream/mlx/allocator.h
@@ -600,6 +602,7 @@ vendor/mlx-rocm-upstream/mlx/backend/rocm/flash_attention_bwd_wmma.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/flash_attention_wmma.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/g1_hiplog.h
 vendor/mlx-rocm-upstream/mlx/backend/rocm/gated_delta_update.cpp
+vendor/mlx-rocm-upstream/mlx/backend/rocm/graph_decode_pilot_logic.h
 vendor/mlx-rocm-upstream/mlx/backend/rocm/host_stage.cpp
 vendor/mlx-rocm-upstream/mlx/backend/rocm/indexing.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/jit_module.cpp
