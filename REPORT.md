@@ -1834,3 +1834,83 @@ own as-run-evidence convention (np-rca-* precedent): all 17 flagged scripts adde
 `[tool.ruff] extend-exclude`, kept byte-identical to as-run evidence. `ruff check .`
 and `ruff format --check .` both clean at the new head. No kernel/patch/build input
 touched - the 4-gate evidence stands.
+
+## Graph decode (lever 3a: HIP graph capture of the AR decode step)
+
+Status as of this round: the AR decode step is captured into a HIP graph and
+replayed per-step (two-slot double buffer; per-step re-capture -> end_record ->
+ExecUpdate/fresh-instantiate -> immediate launch). The capture machinery is in
+`vendor/mlx-rocm-upstream/mlx/backend/rocm/` (device.cpp/device.h/eval.cpp/
+copy.hip/allocator.h/rope.hip).
+
+Deterministic 2nd-capture fault (characterized, not yet root-caused):
+- The HSA memory fault is DETERMINISTIC on the SECOND decode capture+launch
+  (first capture always fine) and slot-order-independent.
+- It is independent of kernel execution: neutralizing all 688 kernel nodes
+  (G1B via hipGraphExecKernelNodeSetParams -> g1b_noop) still faults, so it is
+  in launch-time param machinery or a stream-ordered/deferred free of a
+  still-referenced buffer (the captured graph has 0 memcpy/memset nodes).
+- The faulting VA is a computed device address (src + idx*row_size), not a
+  direct node arg; it is not obtainable from HSA/dmesg/journalctl.
+- NO_LAUNCH (capture but never launch) is clean; NO_COMMIT (isolate the worker
+  commit) faults — the fault is at launch/commit time, not in node execution.
+
+Baselines: A0 = 71.01 tok/s @29k ctx (warm, 147 toks); ungraphed AR reference
+62.4 tok/s @14tok window (9B model). The graph path must clear the lossless
+gates (14tok/29K greedy byte-identical vs ungraphed, fresh process) before it
+counts as a win.
+
+## Fix round: graph-decode-v2 reconcile (PR #1)
+
+Two defect classes fixed: (1) the leaked guest-VM-hostname persona, (2) 0.1.2-era main
+content lost in union-merged files. The branch was rebuilt as a single
+commit on main (`1cf0e08`) and force-pushed to the PR head.
+
+### Per-file disposition (final commit, 11 files)
+
+| File | Disposition |
+|---|---|
+| `vendor/.../rocm/device.cpp` | graph-delta kept — HIP graph capture machinery |
+| `vendor/.../rocm/device.h` | graph-delta kept — capture state |
+| `vendor/.../rocm/eval.cpp` | graph-delta kept — decode-capture arming |
+| `vendor/.../rocm/copy.hip` | graph-delta kept — g1b_noop node |
+| `vendor/.../rocm/allocator.h` | graph-delta kept — decode-arena |
+| `vendor/.../rocm/rope.hip` | graph-delta kept — T-invariance fix |
+| `vendor.json` | graph-delta kept — pin to the tail-fusion-gdn fork + fallback (NripeshN/maternion scrubbed) |
+| `tests/test_gates.py` | graph-delta kept — primary + fallback pin check |
+| `WORKSTATE.md` | union — main ent4 digest + graph work log (persona-scrubbed) |
+| `REPORT.md` | union — main K2 report + appended graph status + this fix-round table |
+| `src/python/.../PKG-INFO` | main restored + build-regenerated — "## Provenance" from README.md |
+
+### Main-spine restored (102 files, re-scrub -> main)
+
+The remaining 102 PR-diff files were pure re-scrubs (graph re-introduced
+tokens main had already neutralized) or 0.1.2-era content; all restored to
+main's exact content: PLAN.md, README.md, docs/plan.md,
+docs/alpha-checklist.md, docs/vendor-overlay-k1.md, the re-scrubbed
+reports/reviews (k1-bench, k2-verify-r2, opt-gauntlet-areaB-backend,
+tail-fusion-gdn, pr-6-rereview-r2), the k2-tinvariance + tail-fusion-gdn
+renames (undone), CMakeLists.txt (broken `gdn_prep.hip` ref removed),
+test_gpu.py (128-line version with the gdn_fused test restored),
+pyproject.toml, uv.lock, .gitignore, AGENTS.md, gemm_smoke.cpp,
+`src/python/mlx_rocm/__init__.py`, ci/build_rocm.yml, and the rest.
+
+### Explicit replacements
+- the leaked guest-VM hostname -> the build VM (126 -> 0; 0 in added lines)
+- the guest-VM userland / tailnet-IP / /10-range references: 0 in added lines
+- `NripeshN` -> the ROCm base (vendor.json fallback fork)
+- `maternion/mlx rocm-current 9ce3117ecd` -> the vendor ref (vendor.json)
+- `run-NNNN` -> an earlier run (work logs)
+
+### Verification
+- 0 deleted-file headers (vs main)
+- finding-1 graph deliverables intact (6 files present)
+- test_gpu.py = 128 lines (gdn_fused test present)
+- 0 of the leaked guest-VM name in added lines; 0 persona grep in added lines
+- Gates: `uv sync --locked` OK; `ruff format --check` OK (78 files);
+  `ruff check` OK; `pytest -m "not gpu"` 21 passed 1 skipped; size gate OK
+
+### PR
+- https://github.com/marzukia/mlx-rocm/pull/1 (head
+  `jimmyateworld/mlx-rocm:graph-decode-v2` @ 1e7c8b4; single commit on
+  main 1cf0e08; CI pending, no check-runs yet)

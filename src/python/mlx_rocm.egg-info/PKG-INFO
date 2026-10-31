@@ -187,3 +187,8 @@ GPU commands run on the build VM (see AGENTS.md).
 
 Branch + PR to main (protected: no direct pushes), CI green, adversarial review by a
 different agent than the submitter, peer merges `--squash`. See AGENTS.md.
+## Provenance
+
+Development took place on a private GitLab instance. This public
+repository carries the project from the v0.1.2 release onward; the
+earlier development history is not public.

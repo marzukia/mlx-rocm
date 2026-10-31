@@ -192,7 +192,7 @@ void gd_begin_capture(GraphDecodePilot& p, Stream s) {
     rocm::allocator().decode_arena_reset_to_floor();
   }
   rocm::set_graph_decode_mode(true);
-  if (!enc.decode_capture_begin()) {
+  if (!enc.decode_capture_begin(p.step_seq & 1)) {
     p.log("graph decode: capture begin failed; staying eager");
     gd_tear_down(p);
     p.next_capture = false;
