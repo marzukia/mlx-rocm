@@ -43,35 +43,15 @@ UNIVERSAL INVARIANT (all production systems - vLLM, SGLang, TRT-LLM, PyTorch, ll
 
 Confirmed by G1M node histogram (r20b) + G1T data-pointer tag (r18):
 
-- The 1738-op capture step produces a **1038-node graph** (kernel=1022,
-  memcpy=16, memset=0). The 16 memcpy nodes are ALL kind=1 (D2H, src=nil,
-  one shared host dst ~0x7b9f0e75e000). **Zero H2D memcpy nodes** — the
-  slot H2D `hipMemcpyAsync(..., hipMemcpyHostToDevice, capture_stream)`
-  calls issued during stream capture never appear as graph nodes
-  (the 2-op microstep graph: memcpy=0, kernel=1 — consistent).
-  Either ROCm 10.1 vGPU executes them immediately at capture time or
-  drops them; in either case the exec has no in-graph H2D, so the slot
-  device buffer at first launch holds pre-capture content.
-- r16-r18: APERTURE_VIOLATION at copy_gg_dynamic_nd on the **first
-  graph launch (the capture-step launch itself)** — the replay step never
-  begins (no prepare/slot-dump lines). r15: same wheel, no fault,
-  deterministic garbage argmax 3216162876.
-- Fix candidate: pre-launch external H2D of the 4 value slots on the
-  launch stream immediately before hipGraphLaunch (end_record +
-  decode_capture_replay), MLX_G1_NO_PREH2D=1 disables. G1P slot
-  readback (host vs device after the pre-launch H2D, blocking D2H) and
-  G1K dyn-offset arg dump (mincore-guarded) verify the slot content and
-  the kernel's din/dout pointer args at launch time.
-- Slot VAs are stable (prepare dump: slot1 = arena_base+0x600 at every
-  step; copydyn *dout = same VA; slot data pointer = the VA the kernel
-  arg points to). The G1T tag was broken before r18 (compared the
-  RocmBuffer control-struct address, not the data VA).
+- The 1738-op capture step produces a **1038-node graph** (kernel=1022, memcpy=16, memset=0). The 16 memcpy nodes are ALL kind=1 (D2H, src=nil, one shared host dst ~0x7b9f0e75e000). **Zero H2D memcpy nodes** — the slot H2D `hipMemcpyAsync(..., hipMemcpyHostToDevice, capture_stream)` calls issued during stream capture never appear as graph nodes (the 2-op microstep graph: memcpy=0, kernel=1 — consistent). Either ROCm 10.1 vGPU executes them immediately at capture time or drops them; in either case the exec has no in-graph H2D, so the slot device buffer at first launch holds pre-capture content.
+- r16-r18: APERTURE_VIOLATION at copy_gg_dynamic_nd on the **first graph launch (the capture-step launch itself)** — the replay step never begins (no prepare/slot-dump lines). r15: same wheel, no fault, deterministic garbage argmax 3216162876.
+- Fix candidate: pre-launch external H2D of the 4 value slots on the launch stream immediately before hipGraphLaunch (end_record + decode_capture_replay), MLX_G1_NO_PREH2D=1 disables. G1P slot readback (host vs device after the pre-launch H2D, blocking D2H) and G1K dyn-offset arg dump (mincore-guarded) verify the slot content and the kernel's din/dout pointer args at launch time.
+- Slot VAs are stable (prepare dump: slot1 = arena_base+0x600 at every step; copydyn *dout = same VA; slot data pointer = the VA the kernel arg points to). The G1T tag was broken before r18 (compared the RocmBuffer control-struct address, not the data VA).
 
 ---
 ## Addendum 3 (2026-11-01, t1080 salvage continuation, probes r35-r38)
 
-Bisection (MLX_G1_BISECT, the exec of the 1738-op capture: 1038 nodes,
-kernel=1022 memcpy=16):
+Bisection (MLX_G1_BISECT, the exec of the 1738-op capture: 1038 nodes, kernel=1022 memcpy=16):
 
 | keep | result | probe |
 |------|--------|-------|
@@ -82,92 +62,26 @@ kernel=1022 memcpy=16):
 | 4    | FAULT  | r38   |
 | 2    | running| r39   |
 
-- Fault: APERTURE_VIOLATION / HSA MEMORY_FAULT, kernel
-  gather_rows_kernel (grid=[256,1,1] — the FIRST op of the decode step,
-  the embedding Gather), faulting addr varies per run (0x779ef6e9d000 r35,
-  0x78e5d449d000 r38, 0x7853b0a9d000 r34) — a freed pool VA, never in the
-  arena (base 0x77c850400000, cap 2GB) nor the weights.
-- The bisected exec is the FIRST 1738 capture's exec: it is launched once
-  in its own step and re-launched as the "prefix" of the diverged replay
-  step. The next step's fresh re-capture never launches (the queue is
-  dead). So the faulty node is in the first 4 graph nodes of the 1738
-  capture; keep=1 is clean, keep=4 faults.
-- Separate (pre-existing) bug, the reason re-captures happen at all:
-  "replay diverged at op 1 (Squeeze)" — the captured step's 2nd op is not
-  "Squeeze" but the replay step's 2nd op is. Strict op-name sequence
-  matching is the trigger for the divergence -> re-capture -> (this) fault.
-  Needs op-name trace of capture vs replay step (next probe:
-  MLX_G1_NODEDUMP + BISECT=4 for the first-node pointer attribution).
+- Fault: APERTURE_VIOLATION / HSA MEMORY_FAULT, kernel gather_rows_kernel (grid=[256,1,1] — the FIRST op of the decode step, the embedding Gather), faulting addr varies per run (0x779ef6e9d000 r35, 0x78e5d449d000 r38, 0x7853b0a9d000 r34) — a freed pool VA, never in the arena (base 0x77c850400000, cap 2GB) nor the weights.
+- The bisected exec is the FIRST 1738 capture's exec: it is launched once in its own step and re-launched as the "prefix" of the diverged replay step. The next step's fresh re-capture never launches (the queue is dead). So the faulty node is in the first 4 graph nodes of the 1738 capture; keep=1 is clean, keep=4 faults.
+- Separate (pre-existing) bug, the reason re-captures happen at all: "replay diverged at op 1 (Squeeze)" — the captured step's 2nd op is not "Squeeze" but the replay step's 2nd op is. Strict op-name sequence matching is the trigger for the divergence -> re-capture -> (this) fault. Needs op-name trace of capture vs replay step (next probe: MLX_G1_NODEDUMP + BISECT=4 for the first-node pointer attribution).
 
 ---
 ## Addendum 4 (2026-11-01, t1082, probes r39-r41 + G1P/G1K/NODDUMP)
 
-- keep=2: APERTURE_VIOLATION on the RECAPTURE launch (probe STEP 6),
-  attributed to copy_gg_dynamic_nd grid=[1024,1,1]; keep=4: HSA
-  MEMORY_FAULT attributed to gather_rows_kernel grid=[256,1,1].
-- NODDUMP (r41) of the first 8 nodes of the 1738 capture:
-  n0/n1 gather_rows_kernel<bf16,int> grid=[1,1,1]; n2
-  gather_rows_kernel<int,int>; n3 affine_dequantize_packed grid=[8,1,1];
-  n4 rms_norm; n5 qmv_wide_mr; n6/n7 copy_gg_byval. Args (end of the
-  first record, [nd]): in=0x795199200000 / 0x795195000000 /
-  0x795174800000 (external VAs), idx=0x795043000900 (the ZERO slot,
-  arena +0x900, 8B slot), out=slot0/1/2, n=1, rowlen=0x3ca00
-  (246528), dim0=0x3ca00.
-- Neither grid-256 nor grid-1024 matches any of the first 4 nodes
-  (grids 1,1,1,8): the vGPU hang-analysis kernel is a misattributed
-  NEXT dispatch after the fault, not the faulting node (same class as
-  the keep=2 copy_gg attribution). The faulty node is in the first 4
-  (keep=1 clean x5 launches, keep=2/4 fault).
-- G1P (slot readback after the pre-launch H2D, before launch): every
-  slot value FRESH at every launch (host==dev: 4096/4608/4864/0).
-  The per-step H2D works.
-- G1K (dyn-offset args of copy_gg_dynamic_nd on the SECOND capture):
-  a12ptr=0x6e69746c6975625f = ASCII "_builtine" — a HOST-side junk
-  pointer baked into the 2nd capture's graph. G1E (v2) + G1S
-  (sentinel: re-point node0's out arg at a zeroed scratch, check who
-  was written after the recapture launch) are the next probe: they
-  answer whether the ExecUpdate/refresh path stages the new values
-  (stale exec packet, rocm-systems#10714 class) or the fault is
-  content/ordering at the baked VAs.
+- keep=2: APERTURE_VIOLATION on the RECAPTURE launch (probe STEP 6), attributed to copy_gg_dynamic_nd grid=[1024,1,1]; keep=4: HSA MEMORY_FAULT attributed to gather_rows_kernel grid=[256,1,1].
+- NODDUMP (r41) of the first 8 nodes of the 1738 capture: n0/n1 gather_rows_kernel<bf16,int> grid=[1,1,1]; n2 gather_rows_kernel<int,int>; n3 affine_dequantize_packed grid=[8,1,1]; n4 rms_norm; n5 qmv_wide_mr; n6/n7 copy_gg_byval. Args (end of the first record, [nd]): in=0x795199200000 / 0x795195000000 / 0x795174800000 (external VAs), idx=0x795043000900 (the ZERO slot, arena +0x900, 8B slot), out=slot0/1/2, n=1, rowlen=0x3ca00 (246528), dim0=0x3ca00.
+- Neither grid-256 nor grid-1024 matches any of the first 4 nodes (grids 1,1,1,8): the vGPU hang-analysis kernel is a misattributed NEXT dispatch after the fault, not the faulting node (same class as the keep=2 copy_gg attribution). The faulty node is in the first 4 (keep=1 clean x5 launches, keep=2/4 fault).
+- G1P (slot readback after the pre-launch H2D, before launch): every slot value FRESH at every launch (host==dev: 4096/4608/4864/0). The per-step H2D works.
+- G1K (dyn-offset args of copy_gg_dynamic_nd on the SECOND capture): a12ptr=0x6e69746c6975625f = ASCII "_builtine" — a HOST-side junk pointer baked into the 2nd capture's graph. G1E (v2) + G1S (sentinel: re-point node0's out arg at a zeroed scratch, check who was written after the recapture launch) are the next probe: they answer whether the ExecUpdate/refresh path stages the new values (stale exec packet, rocm-systems#10714 class) or the fault is content/ordering at the baked VAs.
 
 ---
 ## Addendum 5 (2026-11-01, t1082, probes r43-r44 + the slot-wrapper fix)
 
-- r43 (keep=4 + EXECDUMP + NODDUMP + SENTINEL): the Squeeze divergence
-  is gone (the ported micro-step gate works). The fault is at the FIRST
-  REPLAY, gather_rows_kernel, addr 0x750c8229d000 = a0 + idx*rowlen*2
-  with idx ~ -3.8e5: the idx arg (a1) is the ZERO slot
-  (0x7535da200900), holding arena garbage. G1P: slot1 dev=4096 (the
-  capture-step value) vs host=4352 — the blocking pre-launch H2D did
-  not order against the graph (see below). Source-graph values stable
-  (endrec == replay for all 8 dumped nodes): not a stale ExecUpdate.
-- Mechanism (from the graph's own node args): n2 is a 512xint32
-  gather (row = 2 KB) whose out is the 256 B slot2 wrapper. The row
-  spans [slot2, slot2+0x800) and overflows into the adjacent zero
-  slot [slot2+0x200, ...). Nothing re-zeroes the zero slot after the
-  capture step's launch, so the replay's first gather reads a bf16
-  bit pattern as an index -> off-arena fault. Same class as the
-  t1074 keep=2 copy_gg_dynamic_nd fault (its dyn-offset input is the
-  zero slot, read after n2's overflow).
+- r43 (keep=4 + EXECDUMP + NODDUMP + SENTINEL): the Squeeze divergence is gone (the ported micro-step gate works). The fault is at the FIRST REPLAY, gather_rows_kernel, addr 0x750c8229d000 = a0 + idx*rowlen*2 with idx ~ -3.8e5: the idx arg (a1) is the ZERO slot (0x7535da200900), holding arena garbage. G1P: slot1 dev=4096 (the capture-step value) vs host=4352 — the blocking pre-launch H2D did not order against the graph (see below). Source-graph values stable (endrec == replay for all 8 dumped nodes): not a stale ExecUpdate.
+- Mechanism (from the graph's own node args): n2 is a 512xint32 gather (row = 2 KB) whose out is the 256 B slot2 wrapper. The row spans [slot2, slot2+0x800) and overflows into the adjacent zero slot [slot2+0x200, ...). Nothing re-zeroes the zero slot after the capture step's launch, so the replay's first gather reads a bf16 bit pattern as an index -> off-arena fault. Same class as the t1074 keep=2 copy_gg_dynamic_nd fault (its dyn-offset input is the zero slot, read after n2's overflow).
 - Two fixes (both in the pre-launch slot path, plus the layout):
-  1. The idx/zero slot is re-cleared (hipMemsetAsync on the launch
-     stream) before EVERY graph launch. It is a dyn-offset/idx
-     input that must read 0 at graph start; the capture step's
-     kernels can leave garbage in it and nothing re-zeroed it.
-  2. The value-slot and zero-slot wrappers grow from 256 B to 4 KB
-     (decode_value_slot / decode_zero_slot / reserve_wrappers): the
-     observed gather rows (up to 2 KB) then stay inside their own
-     wrapper and cannot spill into the zero slot mid-graph. A
-     pre-launch memset alone is insufficient — the overflow happens
-     DURING the graph (r44: pre-launch G1P shows zero dev=0, the
-     capture launch still faults in copy_gg_dynamic_nd after n2's
-     mid-graph overflow).
-  3. The pre-launch slot H2D moves from a blocking hipMemcpy (legacy
-     default stream, which does not order against the non-blocking
-     decode stream — r43's stale slot1) to hipMemcpyAsync on the
-     launch stream; the host buffers are pinned, so the async copy
-     is safe and stream-ordered before the graph.
-- r44 (full 1738 graph, no bisect): 2-op micro-step capture+replay
-  clean; the 1738 capture launch faults in copy_gg_dynamic_nd
-  (APERTURE_VIOLATION) — before the 4 KB wrapper change. r45 (with
-  the 4 KB wrappers) is the verification run.
+  1. The idx/zero slot is re-cleared (hipMemsetAsync on the launch stream) before EVERY graph launch. It is a dyn-offset/idx input that must read 0 at graph start; the capture step's kernels can leave garbage in it and nothing re-zeroed it.
+  2. The value-slot and zero-slot wrappers grow from 256 B to 4 KB (decode_value_slot / decode_zero_slot / reserve_wrappers): the observed gather rows (up to 2 KB) then stay inside their own wrapper and cannot spill into the zero slot mid-graph. A pre-launch memset alone is insufficient — the overflow happens DURING the graph (r44: pre-launch G1P shows zero dev=0, the capture launch still faults in copy_gg_dynamic_nd after n2's mid-graph overflow).
+  3. The pre-launch slot H2D moves from a blocking hipMemcpy (legacy default stream, which does not order against the non-blocking decode stream — r43's stale slot1) to hipMemcpyAsync on the launch stream; the host buffers are pinned, so the async copy is safe and stream-ordered before the graph.
+- r44 (full 1738 graph, no bisect): 2-op micro-step capture+replay clean; the 1738 capture launch faults in copy_gg_dynamic_nd (APERTURE_VIOLATION) — before the 4 KB wrapper change. r45 (with the 4 KB wrappers) is the verification run.
