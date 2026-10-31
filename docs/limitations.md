@@ -1,6 +1,6 @@
 # Limitations — mlx-rocm on gfx1201
 
-Plain list, 2026-10-26. All GPU results are from the the build VM guest VM
+Plain list, 2026-10-26. All GPU results are from the guest-a guest VM
 (RX 9070 XT / gfx1201, ROCm 10.1 userland; the guest runs a 32-CU partition
 of the card, so timings are partition-scaled, not whole-card). Evidence
 pointers name the branch/report.
@@ -13,11 +13,11 @@ pointers name the branch/report.
   runs.
 - **8-bit quantized (affine 8-bit QMM)** — 0.6B-8bit benched at 207.6–214.3
   tok/s (`k2-non-gemm-fusion`).
-- **GatedDeltaUpdate port (GDN)** — the an earlier run `copy_general_general` segfault is
+- **GatedDeltaUpdate port (GDN)** — the run-506 `copy_general_general` segfault is
   fixed (chunked host-shadow copy, no per-chunk `hipStreamDestroy`) and GDN
   numerics pass (recurrent + chunk paths vs the op-loop fallback and an f32
   reference) on the `k3-gdn-port` re-run.
-- **bf16 GEMM** — matmul GPU vs CPU max_err 0.0000 (`an earlier run-report` Phase 0;
+- **bf16 GEMM** — matmul GPU vs CPU max_err 0.0000 (`run-480-report` Phase 0;
   the earlier 6.4 probe: bf16 GEMM PASS 0.0078).
 - **fp8 e4m3 probe** — the 256³ e4m3 GEMM vs host reference passes
   (max_rel_err 0.0057, 0/65536 bad). That is a probe, not a prefill
@@ -38,6 +38,8 @@ pointers name the branch/report.
 
 - **27B+ / 9B-hybrid / MoE** — Phase 2. A 27B load was in flight on the
   guest (an earlier run/an earlier run) but not validated.
+- **27B+ / 122B-hybrid / MoE** — Phase 2. A 27B load was in flight on the
+  guest (run-479/run-480) but not validated.
 - **MTP spec decode** — blocked on the M3 stream-TLS fix (`There is no
   Stream(cpu, N)` in `mlx/backend/cpu/encoder.cpp`); Phase 2 at the earliest.
 - **Non-gfx1201 archs** — only gfx1201 is validated here. The fork's arch

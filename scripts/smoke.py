@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 0 smoke (run ON the build VM after installing the built wheel).
+"""Phase 0 smoke (run ON guest-a after installing the built wheel).
 
 Exit criteria (PLAN.md Phase 0 / docs/plan.md):
   1. mx.rocm.is_available() == True

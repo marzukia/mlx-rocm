@@ -1,7 +1,7 @@
 #!/bin/bash
 # m5 harvest: one more deterministic m3-flow run, layer-3 block capture for A+B.
 MODELS="${MODELS:-/models}"
-cd $MODELS/tmp/an earlier run
+cd $MODELS/tmp/run-785
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib:/opt/rocm/lib
 PY=$MODELS/venv-d/bin/python
 export MODE=harvest

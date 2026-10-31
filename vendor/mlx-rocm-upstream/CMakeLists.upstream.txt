@@ -65,7 +65,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
           "Building for x86_64 on macOS is not supported."
           " If you are on an Apple silicon system, check the build"
           " documentation for possible fixes: "
-          "https://ml-explore.github.io/mlx/build/html/install.html#build-from-source"
+          "https://mlx-project.github.io/mlx/build/html/install.html#build-from-source"
       )
     else()
       set(MLX_BUILD_METAL OFF)

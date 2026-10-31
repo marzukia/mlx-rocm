@@ -34,7 +34,7 @@ struct Dequantize {
 template <typename T>
 __device__ __forceinline__ void absmax_x2(T& out, const T& x1, const T& x2) {
   if constexpr (
-      (std::is_same<T, __nv_bfloaan earlier run>::value) ||
+      (std::is_same<T, __nv_bfloarun-162>::value) ||
       (std::is_same<T, __half2>::value)) {
     T a = x1;
     T b = x2;

@@ -14,7 +14,7 @@ include(FetchContent)
 #
 # FetchContent_Declare(
 #   jaccl
-#   GIT_REPOSITORY https://github.com/ml-explore/mlx.git
+#   GIT_REPOSITORY https://github.com/mlx-project/mlx.git
 #   GIT_TAG main
 #   SOURCE_SUBDIR mlx/distributed/jaccl/lib
 # )

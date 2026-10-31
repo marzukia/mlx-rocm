@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""an earlier run G1/G2 gate generator: greedy 1024-token generation on the 4bit model,
+"""run-789 G1/G2 gate generator: greedy 1024-token generation on the 4bit model,
 same protocol as the m0 reference (mtp-bench3.py mode 0: smartphone prompt,
 greedy, MAX_TOKENS=1024, fresh process per run). MLX_GDN_TAIL_FUSION read
-from env (an earlier run lesson: never positional). Prints TOKS/TOKS_S/ALLTOKS."""
+from env (run-608 lesson: never positional). Prints TOKS/TOKS_S/ALLTOKS."""
 
 import os
 import time

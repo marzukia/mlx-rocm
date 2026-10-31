@@ -1,9 +1,9 @@
 #!/bin/bash
-# an earlier run GPU phase (run ON the build VM): gates + bench for the dequant-hoist
+# run-835 GPU phase (run ON guest-a): gates + bench for the dequant-hoist
 # wheel (e144f39). Lock protocol: flock -n, on fail sleep 60s, retry up to
 # 20x, log all fails.
 #
-# Usage: bash an earlier run_gpu_phase.sh <new-wheel-dir>
+# Usage: bash run-835_gpu_phase.sh <new-wheel-dir>
 set -uo pipefail
 MODELS="${MODELS:-/models}"
 WHEELNW=$1
@@ -40,7 +40,7 @@ try_locked() { # $1=tag, $2...=command; distinguishes lock-fail from cmd-fail
   done
 }
 
-echo "=== an earlier run GPU phase start $(date -u +%FT%TZ) wheel=$WHEELNW ==="
+echo "=== run-835 GPU phase start $(date -u +%FT%TZ) wheel=$WHEELNW ==="
 
 # --- config probe (doc rule 6): GPU + wheel + gfx1201 --------------------
 $PYG4 /tmp/gpuinfo.py > $T/new/gpuinfo.log 2>&1 || true
@@ -87,10 +87,10 @@ grep -E "^MTP=|^FIRST16:" $T/new/ar.log
 # --- gate 2/3: stream comparison vs per-row wheel stream + baseline ------
 grep "^ALLTOKS:" $T/new/ar.log > $T/new/alltoks
 cmp $T/new/alltoks $MODELS/tmp/new-alltoks \
-  && echo "AR-CMP vs per-row wheel stream (an earlier run new-alltoks): IDENTICAL" \
+  && echo "AR-CMP vs per-row wheel stream (run-818 new-alltoks): IDENTICAL" \
   || echo "AR-CMP vs per-row wheel stream: DIFFER"
 cmp $T/new/alltoks $MODELS/tmp/ref-alltoks \
   && echo "AR-CMP vs baseline stream (ref-alltoks): IDENTICAL" \
   || echo "AR-CMP vs baseline stream: DIFFER"
 
-echo "=== an earlier run GPU phase done $(date -u +%FT%TZ) ==="
+echo "=== run-835 GPU phase done $(date -u +%FT%TZ) ==="

@@ -1,7 +1,7 @@
 #!/bin/bash
 # m5 prof: per-spec rocprofv3 --kernel-trace dispatch table (no model load).
 MODELS="${MODELS:-/models}"
-cd $MODELS/tmp/an earlier run
+cd $MODELS/tmp/run-785
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib:/opt/rocm/lib
 PY=$MODELS/venv-d/bin/python
 export MODE=prof

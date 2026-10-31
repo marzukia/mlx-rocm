@@ -2,7 +2,7 @@
 # Step 0 (method-correction doc 2026-10-28, section 4): in-guest streaming-read
 # ceiling + runtime CU count. No model load.
 #
-# Usage (ON the build VM):  bash step0_run.sh
+# Usage (ON guest-a):  bash step0_run.sh
 #   env: STEP0_NBYTES (default 4 GiB), STEP0_WARMUP (3), STEP0_ITERS (10),
 #        STEP0_OUT (default $MODELS/tmp/step0)
 #

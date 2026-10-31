@@ -32,7 +32,7 @@ static int g_fail = 0;
     }                                                                         \
   } while (0)
 
-// Independent scalar reference: f32 accumulation, k-major looperational order
+// Independent scalar reference: f32 accumulation, k-major loop order
 // (different order than the library's i-j-k reference).
 static void ref_scalar(const std::uint16_t *A, const std::uint16_t *B,
                        std::uint16_t *D, int m, int n, int k) {

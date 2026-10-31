@@ -42,33 +42,39 @@ Projection @93% (595.2 GB/s): 5.95 → 100.0; 5.63 → **105.8 tok/s** (full str
 
 qmlx-serve runs a 9B-class dense Qwen3 on the build VM (RX 9070 XT / gfx1201, ROCm 10.1),
 correctly, at usable decode speed. MTP, disk KV, 27B+/9B-hybrid = Phase 2.
+Living plan. Full research report: [docs/plan.md](docs/plan.md) (run-386, 2026-10-25).
+
+## Definition of minimum
+
+qmlx-serve runs a 9B-class dense Qwen3 on guest-a (RX 9070 XT / gfx1201, ROCm 10.1),
+correctly, at usable decode speed. MTP, disk KV, 27B+/122B-hybrid = Phase 2.
 
 **ROCm version (single source of truth, 2026-10-26):** the verified guest toolchain on
-the build VM is **ROCm 10.1** (core at `/opt/rocm/core-10.1`,
+guest-a is **ROCm 10.1** (core at `/opt/rocm/core-10.1`,
 `CMAKE_PREFIX_PATH=/opt/rocm/core-10.1`, `amdrocm-*-dev10.1` packages; see
 docs/quickstart.md). Nothing else is verified: 6.4 was the early probe validation and
 7.7 the original target — both are historical, not the verified toolchain.
 
 ## Current state (2026-10-25)
 
-- Research done (an earlier research pass): the backend is ~90% done in an open community
-  MLX ROCm backend PR; the vendored tree is a forward-merge of that base.
+- Research done (the earlier research pass): the backend is a complete, actively
+  maintained ROCm base; newer forward-merge of the vendor ref.
   Effort: 2.5-5 person-weeks for the minimum (Phase 0+1).
-- The build VM is UP (RX 9070 XT; userland ROCm 10.1 — the only verified toolchain).
-  The MVP is being built on the build VM (smoke unblocked).
+- guest-a is UP (RX 9070 XT; guest userland ROCm 10.1 — the only verified toolchain).
+  submitter is building the MVP on the guest-a guest VM (smoke unblocked, relayed to submitter).
 - Repo bootstrapped: hermetic CI (lint/format/pytest/size gate), vendor pin, build +
-  smoke scripts. GPU validation still to be done on the build VM.
+  smoke scripts. GPU validation still to be done on guest-a.
 
 ## Phases
 
 ### Phase 0 — Adopt + build + smoke (0.5-1 person-week)
 1. Clone the pinned primary (vendor.json), build the wheel:
    `CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=OpenBLAS"`.
-2. On the build VM: `mx.rocm.is_available()` true, matmul/softmax correct, Qwen3-0.6B (bf16 + 8bit)
+2. On guest-a: `mx.rocm.is_available()` true, matmul/softmax correct, Qwen3-0.6B (bf16 + 8bit)
    generates sane text. (`scripts/smoke.py`)
 - **Exit criteria:** is_available()==True; numerics correct; 0.6B sane.
-- **Gate:** if primary (the vendor ref) does not build clean on ROCm 10.1, fall back to
-  the vendor ref and record why (docs/plan.md open question 1).
+- **Gate:** if primary (rocm-current) does not build clean on ROCm 10.1, fall back to
+  the ROCm base and record why (docs/plan.md open question 1).
 
 ### Phase 1 — Validate gfx1201 + qmlx-serve minimum (1-2 person-weeks)
 1. QMM 4bit on gfx1201 (Rdna4 tier + WMMA dense qmm) vs CPU numerics.
@@ -87,8 +93,8 @@ stream-TLS fix), disk KV cache validation. Details in docs/plan.md §Phase 2.
 
 ## Open questions (operator's call)
 
-1. Base: the vendor ref (preferred) vs the vendor ref (fallback) — resolved by Phase 0 build.
-2. Wheel vs source: source-on-the build VM for now; PyPI wheel (`mlx-rocm` name slot already held
+1. Base: rocm-current (preferred) vs rocm-support (fallback) — resolved by Phase 0 build.
+2. Wheel vs source: source-on-guest-a for now; PyPI wheel (`mlx-rocm` name slot already held
    by us) is a Phase 2+ concern.
 3. fp8 default: `MLX_ROCM_GEMM_BF16=1` until the gfx1201 fp8 prefill is proven clean on 10.1.
 4. MTP: Phase 2, strictly (M3 stream-TLS fix blocks it either way).

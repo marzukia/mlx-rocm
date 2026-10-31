@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""an earlier run BENCH: AR / MTP K=1 / MTP K=2 tok/s at a 14-token AND a 29K prompt,
-WARMUP FIRST, on the lane wheel (t29k/venv-m8, .so de6de5f154c0).
+"""run-1014 BENCH: AR / MTP K=1 / MTP K=2 tok/s at a 14-token AND a 29K prompt,
+WARMUP FIRST, on the lane wheel (run-1012-29k/venv-m8, .so de6de5f154c0).
 
 Harness = the mtp-bench5.py MTP flow (mode 0 = AR greedy, mode 2 = K=1 batched
 S=2 verify, mode 3 = K=2 batched S=3 verify; draft chain / reject rollbacks
-verbatim from mtp-bench5) + the t29k.py deterministic 29K prompt (fixed
+verbatim from mtp-bench5) + the run-1012-29k.py deterministic 29K prompt (fixed
 1264-char corpus tiled, truncated to exactly T29K_TARGET tokens) and chunked
 prefill (T29K_CHUNK=1024; for the 14-token prompt the chunk == the whole
 prompt, i.e. single-pass prefill - the stock mtp-bench3/5 flow).
@@ -15,7 +15,7 @@ so kernels / hipBLASLt heuristic selection / L2 / KV allocation are steady
 before measurement. Warm numbers are logged separately (WARM line).
 
 Steady-state window: the first T14_SKIP (default 56) decode iterations are
-excluded from the window tok/s (same convention as an earlier run: steps 57-256). For
+excluded from the window tok/s (same convention as run-1012: steps 57-256). For
 MTP modes each iteration is a single-token (draft) step or a verify step
 (emits 1-3 tokens); window tok/s = tokens emitted inside the window / window
 wall-time (iteration-based, documented in the report).
@@ -51,7 +51,7 @@ PROMPT_14 = (
     "hardware components to the operating system, covering every "
     "subsystem. Be exhaustive."
 )
-# an earlier run's fixed corpus (byte-identical), tiled + truncated to TARGET tokens.
+# run-1012's fixed corpus (byte-identical), tiled + truncated to TARGET tokens.
 CORPUS = (
     "A modern smartphone is a small general-purpose computer. Its main processor "
     "and graphics run on a system-on-chip, with the CPU cores, GPU, and neural "

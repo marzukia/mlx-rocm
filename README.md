@@ -1,6 +1,6 @@
 # mlx-rocm
 
-ROCm backend for [MLX](https://github.com/ml-explore/mlx) — **pre-alpha**
+ROCm backend for [MLX](https://github.com/mlx-project/mlx) — **pre-alpha**
 (first public release 0.1.0).
 
 Purpose: a ROCm backend for MLX on AMD RDNA4 — validated on the RX 9070 XT
@@ -21,18 +21,19 @@ target — neither is the verified version).
 
 Three pieces:
 
-1. **`vendor/mlx-rocm-upstream/`** — the vendored ROCm backend tree: a
-   complete `mlx/backend/rocm/` mirroring the CUDA backend file-for-file
-   (GatedDeltaUpdate fallback, mxfp8 prefill GEMM, gfx1200/RDNA4 fixes).
-   MIT licensed (`LICENSE.upstream`).
+1. **`vendor/mlx-rocm-upstream/`** — the vendored ROCm backend tree. The
+   ROCm base already carries a complete `mlx/backend/rocm/` mirroring the
+   CUDA backend file-for-file; we vendor the newer forward-merge of the
+   vendor ref (adds GatedDeltaUpdate fallback, mxfp8 prefill GEMM,
+   gfx1200/RDNA4 fixes). Provenance: `vendor/mlx-rocm-upstream/README.md`.
 2. **`src/cpp/mlx_rocm/gemm/`** — a minimal standalone hipBLASLt GEMM
    (bf16 + fp8 e4m3, persistent handle + workspace, heuristic algo,
    row-major layouts) plus a dependency-free CPU reference GEMM.
    Modeled on the fork's `gemms/hipblaslt_gemm.cpp`.
 3. **`scripts/smoke.sh`** — builds the GEMM, runs a small GEMM on the
    build host (host-a, CPU reference), then rsyncs the tree to
-   the build VM (`ssh operator@<tailnet-ip>`), builds it against local
-   ROCm, and runs the GPU GEMM + fp8 probe there (the build VM phase budgeted
+   guest-a (`ssh operator@<tailnet-ip>`), builds it against local
+   ROCm, and runs the GPU GEMM + fp8 probe there (guest-a phase budgeted
    ~120 s; failures are recorded, not fatal).
 
 ## gfx1201 notes
@@ -42,10 +43,11 @@ Three pieces:
   its own QMV/QMM crossover tuning and the WMMA dense-qmm allowlist.
 - **fp8 GEMM status on this box**: the smoke's
   `mlx_rocm_gemm_fp8_probe()` (256³ e4m3 GEMM vs. host reference)
-  **passes** on the build VM gfx1201 (max_rel_err 0.0057, 0/65536 bad) — the
-  probe shows no driver bug. The ROCm base notes fp8 e4m3 activation GEMM
+  **passes** on guest-a gfx1201 (max_rel_err 0.0057, 0/65536 bad) — the
+  probe shows no driver bug. Upstream notes fp8 e4m3 activation GEMM
   "may be kernel-buggy on some RDNA4 drivers — long-context prefill on
-  gfx1201 garbles" (seen on a different workload). Keep `MLX_ROCM_GEMM_BF16=1` as the safe default until real
+  gfx1201 garbles" (run-386 evidence, a different workload than this
+  probe). Keep `MLX_ROCM_GEMM_BF16=1` as the safe default until real
   prefill validation proves the driver clean for that workload. The
   probe is part of the smoke run.
 - Discrete-GPU allocator hazards the fork engineered around (BAR read
@@ -61,7 +63,7 @@ cmake -S . -B build && cmake --build build
 ./build/gemm_smoke host
 ```
 
-With ROCm (gfx1201 box, e.g. the the build VM guest — see `docs/quickstart.md`):
+With ROCm (gfx1201 box, e.g. the guest-a guest — see `docs/quickstart.md`):
 
 ```
 cmake -S . -B build -DMLX_ROCM_WITH_HIP=ON -DCMAKE_PREFIX_PATH=/opt/rocm/core-10.1 \
@@ -151,11 +153,11 @@ MIT (MLX upstream license; see `LICENSE`).
 - `docs/quickstart.md` — the verified build + smoke path on a gfx1201 box.
 - `PLAN.md` — living plan (phases, current state, open questions).
 - `vendor.json` — the pinned vendor fork + ref (primary/fallback) and the build flags.
-- `scripts/build-wheel.sh` — build the `mlx` wheel with `-DMLX_BUILD_ROCM=ON` for gfx1201 (runs on the build VM).
+- `scripts/build-wheel.sh` — build the `mlx` wheel with `-DMLX_BUILD_ROCM=ON` for gfx1201 (runs on guest-a).
 - `scripts/smoke.py` — Phase 0 smoke: is_available, matmul/softmax numerics, 0.6B generate.
 - `scripts/smoke-serve.sh` — Phase 1 smoke: qmlx-serve with a 9B-class dense Qwen3.
 - `scripts/size_ratchet.py` + `size-ratchet.json` — deterministic size gate (CI).
-- `tests/` — hermetic tests (CI) + `@pytest.mark.gpu` tests (the build VM only).
+- `tests/` — hermetic tests (CI) + `@pytest.mark.gpu` tests (guest-a only).
 
 ## Commands
 
@@ -166,7 +168,7 @@ uv run pytest -m "not gpu"          # hermetic (CI)
 uv run python scripts/size_ratchet.py --base HEAD
 ```
 
-GPU commands run on the build VM (see AGENTS.md).
+GPU commands run on guest-a (see AGENTS.md).
 
 ## Rules
 

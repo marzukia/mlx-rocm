@@ -10,6 +10,8 @@
 #include "mlx/utils.h"
 
 #include <chrono>
+#include <sys/user.h>
+#include <sys/syscall.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -19,9 +21,12 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <dlfcn.h>
 #include <vector>
 
 namespace mlx::core::rocm {
+__global__ void g1b_noop();  // G1B (defined in copy.hip)
+
 
 // G1 root-cause instrumentation (defined below).
 extern long g1_trace_n;
@@ -74,6 +79,32 @@ std::atomic<long> g_inline_launches_{0};
 // (and a captured host node would re-fire on every replay). While capturing we
 // skip the host callback and signal completion inline instead (see Worker).
 std::atomic<bool> g_decode_capturing{false};
+std::atomic<int> g_decode_capture_slot{0};
+
+// G1X_OFF: env-gate the G1X deep copy (isolation test).
+static bool g1x_off() {
+  static const bool o = std::getenv("MLX_G1X_OFF") != nullptr;
+  return o;
+}
+// G1X: guarded 8-byte read of a pointer slot that may be unmapped
+// (stack garbage beyond the real arg count). Uses mincore to check
+// page presence without faulting (the sigaction/sigsetjmp guard was
+// not reliably catching the fault on ROCm 10.1 worker threads).
+static inline uint64_t g1x_safe_read8(void* v) {
+  if (!v)
+    return 0;
+  uintptr_t u = reinterpret_cast<uintptr_t>(v);
+  if (u < 0x10000000 || u >= 0x10000000000 || (u & 7))
+    return 0;
+  uintptr_t base = u & ~4095ULL;
+  bool second = (u - base) + 8 > 4095;
+  unsigned char pres[2] = {1, 1};
+  if (syscall(SYS_mincore, reinterpret_cast<void*>(base), second ? 8192 : 4096, pres) != 0)
+    return 0;
+  if (pres[0] == 0 || (second && pres[1] == 0))
+    return 0;
+  return *reinterpret_cast<uint64_t*>(v);
+}
 void set_current_prim(const char*) {}
 void record_inline_launch() {
   g_inline_launches_.fetch_add(1, std::memory_order_relaxed);
@@ -572,7 +603,8 @@ void CommandEncoder::add_kernel_node_raw(
     dim3 grid_dim,
     dim3 block_dim,
     uint32_t smem_bytes,
-    void** params) {
+    void** params,
+    bool persistent) {
   if (!use_hip_graphs()) {
     device_.make_current();
     // G1f: probe the capture status BEFORE the launch. If the stream is
@@ -591,6 +623,33 @@ void CommandEncoder::add_kernel_node_raw(
                 : "capture status unexpected",
             "pre-launch");
       }
+    }
+    // G1X: under decode stream capture the graph node keeps REFERENCING
+    // these arg slots, which live on the caller's stack (dead by replay).
+    // Copy the values (24-entry cap; kernels read only their own first
+    // narg entries) into a slot-owned persistent block. Entries beyond the
+    // real arg count may be unmapped stack garbage — guard the read.
+    if (g_decode_capturing.load(std::memory_order_relaxed) && params &&
+        !persistent && !g1x_off()) {
+      constexpr int G1X_CAP = 24;
+      auto blk = decode_capture_persist_alloc(2 * G1X_CAP * 8);
+      auto* vals = reinterpret_cast<uint64_t*>(blk);
+      auto* ptrs =
+          reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(blk) +
+                                  G1X_CAP * 8);
+      for (int a = 0; a < G1X_CAP; ++a) {
+        void* v = params[a];
+        uint64_t rv = 0;
+        if (v) {
+          uintptr_t u = reinterpret_cast<uintptr_t>(v);
+          if (u >= 0x10000000 && u < 0x10000000000 && (u % 8) == 0) {
+            rv = g1x_safe_read8(v);
+          }
+        }
+        vals[a] = rv;
+        ptrs[a] = &vals[a];
+      }
+      params = ptrs;
     }
     hipError_t le = hipLaunchKernel(
         func, grid_dim, block_dim, params, smem_bytes, stream_);
@@ -732,6 +791,29 @@ void CommandEncoder::add_module_kernel_node(
     std::shared_ptr<void> args_keepalive) {
   if (!use_hip_graphs()) {
     device_.make_current();
+    // G1X: same dangling-arg problem as add_kernel_node_raw — persist the
+    // arg values when the caller did not already keep them alive.
+    void* g1x_params = params;
+    if (g_decode_capturing.load(std::memory_order_relaxed) && params &&
+        !args_keepalive && !g1x_off()) {
+      constexpr int G1X_CAP = 24;
+      auto blk = decode_capture_persist_alloc(2 * G1X_CAP * 8);
+      auto* vals = reinterpret_cast<uint64_t*>(blk);
+      auto* ptrs = reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(blk) + G1X_CAP * 8);
+      for (int a = 0; a < G1X_CAP; ++a) {
+        void* v = params[a];
+        uint64_t rv = 0;
+        if (v) {
+          uintptr_t u = reinterpret_cast<uintptr_t>(v);
+          if (u >= 0x10000000 && u < 0x10000000000 && (u % 8) == 0) {
+            rv = g1x_safe_read8(v);
+          }
+        }
+        vals[a] = rv;
+        ptrs[a] = &vals[a];
+      }
+      g1x_params = ptrs;
+    }
     CHECK_HIP_ERROR(hipModuleLaunchKernel(
         reinterpret_cast<hipFunction_t>(func),
         grid_dim.x,
@@ -742,7 +824,7 @@ void CommandEncoder::add_module_kernel_node(
         block_dim.z,
         smem_bytes,
         stream_,
-        params,
+        reinterpret_cast<void**>(g1x_params),
         nullptr));
     node_count_++;
     return;
@@ -753,7 +835,14 @@ void CommandEncoder::add_module_kernel_node(
   if (args_keepalive) {
     graph_node_args_.push_back(std::move(args_keepalive));
   }
-  add_kernel_node_raw(func, grid_dim, block_dim, smem_bytes, params);
+  add_kernel_node_raw(
+      func,
+      grid_dim,
+      block_dim,
+      smem_bytes,
+      params,
+      /*persistent=*/args_keepalive != nullptr ||
+          g_decode_capturing.load(std::memory_order_relaxed));
 }
 
 void CommandEncoder::add_child_graph_node(
@@ -1070,7 +1159,24 @@ static void g1_prewarm_rocblas(Device& dev, hipStream_t stream) {
 // pointers stay valid; per-token input/position/GDN-state are injected into
 // those fixed buffers before each relaunch.
 
-bool CommandEncoder::decode_capture_begin() {
+void* CommandEncoder::decode_capture_persist_alloc(size_t n) {
+  int slot = g_decode_capture_slot.load(std::memory_order_relaxed) & 1;
+  if (slot < 0 || slot > 1)
+    slot = 0;
+  auto blk = std::make_shared<std::vector<uint8_t>>(n + 128);
+  decode_cap_keepalive_[slot].push_back(blk);
+  return blk->data();
+}
+
+void CommandEncoder::decode_capture_keep(std::shared_ptr<void> p) {
+  int slot = g_decode_capture_slot.load(std::memory_order_relaxed) & 1;
+  if (slot < 0 || slot > 1)
+    slot = 0;
+  decode_cap_keepalive_[slot].push_back(std::move(p));
+}
+
+bool CommandEncoder::decode_capture_begin(int slot) {
+  g_decode_capture_slot.store(slot, std::memory_order_relaxed);
   device_.make_current();
   // Defensive: if a prior capture was left open (e.g., a failed step), end
   // and discard it first, or every later op records into it and never runs.
@@ -1204,6 +1310,172 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
   size_t nn = 0;
   hipError_t gn = hipGraphGetNodes(g, nullptr, &nn);
   g1_check_hip("hipGraphGetNodes", gn, "end");
+
+  // MLX_G1_NODEDUMP: dump every node's baked device pointers so a faulting
+  // address can be attributed to a recorded op.
+  if (std::getenv("MLX_G1_NODEDUMP")) {
+    auto& al = rocm::allocator();
+    void* ab = al.decode_arena_base_ptr();
+    fprintf(stderr,
+            "[nd] arena base=%p cap=%zu hw=%zu off=%zu\n",
+            ab, al.decode_arena_capacity(), al.decode_arena_high_water(),
+            al.decode_arena_offset());
+    std::vector<hipGraphNode_t> nodes(nn);
+    if (hipGraphGetNodes(g, nodes.data(), &nn) == hipSuccess) {
+      for (size_t i = 0; i < nn; ++i) {
+        hipGraphNodeType ty;
+        if (hipGraphNodeGetType(nodes[i], &ty) != hipSuccess)
+          continue;
+        if (ty == hipGraphNodeTypeKernel) {
+          hipKernelNodeParams kp;
+          if (hipGraphKernelNodeGetParams(nodes[i], &kp) != hipSuccess)
+            continue;
+          fprintf(stderr,
+                  "[nd] K%zu func=%p grid=[%u,%u,%u]\n",
+                  i, static_cast<void*>(kp.func), kp.gridDim.x, kp.gridDim.y,
+                  kp.gridDim.z);
+          // Name the kernel so the faulting node can be found without
+          // guessing arg counts.
+          char buf[256];
+          int nl = snprintf(
+              buf, sizeof(buf), "%p", kp.func);
+          (void)nl;
+          Dl_info di;
+          bool named = (dladdr(kp.func, &di) != 0);
+          const char* nm = named ? di.dli_sname : "?";
+          bool is_gather =
+              named && strstr(nm, "gather_rows_kernel") != nullptr;
+          if (is_gather) {
+            fprintf(stderr, "[nd] G%zu %s\n", i, nm);
+          } else {
+            fprintf(stderr, "[nd] K%zu %s\n", i, nm);
+          }
+          if (kp.kernelParams) {
+            auto** kparr = static_cast<void**>(kp.kernelParams);
+            int maxa = 8;
+            for (int a = 0; a < maxa; ++a) {
+              void* v = kparr[a];
+              if (!v)
+                continue;
+              bool safe =
+                  reinterpret_cast<uintptr_t>(v) >= 0x10000000 &&
+                  reinterpret_cast<uintptr_t>(v) < 0x10000000000 &&
+                  reinterpret_cast<uintptr_t>(v) % 8 == 0;
+              if (safe) {
+                fprintf(stderr,
+                        "[nd]  kp[%d]=%p u64=%016llx\n",
+                        a, v, (unsigned long long)g1x_safe_read8(v));
+              } else {
+                fprintf(stderr, "[nd]  kp[%d]=%p (oob)\n", a, v);
+              }
+            }
+            if (named && strstr(nm, "copy_g_byval") != nullptr) {
+              // args 3 = shape (40B), 4 = strides (80B): dump fully.
+              for (int a = 3; a <= 4; ++a) {
+                void* v = kparr[a];
+                if (!v)
+                  continue;
+                fprintf(stderr, "[nd]  struct arg %d: ", a);
+                auto* bytes = reinterpret_cast<uint8_t*>(v);
+                size_t nbytes = (a == 3) ? 40 : 80;
+                for (size_t b = 0; b < nbytes; b += 8) {
+                  fprintf(stderr, "%016llx ",
+                          (unsigned long long)g1x_safe_read8(
+                              reinterpret_cast<void*>(
+                                  reinterpret_cast<uint8_t*>(v) + b)));
+                }
+                fprintf(stderr, "\n");
+              }
+            }
+            if (is_gather) {
+              // args 2..5 are always valid for gather_rows_kernel
+              for (int a = 1; a < 6; ++a) {
+                void* v = kparr[a];
+                if (!v)
+                  continue;
+                fprintf(stderr,
+                        "[nd]  kp[%d]=%p u64=%016llx\n",
+                        a, v, (unsigned long long)*(uint64_t*)v);
+              }
+            }
+          }
+        } else if (ty == hipGraphNodeTypeMemcpy) {
+          hipMemcpy3DParms mp;
+          if (hipGraphMemcpyNodeGetParams(nodes[i], &mp) == hipSuccess) {
+            fprintf(stderr,
+                    "[nd] M%zu %p(%zu) -> %p(%zu) kind=%d\n",
+                    i, mp.srcPtr.ptr, mp.srcPtr.xsize, mp.dstPtr.ptr,
+                    mp.dstPtr.xsize, (int)mp.kind);
+          }
+        }
+      }
+    }
+  }
+  // VA-range map: attribute every distinct device pointer in the graph to a
+  // [base, base+size) allocation so a faulting address can be located.
+  if (std::getenv("MLX_G1_NODEDUMP")) {
+    auto& al = rocm::allocator();
+    std::vector<void*> ptrs;
+    if (al.decode_arena_base_ptr())
+      ptrs.push_back(al.decode_arena_base_ptr());
+    size_t nn2 = nn;
+    std::vector<hipGraphNode_t> nodes2(nn2);
+    if (hipGraphGetNodes(g, nodes2.data(), &nn2) == hipSuccess) {
+      for (size_t i = 0; i < nn2; ++i) {
+        hipGraphNodeType ty;
+        if (hipGraphNodeGetType(nodes2[i], &ty) != hipSuccess)
+          continue;
+        if (ty == hipGraphNodeTypeKernel) {
+          hipKernelNodeParams kp;
+          if (hipGraphKernelNodeGetParams(nodes2[i], &kp) != hipSuccess)
+            continue;
+          if (!kp.kernelParams)
+            continue;
+          auto** kparr = static_cast<void**>(kp.kernelParams);
+          for (int a = 0; a < 6; ++a) {
+            void* v = kparr[a];
+            if (v && (reinterpret_cast<uintptr_t>(v) < 0x10000000 ||
+                     reinterpret_cast<uintptr_t>(v) >= 0x10000000000)) {
+              v = nullptr;
+            }
+            if (!v)
+              continue;
+            uint64_t val = 0;
+            if (reinterpret_cast<uintptr_t>(v) >= 0x100000000000ULL) {
+              val = *(uint64_t*)v;
+            }
+            if (val > 0x100000000000ULL) {
+              bool seen = false;
+              for (auto& e : ptrs) {
+                if (e == (void*)val) {
+                  seen = true;
+                  break;
+                }
+              }
+              if (!seen)
+                ptrs.push_back((void*)val);
+            }
+          }
+        } else if (ty == hipGraphNodeTypeMemcpy) {
+          hipMemcpy3DParms mp;
+          if (hipGraphMemcpyNodeGetParams(nodes2[i], &mp) == hipSuccess) {
+            if ((uint64_t)mp.srcPtr.ptr > 0x100000000000ULL)
+              ptrs.push_back(mp.srcPtr.ptr);
+            if ((uint64_t)mp.dstPtr.ptr > 0x100000000000ULL)
+              ptrs.push_back(mp.dstPtr.ptr);
+          }
+        }
+      }
+    }
+    for (auto* v : ptrs) {
+      void* base = nullptr;
+      size_t sz = 0;
+      hipError_t e = hipMemGetAddressRange(&base, &sz, v);
+      fprintf(stderr,
+              "[ndr] %p range=[%p, +%zu) err=%d\n",
+              v, base, sz, (int)e);
+    }
+  }
   if (dbg) {
     fprintf(stderr, "[cap] captured %zu nodes\n", nn);
     std::vector<hipGraphNode_t> nodes(nn);
@@ -1291,13 +1563,104 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
       (void)hipGraphDestroy(decode_cap_graph_[slot]);
     decode_cap_graph_[slot] = g;
   }
+  // G1B: bisection — with MLX_G1_BISECT=N, re-point every kernel node
+  // after the first N (hipGraphGetNodes order) at a no-op kernel so a
+  // minimal faulting node range can be located. Diagnostic only.
+  if (const char* be = std::getenv("MLX_G1_BISECT"); be) {
+    int keep = std::atoi(be);
+    if (keep > 0 && (size_t)keep < nn) {
+      size_t qn = nn;
+      std::vector<hipGraphNode_t> bn(nn);
+      if (hipGraphGetNodes(g, bn.data(), &qn) == hipSuccess) {
+        int neutralized = 0;
+        // G1B2: node-type histogram (memset nodes are invisible to [nd]
+        // dumps and G1B neutralized kernels only).
+        int nt_k = 0, nt_m = 0, nt_ms = 0, nt_o = 0;
+        for (size_t i = 0; i < qn; i++) {
+          hipGraphNodeType ty = (hipGraphNodeType)0;
+          if (hipGraphNodeGetType(bn[i], &ty) != hipSuccess)
+            continue;
+          if (ty == hipGraphNodeTypeKernel) nt_k++;
+          else if (ty == hipGraphNodeTypeMemcpy) nt_m++;
+          else if (ty == hipGraphNodeTypeMemset) nt_ms++;
+          else nt_o++;
+        }
+        static int g1b2_prints = 0;
+        if (g1b2_prints++ < 12)
+          fprintf(stderr,
+                  "[g1b] types: kernel=%d memcpy=%d memset=%d other=%d "
+                  "ms_off=%d\n",
+                  nt_k, nt_m, nt_ms, nt_o,
+                  (int)(std::getenv("MLX_G1_BISECT_MS") != nullptr));
+        fflush(stderr);
+        if (const char* bms = std::getenv("MLX_G1_BISECT_MS");
+            bms && bms[0] == '1') {
+          for (size_t i = 0; i < qn; i++) {
+            hipGraphNode_t nd = bn[i];
+            hipGraphNodeType ty = (hipGraphNodeType)0;
+            if (hipGraphNodeGetType(nd, &ty) != hipSuccess ||
+                ty != hipGraphNodeTypeMemset)
+              continue;
+            hipMemsetParams mp = {};
+            if (hipGraphMemsetNodeGetParams(nd, &mp) == hipSuccess) {
+              mp.width = 1;
+              mp.value = 0;
+              (void)hipGraphExecMemsetNodeSetParams(decode_cap_exec_[slot],
+                                                  nd, &mp);
+            } else {
+              (void)hipGetLastError();
+            }
+          }
+        }
+        for (size_t i = qn; i > (size_t)keep; i--) {
+          hipGraphNode_t nd = bn[i - 1];
+          hipGraphNodeType ty;
+          if (hipGraphNodeGetType(nd, &ty) != hipSuccess ||
+              ty != hipGraphNodeTypeKernel) {
+            continue;
+          }
+          hipKernelNodeParams kp;
+          if (hipGraphKernelNodeGetParams(nd, &kp) != hipSuccess) {
+            (void)hipGetLastError();
+            continue;
+          }
+          kp.func = (void*)g1b_noop;
+          kp.gridDim = dim3(1, 1, 1);
+          kp.blockDim = dim3(1, 1, 1);
+          kp.sharedMemBytes = 0;
+          (void)hipGraphExecKernelNodeSetParams(decode_cap_exec_[slot], nd,
+                                              &kp);
+          neutralized++;
+        }
+        fprintf(stderr,
+                "[g1b] bisect: keeping first %d of %zu nodes, neutralized "
+                "%d\n",
+                keep,
+                qn,
+                neutralized);
+        fflush(stderr);
+      }
+    }
+  }
   // Stream capture records WITHOUT executing — run the exec once to actually
   // compute the record token's logits/state.
-  hipError_t lt = hipGraphLaunch(decode_cap_exec_[slot], stream_);
-  g1_check_hip("hipGraphLaunch (end_record)", lt, "launch");
-  if (lt != hipSuccess)
-    check_hip_error("hipGraphLaunch(decode_cap_exec_[slot], stream_)", lt);
-  worker_->commit(stream_);
+  if (std::getenv("MLX_G1_NO_LAUNCH")) {
+    fprintf(stderr, "[g1n] NO_LAUNCH: skipping hipGraphLaunch (slot %d)\n", slot);
+    fflush(stderr);
+  } else {
+    hipError_t lt = hipGraphLaunch(decode_cap_exec_[slot], stream_);
+    g1_check_hip("hipGraphLaunch (end_record)", lt, "launch");
+    if (lt != hipSuccess)
+      check_hip_error("hipGraphLaunch(decode_cap_exec_[slot], stream_)", lt);
+    if (std::getenv("MLX_G1_NO_COMMIT")) {
+      fprintf(stderr,
+              "[g1n] NO_COMMIT: skipping worker commit (slot %d)\n",
+              slot);
+      fflush(stderr);
+    } else {
+      worker_->commit(stream_);
+    }
+  }
   g1_first_error_summary("end_record:success");
   return true;
 }
@@ -1316,6 +1679,7 @@ void CommandEncoder::decode_capture_destroy() {
   for (int s = 0; s < 2; ++s) {
     if (decode_cap_exec_[s]) {
       (void)hipGraphExecDestroy(decode_cap_exec_[s]);      decode_cap_exec_[s] = nullptr;
+      decode_cap_keepalive_[s].clear();
     }
     if (decode_cap_graph_[s]) {
       (void)hipGraphDestroy(decode_cap_graph_[s]);
@@ -1529,7 +1893,7 @@ void CommandEncoder::synchronize() {
   f.wait();
   (void)hipStreamSynchronize(stream_);
   // Stream is fully drained. Non-cached (no-reuse) execs reference these Packs
-  // until now; cached-exec Packs live in their ExecSlot  and are NOT
+  // until now; cached-exec Packs live in their ExecSlot (clr#138) and are NOT
   // in these vectors, so clearing here is safe.
   graph_node_args_.clear();
   graph_node_args_prev_.clear();
@@ -1626,7 +1990,7 @@ long decode_inline_launch_count() {
 // Full decode-step stream-capture bridge.
 bool decode_capture_begin() {
   return rocm::get_command_encoder(default_stream(default_device()))
-      .decode_capture_begin();
+      .decode_capture_begin(0);
 }
 bool decode_capture_end_record(int slot) {
   return rocm::get_command_encoder(default_stream(default_device()))

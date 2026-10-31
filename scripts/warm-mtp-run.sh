@@ -1,19 +1,19 @@
 #!/bin/bash
-# an earlier run K2 k_proj T-invariance: probes + gates + bench, lane wheel
-# (t29k/venv-m8, libmlx.so sha256[:12]=de6de5f154c0).
+# run-1014 K2 k_proj T-invariance: probes + gates + bench, lane wheel
+# (run-1012-29k/venv-m8, libmlx.so sha256[:12]=de6de5f154c0).
 #
 # 1. gate (a): direct k_proj T-invariance probe (D1 model QMM k_proj,
 #    D1b q/v control, D2 plain matmul (P3 audit direct test), D3 determinism)
 # 2. in-flow audit probe (m8-kproj-flowprobe.py, fork @ verify idx 47)
 # 3. gate (b): G4 5-arm (mtp-bench3.py, 1024 tokens, 14-token prompt)
 # 4. K=2 byte-identical @ 14-token prompt (mtp-bench5.py: AR 2048 vs K=2)
-# 5. bench: 14-token prompt (an earlier run warm harness, 1024 tokens, warmup-first)
-# 6. bench: 29K prompt (t29k.py AR unmodified; an earlier run warm harness K=1/K=2)
+# 5. bench: 14-token prompt (run-1014 warm harness, 1024 tokens, warmup-first)
+# 6. bench: 29K prompt (run-1012-29k.py AR unmodified; run-1014 warm harness K=1/K=2)
 # 7. K=2 byte-identical @ 29K (512 tokens, warmoff)
 set -u
 MODELS="${MODELS:-/models}"
-PY=$MODELS/tmp/t29k/venv-m8/bin/python
-D=$MODELS/tmp/an earlier run
+PY=$MODELS/tmp/run-1012-29k/venv-m8/bin/python
+D=$MODELS/tmp/run-1014
 LOCK=$MODELS/gpu-bench.lock
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib:/opt/rocm/lib
 LDP="env LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
@@ -25,7 +25,7 @@ run() { # $1=tag $2...=cmd
 
 echo "START $(date -u +%FT%TZ)" >> $D/run.log
 $PY -c "import mlx.core as mx; print('IMPORT-OK', mx.__file__)" >> $D/import.log 2>&1
-sha256sum $MODELS/tmp/t29k/venv-m8/lib/python3.12/site-packages/mlx/lib/libmlx.so >> $D/import.log
+sha256sum $MODELS/tmp/run-1012-29k/venv-m8/lib/python3.12/site-packages/mlx/lib/libmlx.so >> $D/import.log
 free -g >> $D/import.log
 
 # 1) gate (a)
@@ -65,7 +65,7 @@ def cmp(name, a, b):
     else:
         print(f"{name}: MATCH n={n}")
 
-D = f"{MODELS}/tmp/an earlier run"
+D = f"{MODELS}/tmp/run-1014"
 s0 = get_stream(f"{D}/m0.out")
 s1 = get_stream(f"{D}/m1.out")
 sa = get_stream(f"{D}/m2a.out")
@@ -96,8 +96,8 @@ def toks(p):
                 return line.split(None, 1)[1].split()
     return []
 
-ar = toks(f"{MODELS}/tmp/an earlier run/ar2048.out")
-m3 = toks(f"{MODELS}/tmp/an earlier run/m3-14tok.out")
+ar = toks(f"{MODELS}/tmp/run-1014/ar2048.out")
+m3 = toks(f"{MODELS}/tmp/run-1014/m3-14tok.out")
 n = len(m3)
 ok = ar[:n] == m3
 first = next((i for i in range(min(len(ar), n)) if ar[i] != m3[i]), None)
@@ -107,22 +107,22 @@ grep -h "MTP=3\|MTP=0" $D/ar2048.out $D/m3-14tok.out | sed 's/^/bench: /' >> $D/
 
 # 5) bench @ 14-token prompt (warmup-first)
 for m in 0 2 3; do
-  flock -w 3600 $LOCK env MLX_MTP=$m T14_MAX_TOKENS=1024 $PY $D/an earlier run-warm-mtp-bench.py > $D/bench14-m$m.out 2>&1
+  flock -w 3600 $LOCK env MLX_MTP=$m T14_MAX_TOKENS=1024 $PY $D/run-1014-warm-mtp-bench.py > $D/bench14-m$m.out 2>&1
   echo "rc=$? bench14-m$m $(date -u +%T)" >> $D/run.log
 done
 
-# 6) bench @ 29K (AR = t29k.py UNMODIFIED; K=1/K=2 = an earlier run warm harness)
-flock -w 3600 $LOCK $LDP $PY $MODELS/tmp/t29k/t29k.py > $D/ar29k-an earlier run.out 2>&1
-echo "rc=$? ar29k-an earlier run $(date -u +%T)" >> $D/run.log
+# 6) bench @ 29K (AR = run-1012-29k.py UNMODIFIED; K=1/K=2 = run-1014 warm harness)
+flock -w 3600 $LOCK $LDP $PY $MODELS/tmp/run-1012-29k/run-1012-29k.py > $D/ar29k-run-1012.out 2>&1
+echo "rc=$? ar29k-run-1012 $(date -u +%T)" >> $D/run.log
 for m in 2 3; do
-  flock -w 3600 $LOCK env MLX_MTP=$m T29K_TARGET=29000 T14_MAX_TOKENS=256 $PY $D/an earlier run-warm-mtp-bench.py > $D/bench29k-m$m.out 2>&1
+  flock -w 3600 $LOCK env MLX_MTP=$m T29K_TARGET=29000 T14_MAX_TOKENS=256 $PY $D/run-1014-warm-mtp-bench.py > $D/bench29k-m$m.out 2>&1
   echo "rc=$? bench29k-m$m $(date -u +%T)" >> $D/run.log
 done
 
 # 7) K=2 byte-identical @ 29K (512 tokens, warmoff)
-flock -w 3600 $LOCK env MLX_MTP=0 T29K_TARGET=29000 T14_MAX_TOKENS=512 T14_WARM=0 $PY $D/an earlier run-warm-mtp-bench.py > $D/ar29k512.out 2>&1
+flock -w 3600 $LOCK env MLX_MTP=0 T29K_TARGET=29000 T14_MAX_TOKENS=512 T14_WARM=0 $PY $D/run-1014-warm-mtp-bench.py > $D/ar29k512.out 2>&1
 echo "rc=$? ar29k512 $(date -u +%T)" >> $D/run.log
-flock -w 3600 $LOCK env MLX_MTP=3 T29K_TARGET=29000 T14_MAX_TOKENS=512 T14_WARM=0 $PY $D/an earlier run-warm-mtp-bench.py > $D/m3-29k512.out 2>&1
+flock -w 3600 $LOCK env MLX_MTP=3 T29K_TARGET=29000 T14_MAX_TOKENS=512 T14_WARM=0 $PY $D/run-1014-warm-mtp-bench.py > $D/m3-29k512.out 2>&1
 echo "rc=$? m3-29k512 $(date -u +%T)" >> $D/run.log
 python3 - <<'EOF' >> $D/k2-29k-gate.log 2>&1
 import os
@@ -134,8 +134,8 @@ def toks(p):
                 return line.split(None, 1)[1].split()
     return []
 
-ar = toks(f"{MODELS}/tmp/an earlier run/ar29k512.out")
-m3 = toks(f"{MODELS}/tmp/an earlier run/m3-29k512.out")
+ar = toks(f"{MODELS}/tmp/run-1014/ar29k512.out")
+m3 = toks(f"{MODELS}/tmp/run-1014/m3-29k512.out")
 n = min(len(ar), len(m3))
 ok = ar[:n] == m3[:n]
 first = next((i for i in range(n) if ar[i] != m3[i]), None)

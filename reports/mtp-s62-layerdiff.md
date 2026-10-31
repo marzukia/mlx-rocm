@@ -1,13 +1,13 @@
 # m3: per-layer FULL-STATE diff at S62 — T=2 verify vs 2×T=1 (m2-vs-m0 mtp divergence)
 
-Date: 2026-10-29 (UTC). Run on the build VM (RX 9070 XT / gfx1201, ROCm 10.1 guest,
+Date: 2026-10-29 (UTC). Run on guest-a (RX 9070 XT / gfx1201, ROCm 10.1 guest,
 venv-d, model `/models/qwen3-9b-mlx`). Script: `scripts/diag-s62-layerdiff.py`
-(MODE=m3), guest log `/models/tmp/an earlier run/diag-m3.log`, captures
-`/models/tmp/an earlier run/cap-m3-s62.pkl`.
+(MODE=m3), guest log `/models/tmp/run-785/diag-m3.log`, captures
+`/models/tmp/run-785/cap-m3-s62.pkl`.
 
 ## What m3 does
 
-Extends the an earlier run m2 flow (same prompt, same 30-step m2 verify loop, same ARM
+Extends the run-809 m2 flow (same prompt, same 30-step m2 verify loop, same ARM
 condition). At the S62 arm it:
 
 1. snapshots the ENTIRE main-model cache (all 32 layers: ArraysCache conv/ssm/
@@ -26,7 +26,7 @@ part of the diff.
 
 ## Arm confirmation
 
-- ARM reached: `step=60 prev=279 draft=3545 n_out=61` — identical to the an earlier run m2
+- ARM reached: `step=60 prev=279 draft=3545 n_out=61` — identical to the run-809 m2
   run (out[-8:]=[3418, 424, 11, 567, 1902, 401, 7355, 279]).
 - All 8 attention layers at offset 87 (87 prior tokens + the arm's own token
   history), i.e. the pre-verify state is the 87-token history.
@@ -137,7 +137,7 @@ Chain of evidence:
    tokens are the same in A and B. The same induction holds up the stack: the
    input hidden states of GDN 0, 1, 2 are all the same, so their outputs are the
    same (deterministic layers), so the input to attention layer 3 is the same.
-   With the same input and (per an earlier run L1/L5) bit-exact GDN kernels/prep, GDN
+   With the same input and (per run-809 L1/L5) bit-exact GDN kernels/prep, GDN
    layers 0-2 being bit-exact is exactly what we see.
 3. **The input to GDN layer 4 differs.** GDN 4's conv state after 3545 is
    `[old_row2, qkv_279, qkv_3545]` and it DIVERGES (2059/24576, maxabs
@@ -163,7 +163,7 @@ Chain of evidence:
 
 The MTP draft module is not the suspect: its own cache is not touched by either
 variant, and the main-model state diverges before any draft-module involvement.
-The L15 q_norm paradox (an earlier run) is not implicated — layer 15's divergence is
+The L15 q_norm paradox (run-786) is not implicated — layer 15's divergence is
 downstream of layer 4.
 
 Magnitude: the input difference entering layer 4 is small (conv maxabs 1.6e-2 in
@@ -177,7 +177,7 @@ as final-logit divergence: 192967/248320 entries, maxabs 0.125.
 - First diverging layer (state): **4 (gdn conv+ssm)**; full cascade 4→31.
 - First diverging computation (root): **attention/SDPA output of layer 3 for the
   second token (3545) — 2-row causal SDPA (row 1) vs 1-row unmasked SDPA** —
-  i.e. the attention-family hypothesis (a) from an earlier run, refined: not the KV page
+  i.e. the attention-family hypothesis (a) from run-786, refined: not the KV page
   layout (k/v bit-exact), but the SDPA kernel's row-count/mask-path dependent
   computation for the second query row.
 - GDN computation: exonerated again (layers 0-3 bit-exact; layer 4 divergence is

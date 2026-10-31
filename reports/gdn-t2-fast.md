@@ -1,6 +1,6 @@
 # GDN T=2 fast: fix the non-linear S=2 verify cost (K=1 MTP spec-decode)
 
-Date: 2026-10-27 (guest UTC). Worker: kernel-perf (an earlier run). Machine: the build VM,
+Date: 2026-10-27 (guest UTC). Worker: kernel-perf (run-612). Machine: guest-a,
 RX 9070 XT / gfx1201, ROCm 10.1 guest userland. Model: /models/qwen3-9b-mlx
 (4bit, 9B GDN-hybrid = 24 GDN + 8 attention layers).
 

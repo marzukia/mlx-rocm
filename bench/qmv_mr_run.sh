@@ -3,7 +3,7 @@
 # gates + bench. GB/s from rocprofv3 kernel time + bytes moved (doc rule 2);
 # bit-exact gate (doc rule 4); effective config printed + asserted (doc rule 6).
 #
-# Usage (ON the build VM):  bash qmv_mr_run.sh <tag> <python>
+# Usage (ON guest-a):  bash qmv_mr_run.sh <tag> <python>
 #   tag    : ref (current wheel: bitexact ref + baseline bench + AR stream)
 #            new (new wheel: bitexact check + bench + AR stream)
 #   python : interpreter with the wheel under test on its path
