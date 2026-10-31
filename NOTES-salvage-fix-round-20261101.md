@@ -39,3 +39,24 @@ Fix: revert the item-1 delete; the arena path is a plain `return` again (1cf60ec
 - fp16_math.hpp: mirror carried a corrupted token `bfloarun-162float` -> restored to `bfloat162float` (matches fork 75ca881).
 - Guest build requires the fast files MERGED (fork base + our K2/K4, keeping GdnPrep/GdnNormGated) — the repo mirror's fast files lack the GdnPrep sections (pre-existing mirror incompleteness, ~280 lines, not fixed here).
 - Guest build must wipe the cmake binary dir + touch sources (incremental builds silently skip when git-archive mtimes predate existing .o files).
+
+## F7: K3 zero-slot idx redirect A/B (guest-a, t1100 wheel, 2026-11-01)
+
+Wheel built on guest-a from this branch (ae2c558 + the `rocm::` qualification fix below), fast files restored to the MERGED set (fork base + K2/K4, keeping GdnPrep/GdnNormGated), installed into venv-m8. Protocol: fresh process per run, `gpu-bench-inner.lock`, `LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib`, venv-m8 python; gates = gd-gate.py (120-tok, 56 steady-state tokens, ctx=14) and ggraph-probe.py (GPROBE_N=14 / 120).
+
+| run | env | result |
+|---|---|---|
+| eager 14-ctx | — | `321 279 18483 383 ...` sane, 0 HSA errors, RC=0 (byte-identical to t1097 eager) |
+| full probe N=120 | K3 on | 0 HSA errors, all 120 steps complete; ALLTOKS `271 8160 513 760 0 0 ...` (the dead-run attractor, as on t1097) |
+| 14-tok probe a | K3 on | `271 8160 513 760 0 0 ...`, 0 HSA errors |
+| 14-tok probe b | `MLX_GD_K3IDXOFF=1` | **HSA_STATUS_ERROR_MEMORY_FAULT in `gather_rows_kernel`** after STEP 3 (l0=nan) |
+| 14-tok probe c | `MLX_GD_K3OFF=1` | **HSA_STATUS_ERROR_MEMORY_FAULT** after STEP 2 |
+| gate14 a | K3 on | `321 279 18483 ...` sane, 0 HSA errors, RC=0 |
+| gate14 b | `MLX_GD_K3IDXOFF=1` | `271 x 56`, 0 HSA errors, RC=0 |
+| gate14 c | `MLX_GD_K3OFF=1` | `271 x 56`, 0 HSA errors, RC=0 |
+
+**Verdict: the zero-slot idx redirect is NOT the cause of the 271 attractor — it is a MASK for a pre-existing bad idx.** Disabling it (b) or all of K3 (c) is strictly worse: the short probe hard-faults in `gather_rows_kernel` (OOB read) and the 120-tok gate degenerates to a uniform 271 attractor instead of running sane. The bad idx is present with K3 fully off, so the root cause is upstream of the redirect — consistent with the t1097 RCA direction (stale replay input): at replay, these gathers' idx buffers hold invalid values and the in-graph per-step H2D does not refresh them. The 271 attractor on short graph runs is the downstream consequence of the redirect converting the would-be fault into a row-0 misread.
+
+**Recommendation: keep K3 (the redirect) as-is; do not change its semantics.** It is the less-bad behavior (no faults; the clean 120-tok gate passes with K3 on). Next RCA step: trace the faulting gather's idx provenance at replay (which buffer the gather reads vs which buffer the per-step H2D writes).
+
+**Build fix found by the t1100 build:** b8eae8e had introduced a latent compile error (`gd_k3_off()`/`gd_k3_idxoff()` used unqualified in global namespace while declared in `namespace mlx::core::rocm`) — never caught before because the b8eae8e-era tree was never compiled on the guest (last built wheel was the 3690886 era). Fixed by qualifying the two use sites (`rocm::gd_k3_off()`, `rocm::gd_k3_idxoff()`).

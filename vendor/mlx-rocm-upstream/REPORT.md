@@ -48,12 +48,20 @@ The fault family is cleared (no HSA_STATUS_ERROR in any run; 120/120 steps compl
 
 Two residual findings:
 
-1. **271-token degenerate attractor.** The 14-tok gate graph run degenerates to 271 x 56 while eager stays sane (321 279 18483 ...). It appears on the clean 1cf60ec wheel and on this branch's wheel; the K3 on/off A/B section below isolates its cause.
+1. **271-token degenerate attractor.** On the t1082 runs the 14-tok gate graph run degraded to 271 x 56 while eager stayed sane (321 279 18483 ...); the t1100 K3-on gate run was sane and the K3 on/off A/B section below isolates the behavior.
 2. **4096-tok gate OOM.** HBM full on the 16 GB guest; a resource issue, not correctness.
 
-## K3 on/off A/B (the 271-token attractor)
+## K3 on/off A/B (the 271-token attractor) — t1100, guest-a, 2026-11-01
 
-<placeholder — completed by the t1100 guest-a A/B run>
+Fresh wheel from this branch (fast files merged per the build note), venv-m8, fresh process per run, GPU-locked. 120-tok gate (56 steady-state tokens, ctx=14) + ggraph-probe (N=14 / 120):
+
+- **K3 on (default):** eager baseline sane (`321 279 18483 ...`, 0 HSA errors); 120-tok gate sane (`321 279 18483 ...`, 0 HSA errors, RC=0); full N=120 probe completes all steps with 0 HSA errors (degenerate `271 8160 513 760 0 0 ...`, as on t1097); 14-tok probe `271 8160 513 760 0 0 ...`, 0 HSA errors.
+- **`MLX_GD_K3IDXOFF=1` (zero-slot idx redirect off, out routing on):** 14-tok probe hard-faults — HSA_STATUS_ERROR_MEMORY_FAULT in `gather_rows_kernel` after step 3; 120-tok gate degenerates to `271 x 56` (no fault, RC=0).
+- **`MLX_GD_K3OFF=1` (fully pre-K3):** 14-tok probe hard-faults after step 2; 120-tok gate `271 x 56`.
+
+**Conclusion: the zero-slot idx redirect is not the cause of the 271 attractor — it masks a pre-existing bad idx.** With the redirect off (or K3 fully off), the same gathers fault (short run) or drive the long gate to a uniform 271 attractor; the bad idx is present with K3 fully off, so the root cause is upstream of the redirect (the t1097 stale-replay-input direction: the in-graph per-step H2D does not refresh these gathers' idx buffers at replay). The 271 attractor on short graph runs is the redirect converting a would-be OOB fault into a row-0 misread. **Recommendation: keep K3 as-is (it is the less-bad behavior and the clean 120-tok gate passes with it); next RCA step = trace the faulting gather's idx provenance at replay.**
+
+**Build note (t1100):** the first t1100 compile exposed a latent name-resolution error introduced in the b8eae8e salvage (`gd_k3_off()`/`gd_k3_idxoff()` used unqualified in global namespace while declared in `namespace mlx::core::rocm`); fixed by qualifying the two use sites.
 
 ## Disposition
 
