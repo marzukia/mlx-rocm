@@ -88,6 +88,7 @@ struct GraphDecodePilot {
   std::string step_first_name;  // first op name of this step
   std::vector<std::string> ref_names;     // captured step's op-name sequence
   std::vector<std::string> capture_names;  // names recorded during a capture
+  void* capture_slot_data[5]{nullptr};  // slot VAs baked into the exec
   enum class Kind { Eager, Capture, Replay };
   Kind step_kind{Kind::Eager};
   bool step_diverged{false}; // op sequence diverged from the capture
@@ -249,6 +250,28 @@ bool gd_step_prepare(GraphDecodePilot& p, Stream s) {
   }
   (void)rocm::allocator().decode_zero_slot();
   rocm::set_graph_decode_mode(true);
+  if (std::getenv("MLX_G1Y_DEBUG") != nullptr) {
+    auto& al = rocm::allocator();
+    fprintf(stderr,
+            "[g1] prepare active=%d base=%p cap=%zu off=%zu floor=%zu "
+            "slot0=%p slot1=%p slot2=%p zero=%p\n",
+            (int)al.decode_arena_active(), al.decode_arena_base_ptr(),
+            al.decode_arena_capacity(), al.decode_arena_offset(),
+            al.decode_arena_floor_offset(),
+            rocm::allocator().decode_value_slot(0).data,
+            rocm::allocator().decode_value_slot(1).data,
+            rocm::allocator().decode_value_slot(2).data,
+            rocm::allocator().decode_zero_slot().data);
+    for (int i = 0; i < 4; ++i) {
+      if (rocm::allocator().decode_value_slot(i).data !=
+          p.capture_slot_data[i]) {
+        fprintf(stderr,
+                "[g1] prepare: slot %d moved (capture=%p now=%p)\n",
+                i, p.capture_slot_data[i],
+                rocm::allocator().decode_value_slot(i).data);
+      }
+    }
+  }
   return true;
 }
 
@@ -369,6 +392,23 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
       if (enc.decode_capture_replay((int)p.replay_slot)) {
         // Stay armed: the next small step replays too.
         p.replay_armed = true;
+        if (std::getenv("MLX_G1Y_DEBUG") != nullptr && p.cpu_n < 4) {
+          // POST-LAUNCH readback: did the recorded H2D nodes deliver
+          // this step's host values to the slot VAs the exec baked in?
+          auto rstream = static_cast<hipStream_t>(enc.stream());
+          (void)hipStreamSynchronize(rstream);
+          (void)hipGetLastError();
+          for (int i = 0; i < 4; ++i) {
+            auto sl = rocm::allocator().decode_value_slot(i);
+            int64_t dv = -12345;
+            if (sl.data) {
+              (void)hipMemcpy(&dv, sl.data, 8, hipMemcpyDeviceToHost);
+            }
+            fprintf(stderr,
+                    "[g1] POST slot %d host=%lld dev=%lld\n",
+                    i, sl.host ? (long long)*sl.host : -1LL, (long long)dv);
+          }
+        }
         if (p.cpu_n % 256 == 0) {
           p.log(
               "[g1] replay cpu/step mean=%.2f max=%.2f ms (n=%ld)",
@@ -490,6 +530,10 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
     // exec (hipGraphLaunch) instead of re-capturing. The exec lives
     // in the slot end_record just wrote (post-increment parity).
     p.replay_slot = p.step_seq & 1;
+    for (int i = 0; i < 4; ++i) {
+      p.capture_slot_data[i] = rocm::allocator().decode_value_slot(i).data;
+    }
+    p.capture_slot_data[4] = rocm::allocator().decode_zero_slot().data;
     p.ref_names = std::move(p.capture_names);
     p.replay_armed = true;
     p.next_capture = false;
@@ -697,19 +741,25 @@ void eval(array& arr) {
     hipError_t le = hipGetLastError();
     rocm::g1_check_hip("in-op (after eval_gpu)", le);
     if (true) {
+      auto dataptr = [](const allocator::Buffer& b) -> void* {
+        if (!b.ptr()) {
+          return nullptr;
+        }
+        auto* rb =
+            static_cast<rocm::RocmBuffer*>(const_cast<void*>(b.ptr()));
+        return rb->data;
+      };
       for (auto& o : outputs) {
+        void* dp = dataptr(o.buffer());
         fprintf(stderr, "[g1t]   out %p sz=%zu %s\n",
-                o.buffer().ptr(), o.data_size(),
-                rocm::allocator().in_decode_arena(o.buffer().ptr())
-                    ? "ARENA"
-                    : "");
+                dp, o.data_size(),
+                dp && rocm::allocator().in_decode_arena(dp) ? "ARENA" : "");
       }
       for (auto& i : arr.inputs()) {
+        void* dp = dataptr(i.buffer());
         fprintf(stderr, "[g1t]   in  %p sz=%zu %s\n",
-                i.buffer().ptr(), i.data_size(),
-                rocm::allocator().in_decode_arena(i.buffer().ptr())
-                    ? "ARENA"
-                    : "");
+                dp, i.data_size(),
+                dp && rocm::allocator().in_decode_arena(dp) ? "ARENA" : "");
       }
     }
   }

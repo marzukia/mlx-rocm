@@ -105,6 +105,30 @@ static inline uint64_t g1x_safe_read8(void* v) {
     return 0;
   return *reinterpret_cast<uint64_t*>(v);
 }
+
+// Pre-launch slot H2D: the slot H2D memcpy nodes recorded during stream
+// capture do not reliably deliver the current host value before the graph
+// kernels read the slot device buffer (r15-r19: APERTURE fault on the
+// first graph launch with a stale/garbage slot value). Issue the H2D as a
+// plain stream op immediately before hipGraphLaunch on the same stream so
+// it is ordered before every graph node. Redundant (same value) if the
+// in-graph memcpy nodes do work. MLX_G1_NO_PREH2D=1 disables.
+static void g1_prelaunch_slot_h2d(hipStream_t st) {
+  if (!graph_decode_mode())
+    return;
+  if (const char* e = std::getenv("MLX_G1_NO_PREH2D");
+      e && e[0] == '1')
+    return;
+  auto& alc = rocm::allocator();
+  for (int i = 0; i < 4; ++i) {
+    auto sl = alc.decode_value_slot(i);
+    if (sl.host && sl.data) {
+      hipError_t e = hipMemcpyAsync(
+          sl.data, sl.host, sizeof(int64_t), hipMemcpyHostToDevice, st);
+      g1_check_hip("hipMemcpyAsync (pre-launch slot H2D)", e);
+    }
+  }
+}
 void set_current_prim(const char*) {}
 void record_inline_launch() {
   g_inline_launches_.fetch_add(1, std::memory_order_relaxed);
@@ -1647,12 +1671,95 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
       }
     }
   }
+  // G1M: node-type histogram + memcpy-node params of the captured graph
+  // (diagnostic: are the slot H2D memcpy nodes in the graph, and where
+  // do they point?).
+  if (std::getenv("MLX_G1_MEMDUMP")) {
+    size_t qn = nn;
+    std::vector<hipGraphNode_t> mn(nn);
+    if (hipGraphGetNodes(g, mn.data(), &qn) == hipSuccess) {
+      long mcn = 0, kcn = 0, mscn = 0, ocn = 0;
+      for (size_t i = 0; i < qn; ++i) {
+        hipGraphNodeType ty = (hipGraphNodeType)0;
+        if (hipGraphNodeGetType(mn[i], &ty) != hipSuccess)
+          continue;
+        if (ty == hipGraphNodeTypeMemcpy) {
+          ++mcn;
+          if (mcn <= 12) {
+            hipMemcpy3DParms mp;
+            if (hipGraphMemcpyNodeGetParams(mn[i], &mp) == hipSuccess) {
+              fprintf(stderr,
+                      "[g1m] n%zu kind=%d src=%p dst=%p\n",
+                      i, (int)mp.kind, mp.srcPtr, mp.dstPtr);
+              fflush(stderr);
+            }
+          }
+        } else if (ty == hipGraphNodeTypeKernel) {
+          ++kcn;
+        } else if (ty == hipGraphNodeTypeMemset) {
+          ++mscn;
+        } else {
+          ++ocn;
+        }
+      }
+      fprintf(stderr,
+              "[g1m] nodes: memcpy=%ld kernel=%ld memset=%ld other=%ld "
+              "total=%zu\n",
+              mcn, kcn, mscn, ocn, qn);
+      fflush(stderr);
+    }
+  }
+  // G1P: slot readback + first kernel node's dyn-offset arg values
+  // (diagnostic: does the slot hold the host value at launch time, and
+  // where does the kernel's dyn offset pointer argument point?).
+  if (std::getenv("MLX_G1_MEMDUMP")) {
+    auto& alr = rocm::allocator();
+    for (int i = 0; i < 4; ++i) {
+      auto sl = alr.decode_value_slot(i);
+      if (sl.data) {
+        int64_t dv = -1;
+        (void)hipMemcpy(&dv, sl.data, 8, hipMemcpyDeviceToHost);
+        fprintf(stderr,
+                "[g1p] slot%d host=%lld dev=%lld\n",
+                i, (long long)(sl.host ? *sl.host : -9), (long long)dv);
+        fflush(stderr);
+      }
+    }
+    size_t qn = nn;
+    std::vector<hipGraphNode_t> mn(nn);
+    if (hipGraphGetNodes(g, mn.data(), &qn) == hipSuccess) {
+      for (size_t i = 0; i < qn; ++i) {
+        hipGraphNodeType ty = (hipGraphNodeType)0;
+        if (hipGraphNodeGetType(mn[i], &ty) != hipSuccess ||
+            ty != hipGraphNodeTypeKernel)
+          continue;
+        hipKernelNodeParams kp;
+        if (hipGraphKernelNodeGetParams(mn[i], &kp) != hipSuccess)
+          continue;
+        auto** ka = static_cast<void**>(kp.kernelParams);
+        if (!ka)
+          break;
+        uint64_t v12 = 0, v13 = 0;
+        if (kp.numArgs > 12)
+          v12 = *(uint64_t*)ka[12];
+        if (kp.numArgs > 13)
+          v13 = *(uint64_t*)ka[13];
+        fprintf(stderr,
+                "[g1k] n%zu grid=%u,%u,%u narg=%zu a12val=%llx a13val=%llx\n",
+                i, kp.gridDim.x, kp.gridDim.y, kp.gridDim.z, kp.numArgs,
+                (unsigned long long)v12, (unsigned long long)v13);
+        fflush(stderr);
+        break;
+      }
+    }
+  }
   // Stream capture records WITHOUT executing — run the exec once to actually
   // compute the record token's logits/state.
   if (std::getenv("MLX_G1_NO_LAUNCH")) {
     fprintf(stderr, "[g1n] NO_LAUNCH: skipping hipGraphLaunch (slot %d)\n", slot);
     fflush(stderr);
   } else {
+    g1_prelaunch_slot_h2d(static_cast<hipStream_t>(stream_));
     hipError_t lt = hipGraphLaunch(decode_cap_exec_[slot], stream_);
     g1_check_hip("hipGraphLaunch (end_record)", lt, "launch");
     if (lt != hipSuccess)
@@ -1675,6 +1782,7 @@ bool CommandEncoder::decode_capture_replay(int slot) {
   if (!decode_cap_exec_[slot])
     return false;
   device_.make_current();
+  g1_prelaunch_slot_h2d(static_cast<hipStream_t>(stream_));
   CHECK_HIP_ERROR(hipGraphLaunch(decode_cap_exec_[slot], stream_));
   worker_->commit(stream_);
   return true;
