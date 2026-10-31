@@ -697,10 +697,15 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
       // is the idx chunk clobbered by a >256B row. >4KB rows keep the
       // stable-address arena out (row fits its own block), so the per-step
       // idx buffer is left untouched.
-      if (rocm::graph_decode_mode() && out.nbytes() <= 4096) {
+      int64_t n_rows = total / (int64_t)slice_size;
+      // Only idx[0] is zero-cleared (the per-launch memset clears one
+      // element); an n_rows>1 fast_rows gather (an eager T>1 step in a
+      // session with an active arena) would read idx[1..] from the
+      // never-cleared part of the 4 KB zero-slot wrapper (garbage index
+      // -> off-range src row read). Keep the original idx buffer then.
+      if (rocm::graph_decode_mode() && out.nbytes() <= 4096 && n_rows == 1) {
         h_indices[0] = rocm::allocator().decode_zero_slot().data;
       }
-      int64_t n_rows = total / (int64_t)slice_size;
       dim3 grid((unsigned int)n_rows);
       dim3 blk(256);
       Dtype it = inputs[1].dtype();

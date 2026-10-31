@@ -729,6 +729,10 @@ void RocmAllocator::free(Buffer buffer, bool force) {
     return;
   }
   if (buf->data && decode_arena_.contains(buf->data)) {
+    // Arena-owned HBM (never freed here); the control struct is not
+    // arena-owned and must not leak (K3 small gather out; the
+    // deferred-free path re-enters here and leaks the same way).
+    delete buf;
     return;
   }
   if (getenv("MLX_WORKER_DEBUG")) {
