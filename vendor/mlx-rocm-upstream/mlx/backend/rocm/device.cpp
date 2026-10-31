@@ -110,12 +110,11 @@ static inline uint64_t g1x_safe_read8(void* v) {
 // reliably delivered on this vGPU; H2D memcpys apparently are not).
 __global__ void g1_slot_write_kernel(int64_t* dst, uint64_t val);
 
-// G1E: read back the exec's staged kernel-param values (the packet the
-// hardware will actually dispatch) for the first N kernel nodes and
-// compare with the source graph's values — a mismatch is a stale
-// hipGraphExecUpdate / hipGraphInstantiate packet (rocm-systems#10714
-// silent-success class). Diagnostic only.
-static void g1e_exec_dump(hipGraphExec_t exec, hipGraph_t src, const char* tag) {
+// G1E (v2): dump the SOURCE graph's kernel arg values for the first N
+// kernel nodes. ROCm 10.1's HIP has no exec GetParams/GetNodes (only
+// hipGraphKernelNodeGetParams + hipGraphExecKernelNodeSetParams), so the
+// exec's own staged values are probed with the G1S sentinel instead.
+static void g1e_source_dump(hipGraph_t g, const char* tag) {
   if (std::getenv("MLX_G1_EXECDUMP") == nullptr &&
       std::getenv("MLX_G1_NODEDUMP") == nullptr)
     return;
@@ -124,13 +123,10 @@ static void g1e_exec_dump(hipGraphExec_t exec, hipGraph_t src, const char* tag) 
     nmax = std::atoi(e);
   std::vector<hipGraphNode_t> nodes(1024);
   size_t qn = nodes.size();
-  if (!src || hipGraphGetNodes(src, nodes.data(), &qn) != hipSuccess) {
+  if (!g || hipGraphGetNodes(g, nodes.data(), &qn) != hipSuccess) {
     (void)hipGetLastError();
     qn = 0;
   }
-  // hipGraphExecKernelNodeGetParams takes the SOURCE graph's node handles
-  // (the same convention hipGraphExecKernelNodeSetParams uses; the
-  // exec-specific GetNodes/GetParams variants are not in ROCm 10.1).
   for (size_t i = 0; i < qn && i < (size_t)nmax; ++i) {
     hipGraphNode_t nd = nodes[i];
     hipGraphNodeType ty = (hipGraphNodeType)0;
@@ -138,7 +134,8 @@ static void g1e_exec_dump(hipGraphExec_t exec, hipGraph_t src, const char* tag) 
         ty != hipGraphNodeTypeKernel)
       continue;
     hipKernelNodeParams kp;
-    if (hipGraphExecKernelNodeGetParams(exec, nd, &kp) != hipSuccess) {
+    memset(&kp, 0, sizeof(kp));
+    if (hipGraphKernelNodeGetParams(nd, &kp) != hipSuccess) {
       (void)hipGetLastError();
       continue;
     }
@@ -153,10 +150,117 @@ static void g1e_exec_dump(hipGraphExec_t exec, hipGraph_t src, const char* tag) 
                         (unsigned long long)val);
       }
     }
-    fprintf(stderr, "[g1e] %s n%zu grid=%u,%u,%u%s\n",
+    fprintf(stderr, "[g1s] %s n%zu grid=%u,%u,%u%s\n",
             tag, i, kp.gridDim.x, kp.gridDim.y, kp.gridDim.z, buf);
     fflush(stderr);
   }
+}
+
+// G1S: sentinel — does the exec's packet pick up a SetParams change made
+// at (re)capture time? Re-points the first kernel node's out arg (arg2
+// of the 6-arg gather_rows signature) at a zeroed scratch buffer, then
+// after the launch checks who was written: scratch written -> the exec
+// staged the NEW value (ExecUpdate/SetParams propagated, the values are
+// not stale); scratch untouched -> the exec still has the OLD out
+// pointer (stale ExecUpdate packet, rocm-systems#10714 class). Armed
+// only on the pre-existing-exec (ExecUpdate) path.
+struct g1s_state_t {
+  void* scratch = nullptr;
+  size_t n = 512;
+  bool armed = false;
+  void* orig_v2 = nullptr;
+};
+static g1s_state_t g1s_state;
+
+static void g1s_arm(hipGraphExec_t exec, hipGraph_t g) {
+  if (std::getenv("MLX_G1_SENTINEL") == nullptr)
+    return;
+  std::vector<hipGraphNode_t> nodes(16);
+  size_t qn = nodes.size();
+  if (hipGraphGetNodes(g, nodes.data(), &qn) != hipSuccess) {
+    (void)hipGetLastError();
+    qn = 0;
+  }
+  hipGraphNode_t k0 = nullptr;
+  for (size_t i = 0; i < qn; ++i) {
+    hipGraphNodeType ty = (hipGraphNodeType)0;
+    if (hipGraphNodeGetType(nodes[i], &ty) == hipSuccess &&
+        ty == hipGraphNodeTypeKernel) {
+      k0 = nodes[i];
+      break;
+    }
+  }
+  if (!k0)
+    return;
+  hipKernelNodeParams kp;
+  memset(&kp, 0, sizeof(kp));
+  if (hipGraphKernelNodeGetParams(k0, &kp) != hipSuccess) {
+    (void)hipGetLastError();
+    return;
+  }
+  if (!kp.kernelParams || !kp.kernelParams[2])
+    return;
+  if (!g1s_state.scratch) {
+    if (hipMalloc(&g1s_state.scratch, g1s_state.n * 8) != hipSuccess ||
+        hipMemset(g1s_state.scratch, 0, g1s_state.n * 8) != hipSuccess) {
+      (void)hipGetLastError();
+      return;
+    }
+  }
+  uint64_t vals[8];
+  void* newkp[8];
+  int n = 0;
+  for (int i = 0; i < 8 && kp.kernelParams[i]; ++i) {
+    vals[i] = g1x_safe_read8(kp.kernelParams[i]);
+    newkp[i] = &vals[i];
+  }
+  if (n > 2) {
+    g1s_state.orig_v2 = (void*)vals[2];
+    vals[2] = (uint64_t)g1s_state.scratch;
+    newkp[2] = &vals[2];
+  }
+  newkp[n] = nullptr; // hipKernelNodeParams has no numParams; the array is
+  // null-terminated.
+  kp.kernelParams = newkp;
+  hipError_t r = hipGraphExecKernelNodeSetParams(exec, k0, &kp);
+  g1s_state.armed = (r == hipSuccess);
+  fprintf(stderr, "[g1s] armed=%d (SetParams rc=%d) scratch=%p\n",
+          (int)g1s_state.armed, (int)r, g1s_state.scratch);
+  fflush(stderr);
+}
+
+static void g1s_check(hipStream_t st) {
+  if (!g1s_state.armed || !g1s_state.scratch)
+    return;
+  g1s_state.armed = false;
+  (void)hipStreamSynchronize(st);
+  std::vector<uint64_t> h(g1s_state.n, 0);
+  (void)hipMemcpy(h.data(), g1s_state.scratch, g1s_state.n * 8,
+                  hipMemcpyDeviceToHost);
+  size_t written = 0;
+  for (uint64_t v : h)
+    if (v != 0)
+      written++;
+  int64_t s0 = -1, s1 = -1, s2 = -1;
+  auto& alr = rocm::allocator();
+  auto rd = [&](int i, int64_t& out) {
+    auto sl = alr.decode_value_slot(i);
+    if (sl.data) {
+      (void)hipMemcpy(&out, sl.data, 8, hipMemcpyDeviceToHost);
+    }
+  };
+  rd(0, s0);
+  rd(1, s1);
+  rd(2, s2);
+  fprintf(stderr,
+          "[g1s] post-launch: scratch written=%zu/%zu (orig out=%p) "
+          "slot0=%lld slot1=%lld slot2=%lld => %s\n",
+          written, g1s_state.n, g1s_state.orig_v2, (long long)s0, (long long)s1,
+          (long long)s2,
+          written > 0 ? "exec staged the NEW value (not stale)"
+                      : "exec kept the OLD out pointer (stale packet)");
+  fflush(stderr);
+  (void)hipMemset(g1s_state.scratch, 0, g1s_state.n * 8);
 }
 
 // Pre-launch slot H2D: the slot H2D memcpy nodes recorded during stream
@@ -1634,6 +1738,9 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
     g1_check_hip("hipGraphExecUpdate", ue, "refresh");
     if (ue == hipSuccess && ur == hipGraphExecUpdateSuccess) {
       refreshed = true;
+      // G1S: probe whether the updated exec staged the new values (the
+      // recapture's own launch is the one that faults).
+      g1s_arm(decode_cap_exec_[slot], g);
     } else {
       (void)hipGetLastError();
     }
@@ -1745,7 +1852,7 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
   // first launch (end of record) — a mismatch vs the source graph's
   // values (above, [nd]) is a stale ExecUpdate/instantiate packet.
   if (std::getenv("MLX_G1_EXECDUMP") || std::getenv("MLX_G1_NODEDUMP"))
-    g1e_exec_dump(decode_cap_exec_[slot], g, "endrec");
+    g1e_source_dump(g, "endrec");
   // G1M: node-type histogram + memcpy-node params of the captured graph
   // (diagnostic: are the slot H2D memcpy nodes in the graph, and where
   // do they point?).
@@ -1875,6 +1982,8 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
     } else {
       worker_->commit(stream_);
     }
+    // G1S: after the (re)capture's own launch, check who the exec wrote.
+    g1s_check(static_cast<hipStream_t>(stream_));
   }
   g1_first_error_summary("end_record:success");
   return true;
@@ -1888,8 +1997,7 @@ bool CommandEncoder::decode_capture_replay(int slot) {
   // G1E: read back the exec's staged arg values before every replay
   // launch (stale-packet check across recaptures).
   if (std::getenv("MLX_G1_EXECDUMP") || std::getenv("MLX_G1_NODEDUMP"))
-    g1e_exec_dump(decode_cap_exec_[slot], decode_cap_graph_[slot],
-                  "replay");
+    g1e_source_dump(decode_cap_graph_[slot], "replay");
   g1_prelaunch_slot_h2d(static_cast<hipStream_t>(stream_));
   CHECK_HIP_ERROR(hipGraphLaunch(decode_cap_exec_[slot], stream_));
   worker_->commit(stream_);

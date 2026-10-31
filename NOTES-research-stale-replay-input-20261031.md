@@ -98,3 +98,34 @@ kernel=1022 memcpy=16):
   matching is the trigger for the divergence -> re-capture -> (this) fault.
   Needs op-name trace of capture vs replay step (next probe:
   MLX_G1_NODEDUMP + BISECT=4 for the first-node pointer attribution).
+
+---
+## Addendum 4 (2026-11-01, t1082, probes r39-r41 + G1P/G1K/NODDUMP)
+
+- keep=2: APERTURE_VIOLATION on the RECAPTURE launch (probe STEP 6),
+  attributed to copy_gg_dynamic_nd grid=[1024,1,1]; keep=4: HSA
+  MEMORY_FAULT attributed to gather_rows_kernel grid=[256,1,1].
+- NODDUMP (r41) of the first 8 nodes of the 1738 capture:
+  n0/n1 gather_rows_kernel<bf16,int> grid=[1,1,1]; n2
+  gather_rows_kernel<int,int>; n3 affine_dequantize_packed grid=[8,1,1];
+  n4 rms_norm; n5 qmv_wide_mr; n6/n7 copy_gg_byval. Args (end of the
+  first record, [nd]): in=0x795199200000 / 0x795195000000 /
+  0x795174800000 (external VAs), idx=0x795043000900 (the ZERO slot,
+  arena +0x900, 8B slot), out=slot0/1/2, n=1, rowlen=0x3ca00
+  (246528), dim0=0x3ca00.
+- Neither grid-256 nor grid-1024 matches any of the first 4 nodes
+  (grids 1,1,1,8): the vGPU hang-analysis kernel is a misattributed
+  NEXT dispatch after the fault, not the faulting node (same class as
+  the keep=2 copy_gg attribution). The faulty node is in the first 4
+  (keep=1 clean x5 launches, keep=2/4 fault).
+- G1P (slot readback after the pre-launch H2D, before launch): every
+  slot value FRESH at every launch (host==dev: 4096/4608/4864/0).
+  The per-step H2D works.
+- G1K (dyn-offset args of copy_gg_dynamic_nd on the SECOND capture):
+  a12ptr=0x6e69746c6975625f = ASCII "_builtine" — a HOST-side junk
+  pointer baked into the 2nd capture's graph. G1E (v2) + G1S
+  (sentinel: re-point node0's out arg at a zeroed scratch, check who
+  was written after the recapture launch) are the next probe: they
+  answer whether the ExecUpdate/refresh path stages the new values
+  (stale exec packet, rocm-systems#10714 class) or the fault is
+  content/ordering at the baked VAs.
