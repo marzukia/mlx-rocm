@@ -66,3 +66,35 @@ Confirmed by G1M node histogram (r20b) + G1T data-pointer tag (r18):
   step; copydyn *dout = same VA; slot data pointer = the VA the kernel
   arg points to). The G1T tag was broken before r18 (compared the
   RocmBuffer control-struct address, not the data VA).
+
+---
+## Addendum 3 (2026-11-01, t1080 salvage continuation, probes r35-r38)
+
+Bisection (MLX_G1_BISECT, the exec of the 1738-op capture: 1038 nodes,
+kernel=1022 memcpy=16):
+
+| keep | result | probe |
+|------|--------|-------|
+| 1    | CLEAN  | t1080 |
+| 125  | FAULT  | r33   |
+| 62   | FAULT  | r34   |
+| 31   | FAULT  | r35   |
+| 4    | FAULT  | r38   |
+| 2    | running| r39   |
+
+- Fault: APERTURE_VIOLATION / HSA MEMORY_FAULT, kernel
+  gather_rows_kernel (grid=[256,1,1] — the FIRST op of the decode step,
+  the embedding Gather), faulting addr varies per run (0x779ef6e9d000 r35,
+  0x78e5d449d000 r38, 0x7853b0a9d000 r34) — a freed pool VA, never in the
+  arena (base 0x77c850400000, cap 2GB) nor the weights.
+- The bisected exec is the FIRST 1738 capture's exec: it is launched once
+  in its own step and re-launched as the "prefix" of the diverged replay
+  step. The next step's fresh re-capture never launches (the queue is
+  dead). So the faulty node is in the first 4 graph nodes of the 1738
+  capture; keep=1 is clean, keep=4 faults.
+- Separate (pre-existing) bug, the reason re-captures happen at all:
+  "replay diverged at op 1 (Squeeze)" — the captured step's 2nd op is not
+  "Squeeze" but the replay step's 2nd op is. Strict op-name sequence
+  matching is the trigger for the divergence -> re-capture -> (this) fault.
+  Needs op-name trace of capture vs replay step (next probe:
+  MLX_G1_NODEDUMP + BISECT=4 for the first-node pointer attribution).
