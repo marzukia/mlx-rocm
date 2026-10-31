@@ -940,7 +940,12 @@ RocmAllocator::decode_value_slot(int index) {
   if (!st.host) {
     // Buffer is non-owning; the arena's wrappers own the RocmBuffer
     // (and free() is a no-op for arena-allocated memory).
-    RocmBuffer* b = arena_alloc(sizeof(int64_t));
+    // 4 KB wrapper: a decode gather writes its whole row into the slot
+    // (observed row sizes up to 2 KB, e.g. the 512xint32 lm-head
+    // gather). A 256 B wrapper let that row spill into the adjacent
+    // wrapper (the idx/zero slot), which a later kernel then read as
+    // an index / dyn offset -> off-arena (aperture) fault.
+    RocmBuffer* b = arena_alloc(4096);
     if (!b) {
       return {Buffer{nullptr}, nullptr};
     }
@@ -957,17 +962,17 @@ RocmAllocator::decode_value_slot(int index) {
   return {st.buf, st.host, st.data};
 }
 
-// Reserve `n` wrapper slots (256 B each, the arena_alloc alignment)
-// without allocating them: keeps capture and replay steps at identical
-// relative offsets when the reserved slots are only allocated on one
-// side (see gd_step_prepare).
+// Reserve `n` wrapper slots (4 KB each, the decode value/zero slot
+// wrapper size) without allocating them: keeps capture and replay
+// steps at identical relative offsets when the reserved slots are only
+// allocated on one side (see gd_step_prepare).
 void RocmAllocator::decode_arena_reserve_wrappers(size_t n) {
   auto& a = decode_arena_;
   std::lock_guard lock(mutex_);
   if (!a.active || !a.base || n == 0) {
     return;
   }
-  size_t adv = n * 256;
+  size_t adv = n * 4096;
   if (a.offset + adv > a.capacity) {
     a.overflowed = true;
     return;
@@ -991,7 +996,7 @@ RocmAllocator::decode_zero_slot() {
     st = DecodeValueSlotState{};
   }
   if (!st.host) {
-    RocmBuffer* b = arena_alloc(sizeof(int64_t));
+    RocmBuffer* b = arena_alloc(4096);
     if (!b) {
       return {Buffer{nullptr}, nullptr, nullptr};
     }

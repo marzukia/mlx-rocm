@@ -277,6 +277,7 @@ static void g1_prelaunch_slot_h2d(hipStream_t st) {
       e && e[0] == '1')
     return;
   bool use_kernel = std::getenv("MLX_G1_KSL") != nullptr;
+  bool logh = std::getenv("MLX_G1_H2DLOG") != nullptr;
   auto& alc = rocm::allocator();
   for (int i = 0; i < 4; ++i) {
     auto sl = alc.decode_value_slot(i);
@@ -289,12 +290,33 @@ static void g1_prelaunch_slot_h2d(hipStream_t st) {
             (void*)g1_slot_write_kernel, dim3(1), dim3(1), kargs, 0, st);
         g1_check_hip("hipLaunchKernel (pre-launch slot write, kernel)", e);
       } else {
-        // Blocking (synchronous) copy: the readback in G1P then sees the
-        // delivered value for sure.
-        hipError_t e = hipMemcpy(
-            sl.data, sl.host, sizeof(int64_t), hipMemcpyHostToDevice);
-        g1_check_hip("hipMemcpy (pre-launch slot H2D, blocking)", e);
+        // Async on the launch stream: a blocking hipMemcpy lands on the
+        // legacy default stream, which does NOT order against the
+        // non-blocking decode stream (r43: slot1 still held the
+        // capture-step value at readback). The host buffers are pinned,
+        // so the async H2D is safe and stream-ordered before the graph
+        // launch below.
+        hipError_t e = hipMemcpyAsync(
+            sl.data, sl.host, sizeof(int64_t), hipMemcpyHostToDevice, st);
+        g1_check_hip("hipMemcpyAsync (pre-launch slot H2D)", e);
       }
+      if (logh) {
+        fprintf(stderr, "[g1h] slot%d %p <- %lld\n", i, sl.data,
+                (long long)*sl.host);
+        fflush(stderr);
+      }
+    }
+  }
+  // The idx (zero) slot must read 0 at every launch: the capture step's
+  // kernels can leave arena garbage in it (and nothing re-zeroes it),
+  // which a gather then reads as an index -> off-arena fault address.
+  auto zs = alc.decode_zero_slot();
+  if (zs.data) {
+    hipError_t e = hipMemsetAsync(zs.data, 0, sizeof(int64_t), st);
+    g1_check_hip("hipMemsetAsync (pre-launch zero-slot clear)", e);
+    if (logh) {
+      fprintf(stderr, "[g1h] zero %p <- 0\n", zs.data);
+      fflush(stderr);
     }
   }
 }
@@ -1957,6 +1979,7 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
     g1_prelaunch_slot_h2d(static_cast<hipStream_t>(stream_));
     // G1P: slot readback AFTER the pre-launch slot write, before launch.
     if (std::getenv("MLX_G1_MEMDUMP")) {
+      (void)hipStreamSynchronize(static_cast<hipStream_t>(stream_));
       auto& alr = rocm::allocator();
       for (int i = 0; i < 4; ++i) {
         auto sl = alr.decode_value_slot(i);
@@ -1968,6 +1991,13 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
                   i, (long long)(sl.host ? *sl.host : -9), (long long)dv);
           fflush(stderr);
         }
+      }
+      auto zz = alr.decode_zero_slot();
+      if (zz.data) {
+        int64_t dv = -9;
+        (void)hipMemcpy(&dv, zz.data, 8, hipMemcpyDeviceToHost);
+        fprintf(stderr, "[g1p] zero dev=%lld\n", (long long)dv);
+        fflush(stderr);
       }
     }
     hipError_t lt = hipGraphLaunch(decode_cap_exec_[slot], stream_);
