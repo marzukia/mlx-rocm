@@ -37,3 +37,32 @@ DISCRIMINATING TESTS (cheapest first):
 (e) do the H2D on the replay stream, or capture it as a node with a pinned host buffer (4).
 
 UNIVERSAL INVARIANT (all production systems - vLLM, SGLang, TRT-LLM, PyTorch, llama.cpp, MLX): kernel pointers are recorded BY VALUE at capture; per-step inputs reach replay ONLY via (a) write into a FIXED device VA (static pre-allocated buffer + H2D/D2D copy-in before replay) or (b) exec update. Sequence length is a tensor VALUE, never a shape; batch size is the only shape dimension (padding buckets).
+
+---
+## Addendum 2 (2026-10-31, t1074 salvage, probes r15-r25 on guest-a)
+
+Confirmed by G1M node histogram (r20b) + G1T data-pointer tag (r18):
+
+- The 1738-op capture step produces a **1038-node graph** (kernel=1022,
+  memcpy=16, memset=0). The 16 memcpy nodes are ALL kind=1 (D2H, src=nil,
+  one shared host dst ~0x7b9f0e75e000). **Zero H2D memcpy nodes** — the
+  slot H2D `hipMemcpyAsync(..., hipMemcpyHostToDevice, capture_stream)`
+  calls issued during stream capture never appear as graph nodes
+  (the 2-op microstep graph: memcpy=0, kernel=1 — consistent).
+  Either ROCm 10.1 vGPU executes them immediately at capture time or
+  drops them; in either case the exec has no in-graph H2D, so the slot
+  device buffer at first launch holds pre-capture content.
+- r16-r18: APERTURE_VIOLATION at copy_gg_dynamic_nd on the **first
+  graph launch (the capture-step launch itself)** — the replay step never
+  begins (no prepare/slot-dump lines). r15: same wheel, no fault,
+  deterministic garbage argmax 3216162876.
+- Fix candidate: pre-launch external H2D of the 4 value slots on the
+  launch stream immediately before hipGraphLaunch (end_record +
+  decode_capture_replay), MLX_G1_NO_PREH2D=1 disables. G1P slot
+  readback (host vs device after the pre-launch H2D, blocking D2H) and
+  G1K dyn-offset arg dump (mincore-guarded) verify the slot content and
+  the kernel's din/dout pointer args at launch time.
+- Slot VAs are stable (prepare dump: slot1 = arena_base+0x600 at every
+  step; copydyn *dout = same VA; slot data pointer = the VA the kernel
+  arg points to). The G1T tag was broken before r18 (compared the
+  RocmBuffer control-struct address, not the data VA).
