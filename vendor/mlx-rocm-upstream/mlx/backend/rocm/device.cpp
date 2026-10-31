@@ -1760,16 +1760,23 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
             return 0;
           return *reinterpret_cast<uint64_t*>(p);
         };
-        // The first kernel with a plausible 14-arg dyn-offset layout:
-        // dump args 12/13 (guarded; small-arg kernels read 0).
+        // The dynamic-copy node: args 12/13 are pointers to the
+        // dyn-offset slot buffers (device VAs in [2^57, 2^61)).
         uint64_t v12 = read_at(ka[12]);
         uint64_t v13 = read_at(ka[13]);
-        if (v12 == 0 && v13 == 0)
+        auto dev_va = [](uint64_t v) {
+          return v >= 0x08000000000000ULL && v < 0x8000000000000000ULL;
+        };
+        if (!dev_va(v12) || !dev_va(v13))
           continue;
+        uint64_t o12 = read_at((void*)v12);
+        uint64_t o13 = read_at((void*)v13);
         fprintf(stderr,
-                "[g1k] n%zu grid=%u,%u,%u a12val=%llx a13val=%llx\n",
+                "[g1k] n%zu grid=%u,%u,%u a12ptr=%llx a12off=%llx "
+                "a13ptr=%llx a13off=%llx\n",
                 i, kp.gridDim.x, kp.gridDim.y, kp.gridDim.z,
-                (unsigned long long)v12, (unsigned long long)v13);
+                (unsigned long long)v12, (unsigned long long)o12,
+                (unsigned long long)v13, (unsigned long long)o13);
         fflush(stderr);
         break;
       }
