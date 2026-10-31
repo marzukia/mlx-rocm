@@ -310,3 +310,34 @@ Round-3 results (g1xcH, probe logs on guest /models/tmp/):
   + VA ownership of the faulting VA; (4) fix = pin KV buffer or
   ExecUpdate the stale node param (G1B SetParams plumbing exists);
   (5) verify probe N=6 clean, lossless gates 14tok/29K, A/B bench.
+
+## t1080 salvage (exec-cache graph decode, 2026-10-31)
+
+Branch `exec-cache-t1080-salvage` (off 7ef78a9). Goal: make same-shape decode
+steps REPLAY a cached exec instead of re-capturing 1,740 ops; clear the
+graph-decode A/B gap (-60.8%).
+
+- r35-r39 bisection: keep=1 CLEAN; keep=2..125 FAULT (copy_gg_dynamic_nd /
+  gather_rows at the 2nd recapture or at a mis-armed replay launch).
+- r40/r41 NODEDUMP: the 1,738-op capture's first nodes point only at
+  arena slots (base+0x500..+0x900, always mapped) and static weights —
+  the stale pointer is not visible in the first 8 nodes.
+- **r41 key finding**: "replay diverged at op 1 (Squeeze)" was a 2-op
+  argmax MICRO-step (Gather|Squeeze) mis-armed as a replay: the arming
+  matched on the first op NAME only. The micro-step then launched the
+  1,740-op exec at step end with its first op suppressed → the step's
+  token came out NaN (STEP 4 l0=nan), and the same mis-armed launch is
+  the r35/r38 faulting launch.
+- **Fix 1 (in)**: `gd_step_is_embedding_lookup` — the replay branch now
+  requires the first op's first input to be 2-D (the [vocab, embed]
+  embedding gather); micro-steps (1-D lm-head gather, ArgReduce, ...)
+  run eager without disturbing arming.
+- Build r42b (guest t1063-c1 tree: NOTE — the guest device.cpp is the
+  t1063 variant with g1s sentinel + its own [nd] dumper; the local repo's
+  device.cpp diverged (no g1s). A concurrent session patched the guest
+  file's hipMemAlloc/kp.numParams errors at 12:05Z). Probe r42b:
+  GPROBE_N=40 (forces a KV-cache 32→64 resize → diverged replay → 2nd
+  recapture), G1Y+G1_NAMES+NODEDUMP+MEMDUMP, no bisect.
+- Gates next: 14tok (gd-gate.py) + 4096tok (gd-gate4k.py, 4096-token
+  prompt, 120 toks / warm 64, ALLTOKS byte compare graph vs eager);
+  A/B: gd-benchN.py GD_N=1100, 3 reps graph vs eager.
