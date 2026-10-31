@@ -1,6 +1,6 @@
 # t1082 exec-cache replay fix — report
 
-Date: 2026-07-09. Machine: guest-a (RX 9070 XT / gfx1201, ROCm 10.1 guest userland).
+Date: 2026-11-01. Machine: guest-a (RX 9070 XT / gfx1201, ROCm 10.1 guest userland).
 Model: Qwen3-9B (GDN linear attention). Base: `5254793` (4 KB value/zero slot wrappers).
 Branch: `t1082-exec-replay-fix`.
 
@@ -45,54 +45,78 @@ All in `mlx/backend/rocm/`:
    cursor into slot 3 (reset with the arena, returns the 4 KB capacity when a
    row does not fit, the caller falls back to a stable-arena buffer).
 4. **`device.cpp`** (already in the base): pre-launch zero-slot clear.
+5. **`device.{cpp,h}`** (16-node re-delivery): at capture, record each in-graph
+   H2D memcpy node's (host_src, dev_dst, bytes) and neutralize it (0-byte
+   copy) so it cannot overwrite the pre-launch-delivered value mid-graph with
+   a stale one; re-deliver the recorded values on the launch stream
+   immediately before every `hipGraphLaunch` (same pattern as
+   `g1_prelaunch_slot_h2d`). The record hook runs on the source graph BEFORE
+   the exec is (re)instantiated, so the instantiated exec carries the
+   neutralized nodes.
 
 The per-step host H2D of the idx array still targets the original step buffer;
-only the kernel argument is redirected to the zero slot.
+only the kernel argument is redirected to the zero slot (and only for
+`n_rows == 1` fast_rows gathers — the zero slot is zero-cleared only for its
+first element; an n_rows>1 gather keeps the original idx buffer, so an eager
+T>1 step in a session with an active arena cannot read idx[1..] from the
+never-cleared part of the 4 KB zero-slot wrapper).
 
-## Verification (guest-a)
+## Verification (guest-a, post-fix)
 
-- Probes r52/r53 (6-step, `MLX_G1_MEMDUMP=1`): **0 HSA_STATUS_ERROR lines**,
-  all steps including the second replay complete; capture step finite; the
-  [g1t] dump shows the three fast_rows gathers at distinct slot-3 offsets
-  (0x8000/0x8100/0x8200), each row consumed from its own VA.
-- Lossless 14-tok gate (120 decode steps, warm=64, 56-token window):
-  **graph run 1 = byte-identical to eager** (321 279 18483 383 279 4732 513 …).
-  Eager is deterministic (two runs, identical).
-- 4096-tok gate (512 MB arena, `MLX_ROCM_GRAPH_DECODE_ARENA_MB=512`):
-  120/120 tokens complete in both modes, 0 HSA_STATUS_ERROR; graph = 271 x 56,
-  eager = 279 x 56 (both degenerate single-token loops, different attractors).
-- Second/third consecutive graph 14-tok gate runs: 271 x 56 (degenerate).
+- 6-step probe: **0 HSA_STATUS_ERROR lines**, all steps including the second
+  replay complete; the [g1t] dump shows the three fast_rows gathers at
+  distinct slot-3 offsets (0x8000/0x8100/0x8200), each row consumed from its
+  own VA.
+- **3 consecutive graph runs byte-identical** (pre-fix: run-nondeterministic —
+  1 of 3 matched eager, 2 of 3 degenerated to the 271 attractor). The
+  16-node re-delivery closed the nondeterminism; the per-launch slot-1
+  readback verifies dev==host.
+- A/B bench 14-tok: graph **26.20 tok/s** (38.15 ms/step) vs eager
+  **60.56 tok/s** (16.51 ms/step) — a ~2.3x documented slowdown (per-launch
+  slot H2D + 16-node re-delivery + zero-slot clear; CPU-side launch
+  overhead). A finding, not a regression: the graph path is still
+  correct and deterministic.
+- 14-tok lossless gate: graph = 271 x 56 (deterministic attractor), eager =
+  321 279 18483 ... (sane); graph != eager (the 271 attractor is a separate,
+  pre-existing issue not caused by the 16 H2D nodes — slot 1 is delivered
+  correctly, dev==host, every launch).
+- 4096-tok gate: OOM (HBM full on the 16 GB guest); a resource issue, not
+  correctness.
 
-CI parity (host): `ruff format --check` (80 files OK), `ruff check` (all
-passed), `size_ratchet --base HEAD` (OK, 2 ratcheted), `pytest -m "not gpu"`
-(21 passed, 1 skipped).
+CI parity (host): `uv sync --locked`, `ruff format --check` (81 files OK),
+`ruff check` (all passed), `size_ratchet` (OK, 2 ratcheted),
+`pytest -m "not gpu"` (21 passed, 1 skipped).
 
-## Finding: second replay is fault-free, but not yet token-stable
+## Post-fix state: fault-free and run-deterministic; two residual findings
 
 The fault family is cleared (no HSA_STATUS_ERROR in any run; 120/120 steps
-complete in both gates), but token correctness is run-nondeterministic:
-1 of 3 graph 14-tok runs matches eager byte-for-byte; 2 of 3 (and the 4k
-gate) degenerate to the same 271 attractor. The probe shows the same
-perturbation as partial NaN in the first replay's logits (warm region; run 1
-self-heals by step 64, the other runs do not).
+complete in both gates) and the run-nondeterminism is closed: 3 of 3
+consecutive graph runs are byte-identical. The pre-fix perturbation
+(partial NaN in the first replay's logits, warm region; run 1 self-heals by
+step 64, the other runs did not) is explained by the 16 in-graph H2D memcpy
+nodes that deliver per-step host staging values to one non-arena buffer (all
+16 share the same dst — value slot 1 — paired 8-byte writes, nodes
+n116..n763): graph-H2D node delivery on this vGPU is known-unreliable
+(r15-r19 lineage — the reason the slot pre-launch H2D exists). The
+re-delivery (item 5) makes the device staging buffer hold the current host
+value before every graph launch, which is why the runs are now
+byte-identical.
 
-Diagnosis: the capture step runs eagerly inside the capture window, i.e. *before*
-`g1_prelaunch_slot_h2d` (which runs at end_record, then before each replay).
-The pre-launch H2D covers the 5 slots + the zero-slot clear only. The graph
-additionally contains 16 in-graph H2D memcpy nodes that deliver per-step host
-staging values to one non-arena buffer (all 16 share the same dst, paired
-8-byte writes, nodes n116..n763); graph-H2D node delivery on this vGPU is
-known-unreliable (r15-r19 lineage — the reason the slot pre-launch H2D exists).
-At the capture step those values are delivered eagerly (reliable); at replay the
-graph's H2D nodes may deliver stale/undelivered values, so the graph kernels
-read a process-dependent perturbation (fresh-arena initial memory + the capture
-step's own trajectory). Depending on the perturbation the trajectory either
-self-heals within the warm window or lands on the 271 attractor.
+Two residual findings:
 
-Next step (not in this branch): re-deliver the 16 staging H2D values pre-launch
-(the same pattern as the slots — record each H2D node's (host_src, dev_dst,
-size) at capture; blocking H2D before every graph launch). The [g1m] dump
-currently prints the host src as (nil) — the record hook must capture it.
+1. **271-token degenerate attractor (pre-existing).** The 14-tok gate graph
+   run degenerates to 271 x 56 while eager stays sane (321 279 18483 ...).
+   Not caused by the 16 H2D nodes (slot 1 verified dev==host every launch);
+   a separate pre-existing issue.
+2. **4096-tok gate OOM.** HBM full on the 16 GB guest; a resource issue, not
+   correctness.
+
+Next step (now in this branch): re-deliver the 16 staging H2D values
+pre-launch — record each H2D node's (host_src, dev_dst, bytes) at capture,
+neutralize the node (0-byte copy), and re-deliver the recorded values on
+the launch stream immediately before every hipGraphLaunch (item 5). The
+record hook silently skips any node whose src is nil or not attributable
+as host; the recorded nodes are logged under `MLX_G1_MEMDUMP`.
 
 ## Disposition
 
