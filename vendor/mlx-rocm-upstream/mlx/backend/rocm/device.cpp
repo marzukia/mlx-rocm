@@ -1359,6 +1359,10 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
   // MLX_G1_NODEDUMP: dump every node's baked device pointers so a faulting
   // address can be attributed to a recorded op.
   if (std::getenv("MLX_G1_NODEDUMP")) {
+    long ndcap = 0;
+    if (const char* nc = std::getenv("MLX_G1_ND_NODES")) {
+      ndcap = std::atol(nc);
+    }
     auto& al = rocm::allocator();
     void* ab = al.decode_arena_base_ptr();
     fprintf(stderr,
@@ -1368,6 +1372,10 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
     std::vector<hipGraphNode_t> nodes(nn);
     if (hipGraphGetNodes(g, nodes.data(), &nn) == hipSuccess) {
       for (size_t i = 0; i < nn; ++i) {
+        if (ndcap > 0 && (long)i >= ndcap) {
+          fprintf(stderr, "[nd] ... %zu more nodes not dumped ...\n", nn - i);
+          break;
+        }
         hipGraphNodeType ty;
         if (hipGraphNodeGetType(nodes[i], &ty) != hipSuccess)
           continue;
@@ -1466,7 +1474,14 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
     size_t nn2 = nn;
     std::vector<hipGraphNode_t> nodes2(nn2);
     if (hipGraphGetNodes(g, nodes2.data(), &nn2) == hipSuccess) {
+      long ndcap2 = 0;
+      if (const char* nc = std::getenv("MLX_G1_ND_NODES")) {
+        ndcap2 = std::atol(nc);
+      }
       for (size_t i = 0; i < nn2; ++i) {
+        if (ndcap2 > 0 && (long)i >= ndcap2) {
+          break;
+        }
         hipGraphNodeType ty;
         if (hipGraphNodeGetType(nodes2[i], &ty) != hipSuccess)
           continue;

@@ -98,6 +98,15 @@ struct GraphDecodePilot {
   double cpu_max_ms{0.0};
   std::chrono::steady_clock::time_point cpu_t0;
 
+  // G1N: per-step op-name trace (gated by MLX_G1_NAMES): the first 48
+  // op names of every step, printed at step end, so a capture step and
+  // its replay step can be diffed by eye.
+  std::vector<std::string> name_buf;
+  bool names_on() {
+    static const bool on = std::getenv("MLX_G1_NAMES") != nullptr;
+    return on;
+  }
+
   void log(const char* fmt, ...) {
     // Rate-limited: first 8 events, then every 256th, so a long generation
     // does not flood stderr but a failure is always visible.
@@ -637,6 +646,9 @@ void gd_on_op(GraphDecodePilot& p, const array& arr, Stream s) {
   if (p.step_kind == GraphDecodePilot::Kind::Capture) {
     p.capture_names.push_back(arr.primitive().name());
   }
+  if (p.names_on() && p.name_buf.size() < 48) {
+    p.name_buf.push_back(arr.primitive().name());
+  }
   p.step_ops++;
 }
 
@@ -652,8 +664,17 @@ void graph_decode_pilot(array& arr) {
   std::lock_guard<std::mutex> lock(p.mu);
   const bool sync = std::strcmp(arr.primitive().name(), "Synchronize") == 0;
   if (sync) {
+    if (p.names_on() && !p.name_buf.empty()) {
+      fprintf(stderr, "[g1n] kind=%d ops=%ld: ", (int)p.step_kind, p.step_ops);
+      for (auto& nm : p.name_buf) {
+        fprintf(stderr, "%s|", nm.c_str());
+      }
+      fprintf(stderr, "\n");
+      fflush(stderr);
+    }
     gd_step_end(p, s, p.step_ops);
     p.step_ops = 0;
+    p.name_buf.clear();
   } else {
     gd_on_op(p, arr, s);
   }
