@@ -887,6 +887,7 @@ bool RocmAllocator::decode_arena_begin(
   decode_arena_.overflowed = false;
   decode_arena_.high_water = 0;
   decode_arena_.active = true;
+  decode_slot3_cursor_ = 0;
   return true;
 }
 
@@ -895,6 +896,7 @@ void RocmAllocator::decode_arena_reset() {
   decode_arena_.offset = 0;
   decode_arena_.next_wrapper = 0;
   decode_arena_.overflowed = false;
+  decode_slot3_cursor_ = 0;
 }
 
 void RocmAllocator::decode_arena_freeze_floor() {
@@ -1013,6 +1015,17 @@ RocmAllocator::decode_zero_slot() {
     st.base = decode_arena_.base;
   }
   return {st.buf, st.host, st.data};
+}
+
+size_t RocmAllocator::decode_value_slot3_cursor(size_t size) {
+  std::lock_guard lock(mutex_);
+  size_t off = decode_slot3_cursor_;
+  size_t adv = (size + 255) & ~size_t(255);
+  if (off + adv > 4096) {
+    return 4096;  // does not fit; the caller falls back
+  }
+  decode_slot3_cursor_ = off + adv;
+  return off;
 }
 
 // gfx1201 / ROCm 10.1: a single large host-shadow staging copy (>=300 MB;
