@@ -585,6 +585,21 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
   }
 }
 
+// A decode step's first op is an embedding-lookup Gather, but a
+// micro-step's first op is also a Gather, while its first input is
+// 1-D (the lm-head weights) — matching on the first op NAME alone
+// mis-arms a replay on the micro-step: the 2-op step then launches
+// the 1,740-op exec at step end, the suppressed first op's output
+// is never written, and the step's token comes out NaN (observed:
+// "replay diverged at op 1 (Squeeze)" on the micro-step, the next
+// token l0=nan). Require the 2-D first input so only real decode
+// (and 1-token prefill) steps replay; any other step runs eager
+// without disturbing arming.
+bool gd_step_is_embedding_lookup(const array& arr) {
+  const auto& ins = arr.inputs();
+  return ins.size() > 0 && ins[0].ndim() == 2;
+}
+
 // Each op of a step (non-Synchronize evals on the default stream). The
 // first op of a step starts the capture (or the replay, where the step's
 // per-op launches are suppressed and the cached exec is launched at step
@@ -604,7 +619,8 @@ void gd_on_op(GraphDecodePilot& p, const array& arr, Stream s) {
       p.replay_armed = false;
     } else if (p.active && p.replay_armed && p.replay_slot >= 0 &&
                !p.ref_names.empty() &&
-               p.ref_names[0] == arr.primitive().name()) {
+               p.ref_names[0] == arr.primitive().name() &&
+               gd_step_is_embedding_lookup(arr)) {
       p.step_kind = GraphDecodePilot::Kind::Replay;
       p.replay_armed = false;
       gd_begin_replay(p, s);
