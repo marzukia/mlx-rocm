@@ -39,7 +39,7 @@ DISCRIMINATING TESTS (cheapest first):
 UNIVERSAL INVARIANT (all production systems - vLLM, SGLang, TRT-LLM, PyTorch, llama.cpp, MLX): kernel pointers are recorded BY VALUE at capture; per-step inputs reach replay ONLY via (a) write into a FIXED device VA (static pre-allocated buffer + H2D/D2D copy-in before replay) or (b) exec update. Sequence length is a tensor VALUE, never a shape; batch size is the only shape dimension (padding buckets).
 
 ---
-## Addendum 2 (2026-10-31, t1074 salvage, probes r15-r25 on guest-a)
+## Addendum 2 (2026-10-31, t1074 salvage, probes r15-r25 on the guest VM)
 
 Confirmed by G1M node histogram (r20b) + G1T data-pointer tag (r18):
 

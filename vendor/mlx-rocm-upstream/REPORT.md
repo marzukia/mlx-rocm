@@ -1,6 +1,6 @@
 # t1082 exec-cache replay fix — report
 
-Date: 2026-11-01. Machine: guest-a (RX 9070 XT / gfx1201, ROCm 10.1 guest userland). Model: Qwen3-9B (GDN linear attention). Base: `2582cae` (4 KB value/zero slot wrappers; PR base = main `da9eeca` — verified ancestor of the head, `5254793` is not). Branch: `t1082-exec-replay-fix`.
+Date: 2026-11-01. Machine: guest VM (RX 9070 XT / gfx1201, ROCm 10.1 guest userland). Model: Qwen3-9B (GDN linear attention). Base: `2582cae` (4 KB value/zero slot wrappers; PR base = main `da9eeca` — verified ancestor of the head, `5254793` is not). Branch: `t1082-exec-replay-fix`.
 
 ## The fault family (pre-fix)
 
@@ -22,7 +22,7 @@ All in `mlx/backend/rocm/`:
 
 The per-step host H2D of the idx array still targets the original step buffer; only the kernel argument is redirected to the zero slot (and only for `n_rows == 1` fast_rows gathers — the zero slot is zero-cleared only for its first element; an n_rows>1 gather keeps the original idx buffer, so an eager T>1 step in a session with an active arena cannot read idx[1..] from the never-cleared part of the 4 KB zero-slot wrapper).
 
-## Verification (guest-a, post-fix)
+## Verification (guest VM, post-fix)
 
 Wheel identity (a doc inaccuracy flagged by t1097 and corrected here): the runs in this section ran on the older `dist-t1074a44` wheel (pre-1cf60ec, predating the 16-node record_neutralize). They therefore evidence the K3 + slot-wrapper + cached-slot-reserve fix, not the re-delivery; the runs on the current wheel are in the next section.
 
@@ -34,7 +34,7 @@ Wheel identity (a doc inaccuracy flagged by t1097 and corrected here): the runs 
 
 ## Verification (t1097, the current wheel)
 
-Wheels (venv-m8, guest-a): `dist-t1097-1cf60ec2` (the clean 1cf60ec baseline, verified t1095-d=0, neutralize=2) and `dist-t1097-final` (this branch, post the 3690886 allocator revert).
+Wheels (venv-m8, guest VM): `dist-t1097-1cf60ec2` (the clean 1cf60ec baseline, verified t1095-d=0, neutralize=2) and `dist-t1097-final` (this branch, post the 3690886 allocator revert).
 
 - Dead-run probe (debug env = `MLX_G1_MEMDUMP=1` + `MLX_G1_H2DLOG=1`, N=6): PASS on both wheels — STEP 1-6 + ALLTOKS, byte-identical tokens 271 8160 513 760 0 0 (tokens 4+ nan = known pre-existing stale-replay behavior, not a regression; the 271-token degenerate attractor, isolated in the K3 on/off A/B section below).
 - 14-token gate (clean env, GPROBE_N=14, dist-t1097-final): PASS — full stream, no `free(): invalid pointer`, no SEGV.
@@ -51,7 +51,7 @@ Two residual findings:
 1. **271-token degenerate attractor.** On the t1082 runs the 14-tok gate graph run degraded to 271 x 56 while eager stayed sane (321 279 18483 ...); the t1100 K3-on gate run was sane and the K3 on/off A/B section below isolates the behavior.
 2. **4096-tok gate OOM.** HBM full on the 16 GB guest; a resource issue, not correctness.
 
-## K3 on/off A/B (the 271-token attractor) — t1100, guest-a, 2026-11-01
+## K3 on/off A/B (the 271-token attractor) — t1100, guest VM, 2026-11-01
 
 Fresh wheel from this branch (fast files merged per the build note), venv-m8, fresh process per run, GPU-locked. 120-tok gate (56 steady-state tokens, ctx=14) + ggraph-probe (N=14 / 120):
 
@@ -61,7 +61,7 @@ Fresh wheel from this branch (fast files merged per the build note), venv-m8, fr
 
 **Conclusion: the zero-slot idx redirect is not the cause of the 271 attractor — it masks a pre-existing bad idx.** With the redirect off (or K3 fully off), the same gathers fault (short run) or drive the long gate to a uniform 271 attractor; the bad idx is present with K3 fully off, so the root cause is upstream of the redirect (the t1097 stale-replay-input direction: the in-graph per-step H2D does not refresh these gathers' idx buffers at replay). The 271 attractor on short graph runs is the redirect converting a would-be OOB fault into a row-0 misread. **Recommendation: keep K3 as-is (it is the less-bad behavior and the clean 120-tok gate passes with it); next RCA step = trace the faulting gather's idx provenance at replay.**
 
-**Build note (t1100):** the first t1100 compile exposed a latent name-resolution error introduced in the b8eae8e salvage (`gd_k3_off()`/`gd_k3_idxoff()` used unqualified in global namespace while declared in `namespace mlx::core::rocm`); fixed by qualifying the two use sites.
+**Build note (t1100):** the first t1100 compile exposed a latent name-resolution error introduced in the b8eae8e salvage (`gd_k3_off()`/`gd_k3_idxoff()` used unqualified in the enclosing namespace `mlx::core` while declared in `namespace mlx::core::rocm`); fixed by qualifying the two use sites.
 
 ## Disposition
 

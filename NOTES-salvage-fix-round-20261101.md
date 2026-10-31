@@ -1,6 +1,6 @@
 # Salvage fix round (t1097, 2026-11-01)
 
-Branch t1082-exec-replay-fix, commit on top of a8fd141 (parent 1cf60ec). Goal: fix the allocator regression in a8fd141, verify on guest-a, deliver.
+Branch t1082-exec-replay-fix, commit on top of a8fd141 (parent 1cf60ec). Goal: fix the allocator regression in a8fd141, verify on the guest VM, deliver.
 
 ## Regression verdict (decisive A/B)
 
@@ -17,7 +17,7 @@ free() arena path with `delete buf` is wrong for BOTH buffer kinds:
 
 Fix: revert the item-1 delete; the arena path is a plain `return` again (1cf60ec behavior). The per-free 56 B struct leak for false-positive pool buffers is accepted and documented in the code.
 
-## Verification (guest-a, venv-m8, fixed wheel dist-t1097-final)
+## Verification (guest VM, venv-m8, fixed wheel dist-t1097-final)
 
 - Dead-run probe (debug env, N=6): PASS — STEP 1-6 + ALLTOKS, byte-identical tokens to the clean 1cf60ec run (271 8160 513 760 0 0; tokens 4+ nan = known pre-existing stale-replay behavior, not a regression).
 - 14-token gate (clean env, GPROBE_N=14): PASS — full stream, no `free(): invalid pointer`, no SEGV (p1 fixed).
@@ -40,9 +40,9 @@ Fix: revert the item-1 delete; the arena path is a plain `return` again (1cf60ec
 - Guest build requires the fast files MERGED (fork base + our K2/K4, keeping GdnPrep/GdnNormGated) — the repo mirror's fast files lack the GdnPrep sections (pre-existing mirror incompleteness, ~280 lines, not fixed here).
 - Guest build must wipe the cmake binary dir + touch sources (incremental builds silently skip when git-archive mtimes predate existing .o files).
 
-## F7: K3 zero-slot idx redirect A/B (guest-a, t1100 wheel, 2026-11-01)
+## F7: K3 zero-slot idx redirect A/B (guest VM, t1100 wheel, 2026-11-01)
 
-Wheel built on guest-a from this branch (ae2c558 + the `rocm::` qualification fix below), fast files restored to the MERGED set (fork base + K2/K4, keeping GdnPrep/GdnNormGated), installed into venv-m8. Protocol: fresh process per run, `gpu-bench-inner.lock`, `LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib`, venv-m8 python; gates = gd-gate.py (120-tok, 56 steady-state tokens, ctx=14) and ggraph-probe.py (GPROBE_N=14 / 120).
+Wheel built on the guest VM from this branch (ae2c558 + the `rocm::` qualification fix below), fast files restored to the MERGED set (fork base + K2/K4, keeping GdnPrep/GdnNormGated), installed into venv-m8. Protocol: fresh process per run, `gpu-bench-inner.lock`, `LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib`, venv-m8 python; gates = gd-gate.py (120-tok, 56 steady-state tokens, ctx=14) and ggraph-probe.py (GPROBE_N=14 / 120).
 
 | run | env | result |
 |---|---|---|
