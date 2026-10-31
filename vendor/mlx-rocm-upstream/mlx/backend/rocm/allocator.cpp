@@ -729,10 +729,19 @@ void RocmAllocator::free(Buffer buffer, bool force) {
     return;
   }
   if (buf->data && decode_arena_.contains(buf->data)) {
-    // Arena-owned HBM (never freed here); the control struct is not
-    // arena-owned and must not leak (K3 small gather out; the
-    // deferred-free path re-enters here and leaks the same way).
-    delete buf;
+    // Arena window check: the HBM is arena-owned (never freed here).
+    // The deque-owned wrappers (arena_alloc returns &wrappers[i]; the
+    // Buffer wrapping it is non-owning) need a no-op free - a delete
+    // there frees a pointer into the deque storage (glibc "free():
+    // invalid pointer", t1095 p1). Heap RocmBuffers whose data merely
+    // falls inside the 2 GB arena window (unified-pool buffers; t1097:
+    // two distinct heap structs for the same 2 B gather out, both
+    // deleted -> UAF, SEGV in CopyableHipEvent::record with this in a
+    // reused HIP error string) must NOT be deleted either: contains()
+    // cannot tell true arena data from pool addresses in the window.
+    // The 1cf60ec plain return is the safe behavior; the per-free 56 B
+    // struct leak for false-positive pool buffers is accepted (the
+    // a8fd141 item-1 delete is reverted by this round).
     return;
   }
   if (getenv("MLX_WORKER_DEBUG")) {
