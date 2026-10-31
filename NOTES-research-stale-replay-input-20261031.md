@@ -1,6 +1,6 @@
 # Research note: stale input on exec-cache replay (t1077, read-only research, 2026-10-31)
 
-Full report with all sources: /srv/fleetwork/work/1077/REPORT.md (356 lines).
+Full report with all sources: the t1077 report (356 lines).
 
 Symptom class: "replay reads the STALE input slot after the per-step H2D, no fault."
 
@@ -19,7 +19,7 @@ Workarounds worth testing, in order:
 MLX upstream (cuda backend - the pattern to mirror): #2317 capture-once + LRU exec cache keyed by node+deps; #2358 address stability via a pre-allocated arena (llama.cpp --cuda-graph pattern); #4699/#4700 serialize graph kernels (submission-order chain edges - the rocm port already has these); #4326: a failed commit must not poison the encoder.
 
 ---
-## Addendum (t1076 report: /srv/fleetwork/work/1076/REPORT.md)
+## Addendum (the t1076 report)
 
 SIGNATURE DECODE: a real 9B-vocab token id (<=152k) read as float32 is ~1e-40 (subnormal). Our ~1e9 pattern is ANOTHER TENSOR'S DATA sitting in the slot - the replay read a DIFFERENT/OVERWRITTEN region, not a stale token. This re-ranks the causes:
 
