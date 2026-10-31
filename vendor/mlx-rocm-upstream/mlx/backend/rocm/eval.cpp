@@ -152,6 +152,18 @@ void gd_tear_down(GraphDecodePilot& p) {
 void gd_begin_capture(GraphDecodePilot& p, Stream s) {
   auto& enc = rocm::get_command_encoder(s);
   auto stream = static_cast<hipStream_t>(enc.stream());
+  if (p.active) {
+    // The previous captured step's launch may still be in flight on this
+    // stream, and its input/idx buffers live in the decode arena. The
+    // arena reset-to-floor and the step's re-allocations below must not
+    // run until the in-flight kernels have finished reading those slots
+    // (the input H2D happens outside the capture; replay depends on the
+    // slot content surviving). Synchronize before touching the arena.
+    if (hipStreamQuery(stream) != hipSuccess) {
+      (void)hipStreamSynchronize(stream);
+      (void)hipGetLastError();
+    }
+  }
   if (p.arena_realloc) {
     // The previous capture's launch (if any) must be done before the old
     // arena base is freed. In the normal generate/serve flow the CPU has
@@ -187,9 +199,21 @@ void gd_begin_capture(GraphDecodePilot& p, Stream s) {
     rocm::allocator().decode_arena_reset();
   }
   if (p.floor_incarnation == p.arena_incarnation) {
-    // Replay step: same addresses as the captured step (skip the one-time
-    // prefix frozen after the first capture).
-    rocm::allocator().decode_arena_reset_to_floor();
+    // Replay step. The between-capture allocations (the token
+    // input/idx buffer) live above the prefix, at the previous
+    // capture's end offset. The reset above reclaims the prefix but
+    // not the input slots. The original reset-to-floor moved the
+    // offset up to the floor (== the input slots' start), and the
+    // step's first re-allocation then landed in the input slot,
+    // aliasing a gather's output with the idx buffer (observed
+    // 2nd-capture fault: the embedding gather writes its row into
+    // the idx slot and the next gather reads the row's float bits
+    // as an index). Re-freezing the floor at the (reset) offset
+    // keeps the step's re-allocations inside the prefix, so the
+    // input slots are never reclaimed; they are stably reused each
+    // step, and the sync at the top of this function covers that
+    // reuse.
+    rocm::allocator().decode_arena_freeze_floor();
   }
   rocm::set_graph_decode_mode(true);
   if (!enc.decode_capture_begin(p.step_seq & 1)) {
