@@ -28,6 +28,10 @@ __global__ void g1b_noop() {
   // No shared memory, no params read. If this node faults, the fault is
   // outside per-node kernel args.
 }
+// G1KSL (defined for device.cpp): writes one int64 to a slot device VA.
+__global__ void g1_slot_write_kernel(int64_t* dst, uint64_t val) {
+  *dst = static_cast<int64_t>(val);
+}
 } // namespace rocm
 
 namespace {

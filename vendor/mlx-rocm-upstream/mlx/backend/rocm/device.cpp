@@ -106,6 +106,10 @@ static inline uint64_t g1x_safe_read8(void* v) {
   return *reinterpret_cast<uint64_t*>(v);
 }
 
+// G1KSL: tiny kernel that writes one int64 (kernel launches are
+// reliably delivered on this vGPU; H2D memcpys apparently are not).
+__global__ void g1_slot_write_kernel(int64_t* dst, uint64_t val);
+
 // Pre-launch slot H2D: the slot H2D memcpy nodes recorded during stream
 // capture do not reliably deliver the current host value before the graph
 // kernels read the slot device buffer (r15-r19: APERTURE fault on the
@@ -119,13 +123,25 @@ static void g1_prelaunch_slot_h2d(hipStream_t st) {
   if (const char* e = std::getenv("MLX_G1_NO_PREH2D");
       e && e[0] == '1')
     return;
+  bool use_kernel = std::getenv("MLX_G1_KSL") != nullptr;
   auto& alc = rocm::allocator();
   for (int i = 0; i < 4; ++i) {
     auto sl = alc.decode_value_slot(i);
     if (sl.host && sl.data) {
-      hipError_t e = hipMemcpyAsync(
-          sl.data, sl.host, sizeof(int64_t), hipMemcpyHostToDevice, st);
-      g1_check_hip("hipMemcpyAsync (pre-launch slot H2D)", e);
+      if (use_kernel) {
+        int64_t* dst = static_cast<int64_t*>(sl.data);
+        uint64_t val = (uint64_t)*sl.host;
+        void* kargs[2] = {&dst, &val};
+        hipError_t e = hipLaunchKernel(
+            (void*)g1_slot_write_kernel, dim3(1), dim3(1), kargs, 0, st);
+        g1_check_hip("hipLaunchKernel (pre-launch slot write, kernel)", e);
+      } else {
+        // Blocking (synchronous) copy: the readback in G1P then sees the
+        // delivered value for sure.
+        hipError_t e = hipMemcpy(
+            sl.data, sl.host, sizeof(int64_t), hipMemcpyHostToDevice);
+        g1_check_hip("hipMemcpy (pre-launch slot H2D, blocking)", e);
+      }
     }
   }
 }
@@ -1709,22 +1725,12 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
       fflush(stderr);
     }
   }
-  // G1P: slot readback + first kernel node's dyn-offset arg values
-  // (diagnostic: does the slot hold the host value at launch time, and
-  // where does the kernel's dyn offset pointer argument point?).
+  // G1P: slot readback happens AFTER the pre-launch slot write (below),
+  // just before hipGraphLaunch, so it sees the value the graph kernels
+  // will actually read.
+  // G1K: first kernel node's dyn-offset arg values (diagnostic: where does
+  // the kernel's dyn offset pointer argument point?).
   if (std::getenv("MLX_G1_MEMDUMP")) {
-    auto& alr = rocm::allocator();
-    for (int i = 0; i < 4; ++i) {
-      auto sl = alr.decode_value_slot(i);
-      if (sl.data) {
-        int64_t dv = -1;
-        (void)hipMemcpy(&dv, sl.data, 8, hipMemcpyDeviceToHost);
-        fprintf(stderr,
-                "[g1p] slot%d host=%lld dev=%lld\n",
-                i, (long long)(sl.host ? *sl.host : -9), (long long)dv);
-        fflush(stderr);
-      }
-    }
     size_t qn = nn;
     std::vector<hipGraphNode_t> mn(nn);
     if (hipGraphGetNodes(g, mn.data(), &qn) == hipSuccess) {
@@ -1739,14 +1745,30 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
         auto** ka = static_cast<void**>(kp.kernelParams);
         if (!ka)
           break;
-        uint64_t v12 = 0, v13 = 0;
-        if (kp.numArgs > 12)
-          v12 = *(uint64_t*)ka[12];
-        if (kp.numArgs > 13)
-          v13 = *(uint64_t*)ka[13];
+        auto read_at = [](void* p) -> uint64_t {
+          uintptr_t u = reinterpret_cast<uintptr_t>(p);
+          if (u < 0x1000 || (u & 7))
+            return 0;
+          uintptr_t base = u & ~4095ULL;
+          bool second = (u - base) + 8 > 4095;
+          unsigned char pres[2] = {1, 1};
+          if (syscall(SYS_mincore, reinterpret_cast<void*>(base),
+                     second ? 8192 : 4096,
+                     pres) != 0)
+            return 0;
+          if (pres[0] == 0 || (second && pres[1] == 0))
+            return 0;
+          return *reinterpret_cast<uint64_t*>(p);
+        };
+        // The first kernel with a plausible 14-arg dyn-offset layout:
+        // dump args 12/13 (guarded; small-arg kernels read 0).
+        uint64_t v12 = read_at(ka[12]);
+        uint64_t v13 = read_at(ka[13]);
+        if (v12 == 0 && v13 == 0)
+          continue;
         fprintf(stderr,
-                "[g1k] n%zu grid=%u,%u,%u narg=%zu a12val=%llx a13val=%llx\n",
-                i, kp.gridDim.x, kp.gridDim.y, kp.gridDim.z, kp.numArgs,
+                "[g1k] n%zu grid=%u,%u,%u a12val=%llx a13val=%llx\n",
+                i, kp.gridDim.x, kp.gridDim.y, kp.gridDim.z,
                 (unsigned long long)v12, (unsigned long long)v13);
         fflush(stderr);
         break;
@@ -1760,6 +1782,21 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
     fflush(stderr);
   } else {
     g1_prelaunch_slot_h2d(static_cast<hipStream_t>(stream_));
+    // G1P: slot readback AFTER the pre-launch slot write, before launch.
+    if (std::getenv("MLX_G1_MEMDUMP")) {
+      auto& alr = rocm::allocator();
+      for (int i = 0; i < 4; ++i) {
+        auto sl = alr.decode_value_slot(i);
+        if (sl.data) {
+          int64_t dv = -1;
+          (void)hipMemcpy(&dv, sl.data, 8, hipMemcpyDeviceToHost);
+          fprintf(stderr,
+                  "[g1p] slot%d host=%lld dev=%lld\n",
+                  i, (long long)(sl.host ? *sl.host : -9), (long long)dv);
+          fflush(stderr);
+        }
+      }
+    }
     hipError_t lt = hipGraphLaunch(decode_cap_exec_[slot], stream_);
     g1_check_hip("hipGraphLaunch (end_record)", lt, "launch");
     if (lt != hipSuccess)
