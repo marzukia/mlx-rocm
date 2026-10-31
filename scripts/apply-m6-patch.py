@@ -7,8 +7,8 @@ Usage:
 
 Conventions (mirrors scripts/patch-models-k2.py):
   - pattern-based, idempotent (re-running is a no-op);
-  - the pre-patch file is backed up as qwen3_next.py.bak-an earlier run (the
-    qwen3_next.py.bak-an earlier runc convention); the backup is taken once, from
+  - the pre-patch file is backed up as qwen3_next.py.bak-run-866 (the
+    qwen3_next.py.bak-run-718c convention); the backup is taken once, from
     the current (pre-patch) file, and is never overwritten.
 
 Edits (recorded in patches/m6-ropeq-rowinvariant.diff):
@@ -116,7 +116,7 @@ ROPE_NEW = """        # m6: the default (no rope_scaling) path uses an explicit
             )
 """
 
-BAK = "qwen3_next.py.bak-an earlier run"
+BAK = "qwen3_next.py.bak-run-866"
 
 
 def apply(p: Path) -> None:

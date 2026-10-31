@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mlx-rocm"
-version = "0.1.2"
+version = "0.1.0"
 description = "ROCm backend for MLX (pre-alpha): vendored mlx ROCm backend tree + hipBLASLt GEMM + QMV decode kernels, validated on AMD RDNA4 (gfx1201)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,16 +33,16 @@ where = ["src/python"]
 [tool.ruff]
 line-length = 120
 target-version = "py311"
-# np-rca-*.py = one-off RCA diagnostic probes (an earlier run/an earlier run, MTP norms fix).
+# np-rca-*.py = one-off RCA diagnostic probes (run-605/run-606, MTP norms fix).
 # Kept byte-identical to as-run evidence; excluded from lint + format.
 # bench/mtp-bench{3,5}.py + bench/g1-t3-parts.py = as-run guest bench harness
-# (an earlier run/an earlier run, audit an earlier run); kept byte-identical to as-run evidence; excluded.
+# (run-612/run-631, audit run-638); kept byte-identical to as-run evidence; excluded.
 extend-exclude = [
     "np-rca-*.py",
     "bench/mtp-bench3.py",
     "bench/mtp-bench5.py",
     "bench/g1-t3-parts.py",
-    # m8 full-state audit as-run probe scripts (an earlier run/an earlier run/an earlier run/an earlier run): kept
+    # m8 full-state audit as-run probe scripts (run-942/run-976/run-986/run-992): kept
     # byte-identical to as-run evidence; excluded from lint + format.
     "scripts/m8-mtp148-bisect.py",
     "scripts/m8-state-audit.py",
@@ -69,7 +69,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "gpu: needs the ROCm GPU (runs on the build VM only; skipped in CI and off-GPU)",
+    "gpu: needs the ROCm GPU (runs on guest-a only; skipped in CI and off-GPU)",
     "hermetic: no GPU needed, runs anywhere",
 ]
 

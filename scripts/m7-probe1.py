@@ -27,7 +27,7 @@ print("normalize_qk vs manual: q n=%d/%d maxabs=%.3e | k n=%d/%d maxabs=%.3e" % 
     np.count_nonzero(dk != 0), dk.size, np.abs(dk).max()))
 
 # ---- 2. pkl: layer 4 row 0 ----
-with open(f"{MODELS}/tmp/an earlier run/cap-m7-s62.pkl", "rb") as f:
+with open(f"{MODELS}/tmp/run-880/cap-m7-s62.pkl", "rb") as f:
     c = pickle.load(f)
 ca = c["gdnA"][4]
 cb = c["gdnB"]["4_1"]

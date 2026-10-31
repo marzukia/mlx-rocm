@@ -39,7 +39,7 @@ import numpy as np
 
 MODELS = os.environ.get("MODELS", "/models")
 
-D = os.environ.get("CAP_DIR", f"{MODELS}/tmp/an earlier run")
+D = os.environ.get("CAP_DIR", f"{MODELS}/tmp/run-785")
 M5_PKL = os.path.join(D, "cap-m5-s62.pkl")
 M3_PKL = os.path.join(D, "cap-m3-s62.pkl")
 

@@ -3,7 +3,7 @@
 #
 # Adapted from bench/bench4.sh (same gate logic and prompts): venv-d +
 # the repo's mtp-bench3.py (uploaded to $OUT), bounded flock -w 900 with
-# retries (an earlier run may re-take the lock; the m5 retry pattern).
+# retries (run-852 may re-take the lock; the m5 retry pattern).
 #
 # Usage:
 #   bash run-m6-g4.sh run     # run all arms + gate (under the lock)
@@ -24,14 +24,14 @@ export PATH=/opt/rocm/bin:/opt/rocm/core-10.1/bin:/opt/rocm/lib:/opt/rocm/core-1
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib:/opt/rocm/lib
 
 MODELS="${MODELS:-/models}"
-OUT=${M6_OUT:-$MODELS/tmp/an earlier run}
+OUT=${M6_OUT:-$MODELS/tmp/run-866}
 mkdir -p $OUT
 LOCK=$MODELS/gpu-bench.lock
 PY=$MODELS/venv-d/bin/python
 BENCH=$OUT/mtp-bench3.py
 
 get_stream() {
-  # mtp-bench3.py prints "ALLTOKS: <toks>" (no '='; the an earlier run audit fixed
+  # mtp-bench3.py prints "ALLTOKS: <toks>" (no '='; the run-638 audit fixed
   # the vacuous ^STREAM= grep - an empty match would pass empty==empty)
   grep "^ALLTOKS:" "$1" 2>/dev/null | cut -d' ' -f2-
 }

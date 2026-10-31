@@ -1,10 +1,9 @@
-"""mlx-rocm — ROCm backend for MLX (pre-alpha).
+"""mlx-rocm — ROCm backend for MLX (MVP).
 
-Faithful mlx <-> ROCm adapter/kernel layer for AMD RDNA4 (gfx1201):
-a complete `mlx/backend/rocm/` tree (vendored, MIT) + a minimal
-standalone hipBLASLt GEMM layer (bf16 + fp8 e4m3) with a CPU reference
-for validation.
+MVP skeleton: vendored mlx ROCm backend tree (the vendor ref,
+forward-merge of the ROCm base) + a minimal standalone hipBLASLt
+GEMM layer (bf16 + fp8 e4m3) with a CPU reference for validation.
 """
 
-__version__ = "0.1.2"
+__version__ = "0.0.1"
 __all__ = ["gemm", "__version__"]

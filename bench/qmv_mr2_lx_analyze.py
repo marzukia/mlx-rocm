@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""an earlier run: gain gate (method doc section 2: gain >= 3% to count) — an earlier run LX
-hoist (LX=1) vs the an earlier run path (LX=0), per-combo kernel-time gain from
+"""run-889: gain gate (method doc section 2: gain >= 3% to count) — run-852 LX
+hoist (LX=1) vs the run-825 path (LX=0), per-combo kernel-time gain from
 the two A/B combo files (one per env, identical sequence, per-position
 pairing).
 
@@ -17,9 +17,9 @@ import json
 import sys
 
 with open(sys.argv[1]) as f:
-    a = json.load(f)  # LX=0 (an earlier run path)
+    a = json.load(f)  # LX=0 (run-825 path)
 with open(sys.argv[2]) as f:
-    b = json.load(f)  # LX=1 (an earlier run hoist)
+    b = json.load(f)  # LX=1 (run-852 hoist)
 assert len(a) == len(b) == 16, (len(a), len(b))
 
 print(

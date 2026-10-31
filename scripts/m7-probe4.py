@@ -7,7 +7,7 @@ MODELS = os.environ.get("MODELS", "/models")
 def npf(a):
     return np.asarray(mx.array(a).astype(mx.float32)).copy() if a is not None else None
 
-with open(f"{MODELS}/tmp/an earlier run/cap-m7-s62.pkl", "rb") as f:
+with open(f"{MODELS}/tmp/run-880/cap-m7-s62.pkl", "rb") as f:
     c = pickle.load(f)
 a3 = c["attnA"]
 b3 = c["attnB"]["1"]

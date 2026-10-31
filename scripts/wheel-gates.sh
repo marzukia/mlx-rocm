@@ -1,19 +1,19 @@
 #!/bin/bash
-# an earlier run gate runner (guest, under flock). Runs the from-ref-wheel gates:
+# run-789 gate runner (guest, under flock). Runs the from-ref-wheel gates:
 #   config (rule 6), kernels (rocprof dispatch), G1 (fused serve/generation,
 #   no-fault), G2 (fused vs m0 reference + fused vs unfused, maxdiff 0.0),
-#   plus the an earlier run primitive gates (prep/norm/fwd) on the same wheel.
+#   plus the run-761 primitive gates (prep/norm/fwd) on the same wheel.
 # Vacuity-guarded stream compare (bench4 pattern): a compare passes only on a
 # non-empty full-length match.
 set -u
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib
 MODELS="${MODELS:-/models}"
-OUT=${RUN_789_OUT:-$MODELS/tmp/bench-an earlier run-out}
+OUT=${RUN_789_OUT:-$MODELS/tmp/bench-run-789-out}
 mkdir -p $OUT
 LOCK=$MODELS/gpu-bench.lock
-PY=$MODELS/venv-an earlier run/bin/python
-D=$MODELS/tmp/bench-an earlier run
+PY=$MODELS/venv-run-789/bin/python
+D=$MODELS/tmp/bench-run-789
 
 get_stream() { grep "^ALLTOKS:" "$1" 2>/dev/null | cut -d' ' -f2-; }
 
@@ -52,7 +52,7 @@ cmp_streams() {
 run() { # run <name> <env...> <cmd...>
   local name=$1; shift
   echo "RUN $name"
-  flock -w 300 $LOCK env "$@" $PY $D/an earlier run_$name.py > $OUT/$name.out 2>&1
+  flock -w 300 $LOCK env "$@" $PY $D/run-789_$name.py > $OUT/$name.out 2>&1
   local rc=$?
   echo "DONE $name rc=$rc"
   return $rc
@@ -60,7 +60,7 @@ run() { # run <name> <env...> <cmd...>
 
 fail=0
 run config || fail=1
-grep -q "an earlier run-config: OK" $OUT/config.out && echo "CONFIG-OK" || { echo "CONFIG-FAIL"; fail=1; }
+grep -q "run-789-config: OK" $OUT/config.out && echo "CONFIG-OK" || { echo "CONFIG-FAIL"; fail=1; }
 
 run kernels || fail=1
 grep -q "KERNEL-DISPATCHED: gdn_prep" $OUT/kernels.out && grep -q "KERNEL-DISPATCHED: gdn_qk_norm" $OUT/kernels.out && grep -q "KERNEL-DISPATCHED: gdn_norm_gated" $OUT/kernels.out && echo "KERNELS-OK (gdn_prep, gdn_qk_norm, gdn_norm_gated)" || { echo "KERNELS-FAIL"; fail=1; }
@@ -74,13 +74,13 @@ run g2-unfused MLX_GDN_TAIL_FUSION=0 || fail=1
 cmp_streams G2-FUSED-VS-M0-REF $OUT/g1-fused.out $MODELS/tmp/bench4/m0.out || fail=1
 cmp_streams G2-FUSED-VS-UNFUSED $OUT/g1-fused.out $OUT/g2-unfused.out || fail=1
 
-# an earlier run primitive gates on the same wheel
-run prim-an earlier runc_prep MLX_GDN_TAIL_FUSION=1 || fail=1
-run prim-an earlier runc_norm MLX_GDN_TAIL_FUSION=1 || fail=1
-run prim-an earlier runc_fwd MLX_GDN_TAIL_FUSION=1 || fail=1
-if grep -q "an earlier runc-prep: PASS" $OUT/prim-an earlier runc_prep.out && grep -q "an earlier runc-norm: PASS" $OUT/prim-an earlier runc_norm.out && grep -q "an earlier runc-fwd: PASS" $OUT/prim-an earlier runc_fwd.out; then
+# run-761 primitive gates on the same wheel
+run prim-run-724c_prep MLX_GDN_TAIL_FUSION=1 || fail=1
+run prim-run-724c_norm MLX_GDN_TAIL_FUSION=1 || fail=1
+run prim-run-724c_fwd MLX_GDN_TAIL_FUSION=1 || fail=1
+if grep -q "run-724c-prep: PASS" $OUT/prim-run-724c_prep.out && grep -q "run-724c-norm: PASS" $OUT/prim-run-724c_norm.out && grep -q "run-724c-fwd: PASS" $OUT/prim-run-724c_fwd.out; then
   echo "PRIM-GATES-PASS"
-  grep -E "maxdiff" $OUT/prim-an earlier runc_prep.out $OUT/prim-an earlier runc_norm.out $OUT/prim-an earlier runc_fwd.out | sed 's/^.*: //'
+  grep -E "maxdiff" $OUT/prim-run-724c_prep.out $OUT/prim-run-724c_norm.out $OUT/prim-run-724c_fwd.out | sed 's/^.*: //'
 else
   echo "PRIM-GATES-FAIL"
   fail=1

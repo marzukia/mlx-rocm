@@ -16,7 +16,7 @@ Two jobs in one forced-eval (NUMPY COPIES, never reference saves) probe:
    and report the exact first diverging layer + row-0 maxabs. This finds
    a T-dependent kernel (the class m6's rope_q row-invariance fix handled).
 
-All state saves are numpy copies (forced eval) per the an earlier run trap:
+All state saves are numpy copies (forced eval) per the run-893 trap:
 reference saves produce stale reads or GPU-memory-fault hangs.
 """
 import os

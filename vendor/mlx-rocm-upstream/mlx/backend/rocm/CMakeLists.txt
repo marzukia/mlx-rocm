@@ -158,6 +158,7 @@ set(HIP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/reduce/row_reduce.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/reduce/init_reduce.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/rms_norm.hip
+    ${CMAKE_CURRENT_SOURCE_DIR}/gdn_prep.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/rope.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/scaled_dot_product_attention.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/flash_attention.hip

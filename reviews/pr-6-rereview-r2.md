@@ -1,4 +1,4 @@
-# PR #6 adversarial re-review — round 2 (an earlier run follow-up)
+# PR #6 adversarial re-review — round 2 (run-543 follow-up)
 
 - **PR**: marzukia/mlx-rocm #6, head `k1-bench` @ `f5ba23a` (f5ba23a886a2f4480f8fc60645aa45e2f05a5988)
 - **Reviewer**: submitter (round 2; round 1 was agent) — different reviewer from submitter-of-record and from round 1
@@ -18,17 +18,17 @@ required elements present and consistent across both:
 
 1. Exact delta commit: `1051504` ("rocm/qmv: K1 v_dot4 int8-activation QMV + N=12288
    stale-output fix") — named in doc and PR body.
-2. Exact guest location: `/tmp/mlx-k1-push` on the build VM, a `git worktree` of
-   `/models/mlx-clone-k1` at `the earlier vendor base` — named in doc and PR body.
-3. Exact ready-to-push command: `cd /tmp/mlx-k1-push && git push origin HEAD:the vendor ref`
+2. Exact guest location: `/tmp/mlx-k1-push` on guest-a, a `git worktree` of
+   `/models/mlx-clone-k1` at the vendor ref — named in doc and PR body.
+3. Exact ready-to-push command: `cd /tmp/mlx-k1-push && git push origin HEAD:rocm-current`
    (doc, fenced block; PR body states the commit is "ready to push").
 4. Concrete build consequence: standard pinned build (`scripts/build-wheel.sh` cloning
-   `materton/mlx` @ `the pinned base sha` per `vendor.json`) does NOT contain the N=12288 fix or
+   the vendor ref per `vendor.json`) does NOT contain the N=12288 fix or
    the K1 kernel; it needs the 2-file overlay — `qmm.hip` + `qmv_lx_kernel.hip` — applied
    before building (or use the guest `/models/venv-k1` build which already carries it).
    Re-pin procedure stated: set `vendor.json` primary.sha to the pushed sha in a PR.
 
-Fork push itself: not verifiable from host (no push creds for the fork user>; guest clone has
+Fork push itself: not verifiable from host (no push creds for <op-fork-user>; guest clone has
 no credentials — 403 documented). Judged on documentation completeness per tasking: complete.
 
 **Cross-check against the branch's committed vendor tree** — consistent:
@@ -69,8 +69,8 @@ no credentials — 403 documented). Judged on documentation completeness per tas
 
 ## Findings
 
-1. **NIT (new)**: commit message f5ba23a says "a maintainer of the ROCm backend/mlx"; vendor.json, the PR body,
-   and docs/vendor-overlay-k1.md all correctly say "materton/mlx". Typo confined to the
+1. **NIT (new)**: commit message f5ba23a says "the fork"; vendor.json, the PR body,
+   and docs/vendor-overlay-k1.md all correctly say "the vendor ref". Typo confined to the
    commit message; no action required before merge (or fix in a follow-up).
 
 No other issues. The overlay documentation is accurate, self-contained, and actionable;

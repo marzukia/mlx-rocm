@@ -42,6 +42,7 @@ bool use_hip_graphs();
 // Inline (graph-splitting) launch counter; see device.cpp diagnostics.
 extern std::atomic<long> g_inline_launches_;
 extern std::atomic<bool> g_decode_capturing;
+extern std::atomic<int> g_decode_capture_slot;
 // Diagnostics: tag inline launches by the primitive currently in eval_gpu.
 void set_current_prim(const char* name);
 void record_inline_launch();
@@ -78,7 +79,44 @@ class CommandEncoder {
       uint32_t smem_bytes,
       Params&&... params) {
     constexpr size_t num = sizeof...(Params);
+    // Copy the argument VALUES (and the pointer array) into a heap pack;
+    // the graph/instantiation or the captured node keeps a reference to
+    // pack->ptrs past the caller's frame.
+    struct Pack {
+      std::tuple<std::decay_t<Params>...> vals;
+      std::array<void*, (num > 0 ? num : 1)> ptrs;
+    };
     if (!use_hip_graphs()) {
+      if (g_decode_capturing.load(std::memory_order_relaxed)) {
+        // G1X: decode stream capture — the node references the arg slots
+        // until replay, which is after the caller's frame dies. Keep the
+        // pack alive in the capture slot.
+        auto pack = std::make_shared<Pack>(Pack{
+            std::tuple<std::decay_t<Params>...>(std::forward<Params>(params)...),
+            {}});
+        fill_param_ptrs(
+            pack->vals, pack->ptrs, std::index_sequence_for<Params...>{});
+        decode_capture_keep(pack);
+        if (getenv("MLX_G1_NODEDUMP")) {
+          static long g1xk_n = 0;
+          if (g1xk_n++ < 40) {
+            fprintf(stderr,
+                   "[g1xk] num=%zu a0=%p val0=%llx\n",
+                   num,
+                   pack->ptrs[0],
+                   (unsigned long long)*(uint64_t*)pack->ptrs[0]);
+            fflush(stderr);
+          }
+        }
+        add_kernel_node_raw(
+            reinterpret_cast<void*>(func),
+            grid_dim,
+            block_dim,
+            smem_bytes,
+            pack->ptrs.data(),
+            /*persistent=*/true);
+        return;
+      }
       // Immediate launch: kernelParams are consumed synchronously, so
       // addresses of the caller's locals are fine.
       void* ptrs[num > 0 ? num : 1];
@@ -93,15 +131,8 @@ class CommandEncoder {
           reinterpret_cast<void*>(func), grid_dim, block_dim, smem_bytes, ptrs);
       return;
     }
-    // Graph build: a HIP graph kernel node references its kernelParams until
-    // the node is instantiated/updated into the exec graph, which happens later
-    // in commit(). The caller's argument locals are gone by then, so copy the
-    // argument VALUES (and the pointer array) into a heap pack kept alive until
-    // commit() finishes (cleared there).
-    struct Pack {
-      std::tuple<std::decay_t<Params>...> vals;
-      std::array<void*, (num > 0 ? num : 1)> ptrs;
-    };
+    // Graph build: the node is instantiated/updated into the exec graph in
+    // commit(); the pack is kept alive until commit() finishes (cleared there).
     // Construct the value tuple in place — default-constructing Pack (and thus
     // the tuple) requires every decayed arg type to be default-constructible,
     // which some kernels' arg types are not (deleted default ctor on a clean
@@ -133,7 +164,8 @@ class CommandEncoder {
       dim3 grid_dim,
       dim3 block_dim,
       uint32_t smem_bytes,
-      void** params);
+      void** params,
+      bool persistent = false);
 
   // Add a kernel node from a fully-formed params struct (preserves both
   // kernelParams and extra). Used by add_kernel_node_raw and by the child-graph
@@ -212,7 +244,7 @@ class CommandEncoder {
   // params). So we keep a pool per topology key and only ExecUpdate+reuse a
   // slot whose prior launch has drained (inflight==0); otherwise we grow the
   // pool. Across tokens (synced) every slot is free, so slot 0 is reused.
-  // ROCm CLR  stores kernel-node kernelParams BY POINTER, not a deep
+  // ROCm CLR (clr#138) stores kernel-node kernelParams BY POINTER, not a deep
   // copy (CUDA deep-copies). So a cached exec keeps reading the source graph's
   // nodes and our arg Packs by address — they must outlive the exec, not be
   // freed per-token. Each slot OWNS the graph + Packs its exec currently points
@@ -261,7 +293,9 @@ class CommandEncoder {
   // Captures EVERYTHING (manual kernels + library/JIT/memset), unlike the
   // manual-node chain which drops the ~1.4k inline ops. Returns false on any
   // failure so the engine falls back to eager.
-  bool decode_capture_begin(); // begin stream capture (graphs must be off)
+  bool decode_capture_begin(int slot); // begin stream capture (graphs must be off)
+  void* decode_capture_persist_alloc(size_t n);
+  void decode_capture_keep(std::shared_ptr<void> p);
   bool decode_capture_end_record(
       int slot); // end capture, instantiate slot, launch
   bool decode_capture_replay(int slot); // relaunch the captured exec in slot
@@ -277,6 +311,11 @@ class CommandEncoder {
   hipGraph_t decode_cap_graph_[2]{
       nullptr,
       nullptr}; // their source graphs (owned)
+  // G1X: slot-owned persistent kernel-param value stores + H2D host-source
+  // copies. Stream-capture nodes reference the caller's stack arg storage,
+  // which is dead by replay; end_record re-points every kernel node (and
+  // H2D memcpy source) at these slot-owned copies.
+  std::vector<std::shared_ptr<void>> decode_cap_keepalive_[2];
 };
 
 class Device {

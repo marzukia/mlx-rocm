@@ -2,10 +2,10 @@
 
 ## Env + settings
 
-- **GPU**: the build VM, dedicated guest `the build VM@<guest-ip>` (via
+- **GPU**: guest-a, dedicated guest `guest-a@<guest-ip>` (via
   `ssh -J operator@<tailnet-ip>`), AMD Radeon RX 9070 XT / gfx1201, ROCm 7.7
   (guest runtime `/opt/rocm/core-10.1`).
-- **Wheel**: venv-k1 `mlx 0.32.3.dev20261026+the earlier vendor base` — libmlx.so already carries
+- **Wheel**: venv-k1 `mlx 0.32.3.dev20261026+vendorref` — libmlx.so already carries
   submitter's verified fix (worktree head `99cddb5`, branch base); no rebuild.
 - **Env for every guest python**: `LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib`,
   `/models/venv-k1/bin/python`.
@@ -75,14 +75,14 @@ known exit-time HIP teardown hang; never waits beyond the timeout).
 ```sh
 # upload (from worktree)
 scp -J operator@<tailnet-ip> scripts/k1_bench.py scripts/k1bench_run.sh \
-    the build VM@<guest-ip>:/models/tmp/
+    guest-a@<guest-ip>:/models/tmp/
 
 # one per config (baseline, k1-16, k1-32), run sequentially
-ssh -J operator@<tailnet-ip> the build VM@<guest-ip> \
+ssh -J operator@<tailnet-ip> guest-a@<guest-ip> \
     'timeout 570 sh /models/tmp/k1bench_run.sh baseline'
-ssh -J operator@<tailnet-ip> the build VM@<guest-ip> \
+ssh -J operator@<tailnet-ip> guest-a@<guest-ip> \
     'timeout 570 sh /models/tmp/k1bench_run.sh k1-16'
-ssh -J operator@<tailnet-ip> the build VM@<guest-ip> \
+ssh -J operator@<tailnet-ip> guest-a@<guest-ip> \
     'timeout 570 sh /models/tmp/k1bench_run.sh k1-32'
 
 # results land in /models/tmp/k1bench_{baseline,k1-16,k1-32}.out

@@ -1,8 +1,8 @@
-# an earlier runc: TAIL FUSION lever 2 — norm/GDN tail (gdn_prep + gdn_norm_gated)
+# run-724c: TAIL FUSION lever 2 — norm/GDN tail (gdn_prep + gdn_norm_gated)
 
-Salvage/finish of the burned an earlier run run. Goal: `MLX_GDN_TAIL_FUSION=1` on the ROCm
+Salvage/finish of the burned run-724 run. Goal: `MLX_GDN_TAIL_FUSION=1` on the ROCm
 wheel, **≥100 tok/s at T=1, LOSSLESS** (bit-exact stream vs reference m0), on
-the build VM (RX 9070 XT / gfx1201, ROCm 10.1 guest userland).
+guest-a (RX 9070 XT / gfx1201, ROCm 10.1 guest userland).
 
 ## What the lever does
 
@@ -14,7 +14,7 @@ when `MLX_GDN_TAIL_FUSION=1` and (this run) `S == 1` — decode only; prefill an
 MTP-verify (S>1) fall back to the non-fused path, which is what the reference
 m0 stream used.
 
-## The v5 fault (an earlier run) and its root cause
+## The v5 fault (run-724) and its root cause
 
 The 07:40 wheel (built from `fa18fbf`, pre-fix source) faulted at prefill
 (S=27): `grid = conv_dim = 27*8192 = 221184` workgroups with **no
@@ -34,14 +34,14 @@ The source at `fbb7dc9` already carried the grid/guard fixes
 (`grid=(conv_dim+255)/256` + `if (c < conv_dim)`; norm_gated
 `head_dim = w.size()`, `num_heads = o.size()/head_dim` — correct for this
 model's 1-D `[128]` norm weight). The remaining defects were bit-exactness
-and (found by an earlier run) a launcher pointer bug — see below.
+and (found by run-761) a launcher pointer bug — see below.
 
-## The an earlier run fault (dist-g4c wheel) — root cause (an earlier run)
+## The run-743 fault (dist-g4c wheel) — root cause (run-761)
 
 The dist-g4c wheel (built 09:01 from the 96a1677 tree — verified: the
 installed .so's kernel symbol carries the f32 `g_out` param, and the
 launcher disassembly computes `grid=(conv_dim+255)/256`) still faulted
-deterministically in fresh processes, in **both** size variants (an earlier run
+deterministically in fresh processes, in **both** size variants (run-743
 minprobe: conv_dim=512 AND 8192), with varying fault addrs (0x1a150000 /
 0x29db5000 / 0x39a4f000). The non-fused control passed.
 
@@ -61,7 +61,7 @@ pointer"). Every other ROCm kernel uses `gpu_ptr<T>(arr)` =
 dereferenced a host-heap address as an element array → unmapped-VA read →
 HSA memory fault. Host addrs vary per run (fault-addr variance) and the
 first access (`conv_state[0]`) faults at any size (size-independence) —
-matching the an earlier run signature exactly.
+matching the run-743 signature exactly.
 
 **Fix (commit 75ca881):** `gpu_ptr<void>(arr)` / `gpu_ptr<float>(arr)` in
 all three launchers (gdn_prep, gdn_qk_norm, gdn_norm_gated). One file,
@@ -78,7 +78,7 @@ all three launchers (gdn_prep, gdn_qk_norm, gdn_norm_gated). One file,
    bf16 first (inv_scale is not exact in bf16, so k's scale differs).
 4. **prefill OOB**: kernels are T=1-only but the fused branch ran for all S.
 
-## Fixes (commit 96a1677 on the vendor fork:tail-fusion-gdn)
+## Fixes (commit 96a1677 on the vendor ref of <op-fork-user>/mlx)
 
 - `gdn_prep.hip`: bit-exact compute_g chain (bf16 sum, bf16 softplus via
   `max+log1p(exp(min-max))`, f32 `expf`); g output stays **f32** (kernel param
@@ -102,21 +102,21 @@ accumulation; silu = `Multiply{}(x, Sigmoid{}(x))` op-struct reuse.
 - [ ] G4 TAIL_FUSION=0 vs =1 → streams identical (toggle is a no-op when off) —
   **PENDING (next run, with G3)**
 
-RESULTS (an earlier run, 2026-10-28, dist-decode wheel +75ca881):
+RESULTS (run-761, 2026-10-28, dist-decode wheel +75ca881):
 
 - G1a `gdn_prep` alone, T=1, zero+random: **no fault** (was: deterministic HSA
   memory fault), qn/kn/vc/beta/g maxdiff = 0.0 (10/10), g_dtype=float32
 - G1b `gdn_norm_gated` alone, zero+random: **no fault**, maxdiff = 0.0 (2/2)
 - G2 fused T=1 layer forward (qwen3-9b layer 0): fused vs unfused
   maxdiff = 0.0
-- Note: an earlier run's orphaned minprobe (hung 74 min on the faulted queue) was
+- Note: run-743's orphaned minprobe (hung 74 min on the faulted queue) was
   killed before the gates; all gates ran on a clean GPU (flock).
 - G3/G4 (bench ≥100 tok/s + lossless stream vs m0) are the next run.
 
 ## Vendor pin
 
-`vendor.json` primary re-pinned to `the vendor fork` @ `75ca881`
-(branch `tail-fusion-gdn`) — the exact source dist-decode was built from
-(96a1677 + an earlier run launcher pointer fix; same CMAKE_ARGS as before:
+`vendor.json` primary re-pinned to the vendor ref of `<op-fork-user>/mlx` @
+`75ca881` — the exact source dist-decode was built from
+(96a1677 + run-761 launcher pointer fix; same CMAKE_ARGS as before:
 `-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=OpenBLAS`,
 `CMAKE_PREFIX_PATH=/opt/rocm/core-10.1`).

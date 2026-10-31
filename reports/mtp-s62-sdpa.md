@@ -1,11 +1,11 @@
 # m4: direct SDPA A/B at layer 3 — the m3 root cause, isolated
 
-Date: 2026-10-29 (UTC). Run on the build VM (RX 9070 XT / gfx1201, ROCm 10.1 guest,
+Date: 2026-10-29 (UTC). Run on guest-a (RX 9070 XT / gfx1201, ROCm 10.1 guest,
 venv-d, mlx 0.32.3.dev20261028+75ca881, model `/models/qwen3-9b-mlx`).
 Script: `scripts/diag-s62-sdpa.py` (MODE=harvest + MODE=ab). Guest log
-`/models/tmp/an earlier run/diag-m4-harvest.log`, captures
-`/models/tmp/an earlier run/cap-m4-sdpa.pkl`, kernel traces
-`/models/tmp/an earlier run/prof-*.csv_kernel_trace.csv`.
+`/models/tmp/run-785/diag-m4-harvest.log`, captures
+`/models/tmp/run-785/cap-m4-sdpa.pkl`, kernel traces
+`/models/tmp/run-785/prof-*.csv_kernel_trace.csv`.
 
 ## What m4 does
 
@@ -141,6 +141,6 @@ The parameter delta (the fix pointer):
 
 - `scripts/diag-s62-sdpa.py` (MODE=harvest + MODE=ab)
 - `reports/mtp-s62-sdpa.md` (this file)
-- guest: `/models/tmp/an earlier run/cap-m4-sdpa.pkl`,
-  `/models/tmp/an earlier run/diag-m4-harvest.log`,
-  `/models/tmp/an earlier run/prof-*.csv_kernel_trace.csv`
+- guest: `/models/tmp/run-785/cap-m4-sdpa.pkl`,
+  `/models/tmp/run-785/diag-m4-harvest.log`,
+  `/models/tmp/run-785/prof-*.csv_kernel_trace.csv`

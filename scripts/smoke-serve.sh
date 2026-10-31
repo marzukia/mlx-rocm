@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Phase 1 serve smoke (run ON the build VM): qmlx-serve with a 9B-class dense Qwen3.
+# Phase 1 serve smoke (run ON guest-a): qmlx-serve with a 9B-class dense Qwen3.
 # Exit criteria (PLAN.md Phase 1): served, no NaNs, no OOM->SEGV single-process.
 set -euo pipefail
 
-: "${QMLX_SERVE_BIN:?path to the qmlx-serve entrypoint on the build VM}"
+: "${QMLX_SERVE_BIN:?path to the qmlx-serve entrypoint on guest-a}"
 : "${QMLX_SERVE_MODEL:?model ref/name for a 9B-class dense Qwen3 (4bit qmm expected on gfx1201)}"
 : "${QMLX_SERVE_PORT:-8080}"
 # Safe default until the gfx1201 fp8 prefill is proven clean on ROCm 10.1 (docs/plan.md)

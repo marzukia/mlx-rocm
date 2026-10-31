@@ -1,5 +1,5 @@
 #!/bin/bash
-# dist-decode speed bench (an earlier run fixed wheel, clone @75ca881):
+# dist-decode speed bench (run-761 fixed wheel, clone @75ca881):
 #   (a) AR baseline      = mtp-bench3.py MLX_MTP=0  x3
 #   (b) MTP K=1 M=2      = mtp-bench3.py MLX_MTP=2  x3
 #   (c) MTP K=2 (S=3)    = mtp-bench5.py MLX_MTP=3  x1  (only if K2=1)
@@ -10,7 +10,7 @@
 # Any empty compared stream -> STATUS=VACUOUS + exit 1; MATCH only on a
 # non-empty full-length compare.
 #
-# Usage (on the build VM):
+# Usage (on guest-a):
 #   bash bench-decode.sh                 # AR x3 + MTP K=1 x3 + gate
 #   K2=1 bash bench-decode.sh           # + MTP K=2 x1 (run after (b) >= AR)
 #

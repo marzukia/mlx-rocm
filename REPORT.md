@@ -1,7 +1,7 @@
 # K2 non-GEMM fusion — round-4 fix report (submitter)
 
 Branch: `k2-non-gemm-fusion` (base `33b13dd`). Fixes the round-3 adversarial
-review (an earlier run, `reviews/k2-r3-review.md`): 0 BLOCKER / 3 MAJOR / 2 MINOR / 3 NIT.
+review (run-535, `reviews/k2-r3-review.md`): 0 BLOCKER / 3 MAJOR / 2 MINOR / 3 NIT.
 Scope of this round: the 3 MAJORs (one-line guards in `fast.cpp`) + MINOR-1
 (report reconciliation). MINOR-2 (fast.h wording) and NITs are left open
 (see §7).
@@ -9,7 +9,7 @@ Scope of this round: the 3 MAJORs (one-line guards in `fast.cpp`) + MINOR-1
 ## 1. The fixes
 
 All in `vendor/mlx-rocm-upstream/mlx/fast.cpp` (the kv_append gate). The
-verified wheel (an earlier run, source `ec48eb4c`, `/models/mlx-clone-k2`) carries
+verified wheel (run-531, source `ec48eb4c`, `/models/mlx-clone-k2`) carries
 MAJOR-1; MAJOR-2/3 are new one-line checks per the review's suggested fix
 list. No other file changed (fast.h / fast_primitives.h / copy.hip /
 rms_norm.hip were already byte-identical to the wheel source — md5-verified).
@@ -111,7 +111,7 @@ fast.cpp synced (md5-verified), then in `/models/venv-k2` PATH:
 `pip wheel . --no-deps -w /models/dist/ --no-build-isolation` →
 force-reinstall into venv-k2. Log: `/models/tmp/k2-r4-build.log`.
 
-Wheel: `mlx-0.32.3.dev20261026+the earlier vendor base-cp312-cp312-linux_x86_64.whl`,
+Wheel: `mlx-0.32.3.dev20261026+vendorref-cp312-cp312-linux_x86_64.whl`,
 `sha256=d617a1b841c324e426367c0299154c23c566d562e805046dcc130a4711e881ee`
 (supersedes `ec48eb4c`).
 
@@ -125,9 +125,9 @@ Build log tail:
 [100%] Linking CXX shared module .../mlx/core.cpython-312-x86_64-linux-gnu.so
 [100%] Built target core
 BUILD_EXIT=0
-  Created wheel for mlx: filename=mlx-0.32.3.dev20261026+the earlier vendor base-cp312-cp312-linux_x86_64.whl size=21540077 sha256=d617a1b841c324e426367c0299154c23c566d562e805046dcc130a4711e881ee
+  Created wheel for mlx: filename=mlx-0.32.3.dev20261026+vendorref-cp312-cp312-linux_x86_64.whl size=21540077 sha256=d617a1b841c324e426367c0299154c23c566d562e805046dcc130a4711e881ee
 WHEEL_EXIT=0
-Successfully installed mlx-0.32.3.dev20261026+the earlier vendor base
+Successfully installed mlx-0.32.3.dev20261026+vendorref
 INSTALL_EXIT=0
 === BUILD END Mon Oct 26 12:41:04 UTC 2026 ===
 ```
@@ -147,14 +147,14 @@ GPU run.)
 
 **Verdict: 69 PASS / 0 FAIL** (`grep -c '^\[PASS\]'` = 69,
 `grep -c '^\[FAIL\]'` = 0, "all unit checks passed"). No regression vs the
-an earlier run run (69/0 on `ec48eb4c`): the new checks only fire on invalid input,
+run-531 run (69/0 on `ec48eb4c`): the new checks only fire on invalid input,
 and the unscheduled guard routes the same lazy suite inputs to the same
-slice_update fallback the an earlier run wheel used.
+slice_update fallback the run-531 wheel used.
 
 This also resolves MINOR-1: the 69/0 evidence is now substantiated on disk —
 `reports/k2-r4-suite-full.log` is the full raw log of the suite run on the
 branch-as-committed wheel (`d617a1b8`), and `reports/k2-r2-suite-evidence.txt`
-retains the an earlier run session extraction for the `ec48eb4c` run.
+retains the run-531 session extraction for the `ec48eb4c` run.
 `reports/k2-verify-r2.md`'s sourcing note is updated accordingly.
 
 ## 4. Guard-firing evidence (probe, log: `reports/k2-r4-guards.log`)
@@ -200,38 +200,38 @@ retains the an earlier run session extraction for the `ec48eb4c` run.
 - HIP teardown exit-hang after the suite (results complete before the hang;
   runs use the timeout wrapper + early kill on the completion marker).
 
-# an earlier run — vendor-pin fix (dangling pin + silent build-wheel) — worker report
+# run-789 — vendor-pin fix (dangling pin + silent build-wheel) — worker report
 
-Branch: `worker/an earlier run-vendor-pin-fix` (base `origin/main` @ 64b98b8).
-Fixes the an earlier run review-FAIL finding on PR #10 (96a1677 "fix(rocm): GDN fused
+Branch: `worker/run-789-vendor-pin-fix` (base `origin/main` @ 64b98b8).
+Fixes the run-781 review-FAIL finding on PR #10 (96a1677 "fix(rocm): GDN fused
 decode T=1 launcher pointer write"): `vendor.json` pinned
-`75ca881b2e82f7b4069c8564a203792aa16d8a29`, but the fork branch
-`the vendor fork:tail-fusion-gdn` was at `96a1677` (the fix's parent) —
+`75ca881b2e82f7b4069c8564a203792aa16d8a29`, but the vendor-ref branch of
+`<op-fork-user>/mlx` was at `96a1677` (the fix's parent) —
 `75ca881` existed only in a guest build clone and was never pushed, and
 `scripts/build-wheel.sh` never verified the checkout against the pin.
 
 ## 1. Push the pin (part 1)
 
-- `75ca881` recovered from the an earlier run build clone (`/models/mlx-clone-g4`;
+- `75ca881` recovered from the run-761 build clone (`/models/mlx-clone-g4`;
   the task text said g1, but g4 is the clone that carries it — g1's HEAD is
   `1641333`). Fetched into a local repo, then:
 
   ```
-  git push --force-with-lease origin 75ca881:refs/heads/tail-fusion-gdn
-  #   To github.com:the vendor fork.git
-  #    + 96a1677...75ca881 75ca881 -> tail-fusion-gdn (forced)
+  git push --force-with-lease origin 75ca881:refs/heads/<vendor-ref>
+  #   To github.com:<op-fork-user>/mlx.git
+  #    + 96a1677...75ca881 75ca881 -> <vendor-ref> (forced)
   ```
 
   Fast-forward on the branch (96a1677 is 75ca881's parent; the push is a
   2-commit advance, no history rewrite of the pinned commit).
 
 - Verification (all three agree):
-  - `git ls-remote https://github.com/the vendor fork.git refs/heads/tail-fusion-gdn`
+  - `git ls-remote https://github.com/<op-fork-user>/mlx.git refs/heads/<vendor-ref>`
     → `75ca881b2e82f7b4069c8564a203792aa16d8a29`
-  - `gh api repos/the vendor fork/commits/75ca881b2e82f7b4069c8564a203792aa16d8a29`
+  - `gh api repos/<op-fork-user>/mlx/commits/75ca881b2e82f7b4069c8564a203792aa16d8a29`
     → 200, `sha=75ca881b...`, `commit.message="fix(rocm): GDN fused decode T=1 launcher pointer write"`,
     parent `96a16773a1133795406a85545b654b6972d93721`
-  - `gh api repos/the vendor fork/branches/tail-fusion-gdn` →
+  - `gh api repos/<op-fork-user>/mlx/branches/<vendor-ref>` →
     `sha=75ca881b...`
   - `75ca881` is also in the fork's default branch (`main`) history
     (`git merge-base --is-ancestor` → yes), so the pin is resolvable from
@@ -270,29 +270,29 @@ No other change to the script (clone/fetch/install flow untouched).
 
 ## 3. G1/G2 on a wheel built from the landed ref (part 3)
 
-Built on the build VM (guest, ROCm 10.1, gfx1201) under `flock /models/gpu-bench.lock`:
+Built on guest-a (guest, ROCm 10.1, gfx1201) under `flock /models/gpu-bench.lock`:
 
-- Fresh clone of `the vendor fork` @ `tail-fusion-gdn` →
-  `/models/mlx-clone-an earlier run`; `git rev-parse HEAD` =
+- Fresh clone of `<op-fork-user>/mlx` at the vendor ref →
+  `/models/mlx-clone-run-789`; `git rev-parse HEAD` =
   `75ca881b2e82f7b4069c8564a203792aa16d8a29` (the pinned commit, from the
   fork — not the guest build clone).
-- `MLX_VENDOR_DIR=/models/mlx-clone-an earlier run bash scripts/build-wheel.sh`
+- `MLX_VENDOR_DIR=/models/mlx-clone-run-789 bash scripts/build-wheel.sh`
   (with the new verification — it printed `vendor checkout verified` and
-  proceeded) → `/models/dist-an earlier run/mlx-0.32.3.dev20261028+75ca881-cp312-...whl`.
-- Installed into a scratch venv (`/models/venv-an earlier run`, python 3.12.3;
+  proceeded) → `/models/dist-run-789/mlx-0.32.3.dev20261028+75ca881-cp312-...whl`.
+- Installed into a scratch venv (`/models/venv-run-789`, python 3.12.3;
   `venv-d` untouched). The scratch venv mirrors venv-d's mlx_lm model
   files: `qwen3_5.py` (S==1-guarded fused branch) **and** `gated_delta.py`
   (K3 patch: non-fused GDN update routes through
   `mx.fast.gated_delta_update` on ROCm). The first gate round ran with the
   stock PyPI `gated_delta.py` (Python op loop) and G2 diverged at token 33 —
   an environment artifact, not a wheel difference: the m0 reference and the
-  an earlier run AR baseline were both produced with the K3-patched wrapper. With the
+  run-771 AR baseline were both produced with the K3-patched wrapper. With the
   K3 file in place, all gates below pass.
 
 ### Rule-6 effective config (printed + asserted by `scripts/wheel-gates_config.py`)
 
 ```
-an earlier run-config: OK
+run-789-config: OK
   env: MLX_GDN_TAIL_FUSION=1  MLX_ROCM_GDN_FALLBACK=0  MLX_GDN_MLXFAST=1
   wheel: 0.32.3.dev20261028+75ca881  (source sha 75ca881b2e82f7b4069c8564a203792aa16d8a29)
   device: gpu  (rocminfo: gfx1201, AMD Radeon RX 9070 XT)
@@ -310,7 +310,7 @@ signature in the log (grep `HSA|fault|Aborted|core dumped|Segmentation|HIP`
 
 ### G2 — maxdiff 0.0 vs the 4bit-MLX reference + fused==unfused: PASS
 
-Same model/prompt/seed as the an earlier run reference (bench4 `m0.out`, 1024 greedy
+Same model/prompt/seed as the run-612 reference (bench4 `m0.out`, 1024 greedy
 tokens), vacuity-guarded stream compare:
 
 ```
@@ -320,12 +320,12 @@ GATE-LIVE (all compared streams non-empty)
 ```
 
 The fused stream is bit-identical to both the 4bit-MLX (m0) reference and
-the same-wheel unfused stream. Cross-check: the an earlier run AR baseline
+the same-wheel unfused stream. Cross-check: the run-771 AR baseline
 (`bench-decode/m0a.out`, 75ca881 wheel, venv-d) is byte-identical to m0
 (diff 0/1024), so the reference itself is stable across the two 75ca881
 builds.
 
-### an earlier run primitive gates (re-run on this wheel): PASS
+### run-761 primitive gates (re-run on this wheel): PASS
 
 ```
 PRIM-GATES-PASS
@@ -336,7 +336,7 @@ FWD-LAYER maxdiff=0.000000e+00            (fused T=1 layer fwd, 5-layer chain)
 
 ### Sibling state (GPU lock)
 
-Lock was free for every an earlier run run. Sibling an earlier run (QMV lane, dist-g4e):
+Lock was free for every run-789 run. Sibling run-784 (QMV lane, dist-g4e):
 `build_g4e3.log` shows the `ced8c58` wheel build completed 12:23 UTC
 (sha256 `d85065b3...` recorded) — no GPU process of theirs was active at
 check time; no wall-clock remainder visible.
@@ -349,14 +349,14 @@ check time; no wall-clock remainder visible.
   skip-safe off-GPU)
 - `REPORT.md` — this report
 
-# an earlier run: Speed bench on the fixed gdn wheel (dist-decode @75ca881)
+# run-771: Speed bench on the fixed gdn wheel (dist-decode @75ca881)
 
-MTP-ON 100 tok/s lane. Measured the fixed wheel (an earlier run: gdn_prep launcher fix,
+MTP-ON 100 tok/s lane. Measured the fixed wheel (run-761: gdn_prep launcher fix,
 14 kernel-arg host `Data*` ptrs passed as device ptrs; fix commit `75ca881`).
 G1/G2 had already PASSed on dist-decode (no-fault, maxdiff 0.0 vs reference,
 fused==unfused). This run is the first speed measurement on the fixed wheel.
 
-## Verdict (gates, operational order 2026-10-28)
+## Verdict (gates, op order 2026-10-28)
 
 | Gate | Result |
 |---|---|
@@ -369,9 +369,9 @@ M=2 is 64.34 tok/s @ 76.0% accept — the gdn fix did **not** close the MTP gap.
 
 ## Phase 1 — pre-stage + verify (all PASS)
 
-- SSH chain: `ssh -J operator@<tailnet-ip> the build VM@<guest-ip>` (guest the build VM).
+- SSH chain: `ssh -J operator@<tailnet-ip> guest-a@<guest-ip>` (guest guest-a).
 - Build clone: `git -C /models/mlx-clone-g4 log --oneline -1`
-  → `75ca881 an earlier run: fix gdn_prep launcher - data_shared_ptr().get() is a host Data*, not a device pointer`
+  → `75ca881 run-761: fix gdn_prep launcher - data_shared_ptr().get() is a host Data*, not a device pointer`
 - Wheel identity (venv `/models/venv-d`, python3.12):
   `mlx-0.32.3.dev20261028+75ca881` (+ `mlx_lm-0.32.2`) — matches the fixed
   clone ref. `import mlx.core` OK under `LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib`.
@@ -444,7 +444,7 @@ deterministic, so this is systematic, not noise.
 Note for follow-up (not diagnosed here): the harness `save_gdn` zero-copy
 save (`conv, ssm, lengths` per GDN layer) predates the fix; if the fixed
 gdn_prep uses an additional state buffer, the MTP rollback would silently
-miss it. The pre-fix an earlier run run reported m2 byte-identical to m0, so the
+miss it. The pre-fix run-612 run reported m2 byte-identical to m0, so the
 divergence is specific to the fixed wheel's state layout/path.
 
 ## Phase 4 — harness change
@@ -457,12 +457,12 @@ the PR #8 vacuity-guarded lossless gate (same `cmp_streams` helper as
 ## Exact commands (repro)
 
 ```
-ssh -J operator@<tailnet-ip> the build VM@<guest-ip>
+ssh -J operator@<tailnet-ip> guest-a@<guest-ip>
 git -C /models/mlx-clone-g4 log --oneline -1        # 75ca881
 ls /models/venv-d/lib/python3.12/site-packages/ | grep mlx
 flock -w 10 /models/gpu-bench.lock -c true          # LOCK-FREE
 # smoke (10 tokens, flock -w 240): venv-d python, load + 10x argmax step
-scp bench/{mtp-bench3.py,mtp-bench5.py,bench-decode.sh} the build VM@...:/models/tmp/bench-decode/
+scp bench/{mtp-bench3.py,mtp-bench5.py,bench-decode.sh} guest-a@...:/models/tmp/bench-decode/
 bash /models/tmp/bench-decode/bench-decode.sh            # 6 runs + gate (K2 not run)
 ```
 
@@ -492,8 +492,8 @@ for T>1 (verify) — that can differ by 1 ULP on the same logical row
 ## Fix
 
 `patches/m6-ropeq-rowinvariant.diff` (applied by
-`scripts/apply-m6-patch.py`, idempotent, `.bak-an earlier run` backup per the
-an earlier runc convention):
+`scripts/apply-m6-patch.py`, idempotent, `.bak-run-866` backup per the
+run-718c convention):
 
 - New `RowInvariantRoPE` module in `qwen3_next.py`: the same rotation
   computed with plain elementwise ops — inv_freqs as an fp32 constant
@@ -589,7 +589,7 @@ to pass bit-exact. No bench regression (AR -0.32%, MTP K=1
 
 - `patches/m6-ropeq-rowinvariant.diff` — the model patch (3 hunks:
   import math; RowInvariantRoPE class; conditional rope init).
-- `scripts/apply-m6-patch.py` — idempotent applier + .bak-an earlier run.
+- `scripts/apply-m6-patch.py` — idempotent applier + .bak-run-866.
 - `scripts/diag-s62-m6.py` + `scripts/run-m6-ab.sh` — focused A/B.
 - `scripts/run-m6-g4.sh` — G4 gate + bench extraction.
 
@@ -639,7 +639,7 @@ kernel's row-0 output computation).
 Worker: <operator> (2026-10-28). Source of truth: method-correction doc
 (https://drop.<host>/planky/3150ddc860c16a6d3bf769f3.html) — section 4 step 0,
 section 2 rules 1/2/6/7. No model load. All GPU time under
-`flock /models/gpu-bench.lock` (lock free at dispatch; an earlier run terminal).
+`flock /models/gpu-bench.lock` (lock free at dispatch; run-771 terminal).
 
 ## Headline
 
@@ -725,22 +725,22 @@ ceiling" (960 GB/s-derived) remains unreachable; the zero-other-cost floor is
 
 ```bash
 # lock check first
-ssh -J operator@<tailnet-ip> the build VM@<guest-ip> 'flock -w 5 /models/gpu-bench.lock -c true && echo LOCK_FREE'
+ssh -J operator@<tailnet-ip> guest-a@<guest-ip> 'flock -w 5 /models/gpu-bench.lock -c true && echo LOCK_FREE'
 
 # deploy bench
-scp -J operator@<tailnet-ip> bench/step0_streaming_read.py bench/step0_parse.py bench/step0_run.sh the build VM@<guest-ip>:/models/tmp/
+scp -J operator@<tailnet-ip> bench/step0_streaming_read.py bench/step0_parse.py bench/step0_run.sh guest-a@<guest-ip>:/models/tmp/
 
 # 4 GiB pass (default) — CU count + ceiling, under flock, rocprofv3 kernel time
-ssh -J operator@<tailnet-ip> the build VM@<guest-ip> 'bash /models/tmp/step0_run.sh'
+ssh -J operator@<tailnet-ip> guest-a@<guest-ip> 'bash /models/tmp/step0_run.sh'
 
 # 2 GiB variant
-ssh -J operator@<tailnet-ip> the build VM@<guest-ip> 'STEP0_NBYTES=$((2*1024*1024*1024)) STEP0_OUT=/models/tmp/step0_2g bash /models/tmp/step0_run.sh'
+ssh -J operator@<tailnet-ip> guest-a@<guest-ip> 'STEP0_NBYTES=$((2*1024*1024*1024)) STEP0_OUT=/models/tmp/step0_2g bash /models/tmp/step0_run.sh'
 
 # CU count (independent of the bench)
-ssh -J operator@<tailnet-ip> the build VM@<guest-ip> '/opt/rocm/core-10.1/bin/rocminfo | grep -B1 -A4 "Marketing Name"; /opt/rocm/core-10.1/bin/amd-smi | head -14; cat /sys/class/kfd/kfd/topology/nodes/1/properties'
+ssh -J operator@<tailnet-ip> guest-a@<guest-ip> '/opt/rocm/core-10.1/bin/rocminfo | grep -B1 -A4 "Marketing Name"; /opt/rocm/core-10.1/bin/amd-smi | head -14; cat /sys/class/kfd/kfd/topology/nodes/1/properties'
 
 # direct HIP CU query (the value mlx uses)
-ssh -J operator@<tailnet-ip> the build VM@<guest-ip> 'export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib; /opt/rocm/core-10.1/bin/hipcc -o /models/tmp/hipcu bench/step0_hip_cu.cu && flock -w 60 /models/gpu-bench.lock -c /models/tmp/hipcu'
+ssh -J operator@<tailnet-ip> guest-a@<guest-ip> 'export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib; /opt/rocm/core-10.1/bin/hipcc -o /models/tmp/hipcu bench/step0_hip_cu.cu && flock -w 60 /models/gpu-bench.lock -c /models/tmp/hipcu'
 ```
 
 Files: `bench/step0_run.sh` (guest-side runner: CU count + flock + rocprofv3 +
@@ -754,9 +754,9 @@ config, doc rule 6), `bench/step0_parse.py` (trace parser; GB/s from kernel time
 Ceiling 636 GB/s ≥ ~550 GB/s → **no rescale flag**; operator may proceed to
 step 1 (decode QMV kernel) with the doc's 640 GB/s-based targets. The 32-CU
 HIP view is recorded for kernel-tuning heuristics (§1 note).
-# MTP SPEED LEVER — fast M=2 under the bit-exact rule (an earlier runc)
+# MTP SPEED LEVER — fast M=2 under the bit-exact rule (run-723c)
 
-Continuation of burned an earlier run. Objective: make the m2 (K=1/S=2 spec-verify) path fast WITH the lossless gate.
+Continuation of burned run-723. Objective: make the m2 (K=1/S=2 spec-verify) path fast WITH the lossless gate.
 
 ## TL;DR
 **The M=2 QMM path is already the M=1 row algorithm — bit-exact AND fast. No code change needed.** The config variant (wide QMV at M=2) is the current path. The "2x row cost" is the 2x verify time (expected, since m2 processes 2 tokens), and m2 throughput ≈ m0 throughput.
@@ -802,10 +802,10 @@ if (lane == 0) out[row * N + col] = acc;
 - But m2 throughput ≈ m0 throughput (63.67 ≈ 65.07), because m2 processes 2 tokens per verify step: m2_throughput = 2 / (2 × m0_forward_time) = m0_throughput.
 - The "2x row cost" is the 2x verify time (expected), and m2 throughput = m0 throughput.
 
-## 2. an earlier run (M-invariance) intersection
+## 2. run-732 (M-invariance) intersection
 - The sibling line makes M=2..8 rows run the M=1 row algorithm for bit-exactness.
-- **My analysis: the wide QMV kernel (the M=2 path for this model) is ALREADY M-independent per-row → the M=2 path already runs the M=1 row algorithm. So the an earlier run fix is a no-op at the QMM level for this model (the QMM is already bit-exact).**
-- The o_proj divergence (an earlier run/an earlier run named op) is NOT at the QMM level (primitive shows o_proj BIT-EXACT, maxdiff=0.0). It must be in another part of the m2 pipeline (GDN, attention, or the m2 harness setup).
+- **My analysis: the wide QMV kernel (the M=2 path for this model) is ALREADY M-independent per-row → the M=2 path already runs the M=1 row algorithm. So the run-732 fix is a no-op at the QMM level for this model (the QMM is already bit-exact).**
+- The o_proj divergence (run-718/run-732 named op) is NOT at the QMM level (primitive shows o_proj BIT-EXACT, maxdiff=0.0). It must be in another part of the m2 pipeline (GDN, attention, or the m2 harness setup).
 - **The speed track does NOT conflict with the correctness fix**: the M=2 path (wide QMV) is fast (m2 ≈ m0) and bit-exact. No mitigation needed.
 
 ## 3. Verification
@@ -821,7 +821,7 @@ o_proj:   K=4096  N=4096   M=2 vs 2xM=1 maxdiff=0.000e+00  BIT-EXACT
 **All 4 geometries BIT-EXACT (maxdiff=0.0).**
 
 ### (b) Bench (m0 + m2, 1024 tokens, greedy, fresh process, flock)
-Reference (an earlier run, /models/tmp/bench4/): m0=64.49 tok/s, m2a=63.81 tok/s (389/512=76% acceptance).
+Reference (run-710, /models/tmp/bench4/): m0=64.49 tok/s, m2a=63.81 tok/s (389/512=76% acceptance).
 G3 bench (/models/tmp/bench-g3/): pending.
 
 ## 4. Gate
@@ -837,11 +837,11 @@ G3 bench (/models/tmp/bench-g3/): pending.
 
 # STEP 1 — Multi-row QMV investigation (marzukia/mlx-rocm)
 
-Salvaged from an earlier run (burned 3601/3600s mid-investigation). Resumed from
+Salvaged from run-784 (burned 3601/3600s mid-investigation). Resumed from
 `refs/heads/fleetwork-salvage/784` → branch `worker/step1-qmv-mr` @ 23a63c20.
 
-**Reframing (the key correction to an earlier run):** the QMV matmul dispatches ARE in the
-rocprofv3 trace. an earlier run missed them because rocprofv3's `grid_size` reports total
+**Reframing (the key correction to run-784):** the QMV matmul dispatches ARE in the
+rocprofv3 trace. run-784 missed them because rocprofv3's `grid_size` reports total
 *work-items* (numBlocks × dimBlocks), not block count, and the symbol table
 mangles the kernel name to `copy_v` in some traces. The matmul is a real,
 measurable dispatch.
@@ -954,7 +954,7 @@ the per-row wide kernel re-reads the weights once per row. The MR kernel
 
 ## 6. MR kernel measurement (2026-10-28/29, branch 1e9c50e)
 
-Wheel: built on the build VM from `/models/mlx-clone-mr` (base 75ca881 + branch MR-kernel
+Wheel: built on guest-a from `/models/mlx-clone-mr` (base 75ca881 + branch MR-kernel
 state, byte-verified identical to the repo vendor tree at 1e9c50e; qmm.o + wheel built
 after the final source fix, `qmv_wide_mr_kernel` symbols present in libmlx.so). Unpacked
 at `/models/wheel-qmv` (PYTHONPATH per the script header). Launch-verified:
@@ -1047,13 +1047,13 @@ run logs `ref-run.log` / `new-run.log`, wheel `/models/wheel-qmv`.
 
 ## 7. MR kernel weight-reuse (dequant hoist) — measurement (2026-10-29, worker/step1-qmv-mr2 @ e144f39)
 
-Scope: build + gates + bench + report only (an earlier run's kernel change, e144f39, was
+Scope: build + gates + bench + report only (run-825's kernel change, e144f39, was
 committed but its bench evidence was lost to the upload failure). No kernel
 redesign in this run.
 
 ### 7.1 Design rationale (the hoist, e144f39)
 
-The an earlier run MR kernel re-dequantized the weight tile (shift+mask+cvt) for EVERY
+The run-818 MR kernel re-dequantized the weight tile (shift+mask+cvt) for EVERY
 row m inside the k-loop, although the tile is identical across rows. e144f39
 hoists the dequant OUT of the row loop into a register array (`wn[32]` 4-bit /
 `wn[16]` 8-bit, computed once per k-tile) and MACs all M rows against it. The
@@ -1064,17 +1064,17 @@ increment becomes the MAC only (sub-additive), not dequant+MAC.
 
 ### 7.2 Build + effective config
 
-The an earlier run guest clone (`/models/mlx-clone-mr`) was gone, so it was
-reconstructed: fork base 75ca881b (the an earlier run base) + the repo vendor-tree
+The run-818 guest clone (`/models/mlx-clone-mr`) was gone, so it was
+reconstructed: fork base 75ca881b (the run-818 base) + the repo vendor-tree
 overlay of exactly the three quantized files (`qmm.hip` md5 ab6bc086, new
 `qmv_wide_mr_kernel.hip` md5 2352b75c byte-matching the branch file, new
 `qmv_lx_kernel.hip`). The vendor tree's `fast.*` trio was NOT overlaid (it is
-the older the earlier vendor base base; 75ca881's `fast.h` carries `gdn_prep`, which the
+the older vendor-ref base; 75ca881's `fast.h` carries `gdn_prep`, which the
 75ca881 `python/src/fast.cpp` binding requires — the first build failed on
 exactly that, then built clean). Wheel
 `mlx-0.32.3.dev20261028+75ca881b` (sha256 dc9274a4…; libmlx.so sha256
 821da604…, 24 `qmv_wide_mr` symbols, 76 `gfx1201` strings), unpacked at
-`/models/wheel-qmv` (an earlier run wheel backed up to `wheel-qmv-an earlier run.bak`).
+`/models/wheel-qmv` (run-818 wheel backed up to `wheel-qmv-run-818.bak`).
 Launch-verified: `[mlx-rocm] bound HIP device 0: gfx1201 (AMD Radeon RX 9070
 XT) cus=32`; M=2 matmul OK. No `MLX_QMV_*` env (CONFIG lines show `env={}`) →
 defaults: MR gate M≤4 && LDS≤32 KB, 16 cols/block. `qmv_wide_mr_kernel`
@@ -1084,19 +1084,19 @@ the trace); `qmv_wide_kernel` fallback on the down shape (K=12288 → LDS
 
 GB/s = bytes moved / rocprofv3 kernel time (50 measured dispatches, 10 warmup
 excluded), all-bytes basis; pct against the MEASURED 640 GB/s peak (method
-doc: 9070 XT = 640 GB/s, NOT 960; the an earlier run parse script's 636 denominator is
+doc: 9070 XT = 640 GB/s, NOT 960; the run-818 parse script's 636 denominator is
 superseded here). ms/token = M=1 kernel time per call (decode is M=1).
 
 ### 7.3 Correctness gates (all in-run)
 
 - **Bit-exact vs per-row wide kernel: PASS 16/16** — refs regenerated with the
-  baseline wheel (venv-d, per-row `qmv_wide_kernel`; the an earlier run `.npy` refs were
+  baseline wheel (venv-d, per-row `qmv_wide_kernel`; the run-818 `.npy` refs were
   cleaned from the guest), checked with the hoist wheel: every shape × M=1..4,
   maxdiff 0.0, raw-uint16 `array_equal` True.
 - **AR 1024-token greedy stream (MLX_MTP=0, qwen3-9b-mlx, harness prompt):
   MATCH** — `TOKS=1024 TOKS_S=70.48`; ALLTOKS byte-identical (cmp) to BOTH the
-  per-row wheel stream (an earlier run `new-alltoks`) and the baseline stream
-  (`ref-alltoks`). Cross-run tok/s is drift (an earlier run: 62.97 new / 70.28 ref);
+  per-row wheel stream (run-818 `new-alltoks`) and the baseline stream
+  (`ref-alltoks`). Cross-run tok/s is drift (run-818: 62.97 new / 70.28 ref);
   stated, not gated.
 - **M=1 non-regression: PASS** — gate_up M=1 655.9 GB/s ≥ 541; M=1 stream
   byte-identical (same cmp above).
@@ -1140,9 +1140,9 @@ superseded here). ms/token = M=1 kernel time per call (decode is M=1).
 
 ### 7.6 The hoist is codegen-neutral — per-row increment + counter evidence
 
-Measured per-row increment (in-run, (t(M=4)−t(M=1))/3) vs an earlier run:
+Measured per-row increment (in-run, (t(M=4)−t(M=1))/3) vs run-818:
 
-| shape | an earlier run µs/row | an earlier run µs/row | Δ |
+| shape | run-818 µs/row | run-835 µs/row | Δ |
 |-------|-------------|-------------|---|
 | gate_up (MR) | 34.8 | 33.0 | −5.2% |
 | o_proj (MR) | 9.95 | 9.91 | −0.4% |
@@ -1151,14 +1151,14 @@ Measured per-row increment (in-run, (t(M=4)−t(M=1))/3) vs an earlier run:
 
 The hoist changed the per-row cost by ≤7% — within the drift band set by the
 unchanged wide kernel (−7.1%; cross-run M=1 baselines moved 0-19% between the
-an earlier run and an earlier run sessions, so only increments are comparable). Effective per-row MAC throughput: gate_up
+run-818 and run-835 sessions, so only increments are comparable). Effective per-row MAC throughput: gate_up
 100.66 MFLOP / 33.0 µs ≈ 3.05 TFLOPS; lm_head 2037 MFLOP / 488 µs ≈ 4.17
 TFLOPS. The bars need ≤5.6 µs/row (M=2) and ≤4.3 µs/row (M=4) on gate_up —
 6-8× below the measured increment.
 
 Why: the dequant expression `(wp[q] >> (BITS·j)) & mask` depends ONLY on
 `wp[k]`, which is invariant across the m-loop — so hipcc was ALREADY
-CSE-ing it out of the row loop in the an earlier run kernel. The explicit register
+CSE-ing it out of the row loop in the run-818 kernel. The explicit register
 array produces the same codegen; the per-row cost is the MAC itself
 (M·N·K FMA + x/y traffic), which scales linearly with M by construction.
 
@@ -1175,7 +1175,7 @@ gate_up; CU_NUM=64):
 The compute units are active for 99.5-100% of the kernel's runtime at every
 M — the kernel is compute-bound, not weight-bandwidth-bound. SQ_WAVES is
 CONSTANT in M (each wave already processes all M rows); what scales with M is
-the per-wave MAC work. Dispatch config unchanged from an earlier run (workgroup 32×16,
+the per-wave MAC work. Dispatch config unchanged from run-818 (workgroup 32×16,
 LDS 32768 B, private_segment 0 — no spill; 60/60 dispatches per shape).
 (Supported counters on this rocprofv3/gfx1201: SQ_WAVES, SQ_BUSY_CYCLES,
 GRBM_GUI_ACTIVE, CU_NUM; SQ_INSTS_VALU / TA_TA_BUSY / GL2C_* report 0.)
@@ -1189,31 +1189,31 @@ this run.
 Artifacts on the guest: `/models/tmp/qmv-mr/{ref,new}/` (bitexact, 16
 bench logs + traces, ar.log, config.log, gpuinfo.log, flock-fails.log),
 `/models/tmp/qmv-mr/pmc-mr-{4096,12288}-M{1,4}/` (PMC traces), build log
-`/models/an earlier run-build2.log`, wheel `/models/wheel-qmv` (an earlier run wheel at
-`/models/wheel-qmv-an earlier run.bak`).
+`/models/run-835-build2.log`, wheel `/models/wheel-qmv` (run-818 wheel at
+`/models/wheel-qmv-run-818.bak`).
 
-## 8. an earlier run LX hoist A/B — verify + measure (2026-10-29, worker/qmv-tile-wmma @ 01c1013, an earlier run salvage)
+## 8. run-852 LX hoist A/B — verify + measure (2026-10-29, worker/qmv-tile-wmma @ 01c1013, run-889 salvage)
 
-The an earlier run lever (method doc section 6.4: column-invariant per-row x-chunk-sum
-hoisted to a double-buffered 1 KB LDS buffer, in-k `__syncthreads`; an earlier run
-draft, an earlier run design/build, this run = verify + measure). A/B toggle:
-`MLX_QMV_MR_LX` (1 = hoist, 0 = an earlier run path — the an earlier run MR2 kernel; each
+The run-852 lever (method doc section 6.4: column-invariant per-row x-chunk-sum
+hoisted to a double-buffered 1 KB LDS buffer, in-k `__syncthreads`; run-881
+draft, run-889 design/build, this run = verify + measure). A/B toggle:
+`MLX_QMV_MR_LX` (1 = hoist, 0 = run-825 path — the run-835 MR2 kernel; each
 instantiation compiles only its m-loop path via `if constexpr`).
 
 ### 8.1 Build + effective config
 
-- Source: the 01c1013 vendor tree (MR2 lineage merge + an earlier run hoist + the
+- Source: the 01c1013 vendor tree (MR2 lineage merge + run-852 hoist + the
   dispatch fix — LXHOIST is a template parameter, selected at runtime).
   Applier round-trip replay verified: MR2-lineage base (md5-verified:
   `qmv_wide_mr_kernel.hip` 2352b75c, `qmm.hip` ab6bc086) +
   `patches/qmv-mr-lxhoist.diff` → byte-identical to the committed vendor
   tree (b05f379b / 0fdec793).
-- Wheel built on the build VM (ROCm 10.1, gfx1201, RX 9070 XT) in
+- Wheel built on guest-a (ROCm 10.1, gfx1201, RX 9070 XT) in
   `/models/mlx-clone-mr` (incremental; `qmm.o` recompiled for the
-  dispatch fix, 0 errors), `.so` swapped into `/models/venv-an earlier run`
+  dispatch fix, 0 errors), `.so` swapped into `/models/venv-run-889`
   (md5 4b51625c matches the build output). Wheel
   0.32.3.dev20261028+75ca881b.
-- Bench: one fresh process per env (an earlier run convention), 10 warmup + 50 reps,
+- Bench: one fresh process per env (run-835 convention), 10 warmup + 50 reps,
   `rocprofv3 --kernel-trace` kernel time (doc rule 2), under
   `flock /models/gpu-bench.lock`. Config printed + asserted per run:
   wheel + MLX_* env in every CONFIG line; kernel family per shape and the
@@ -1226,7 +1226,7 @@ Bit-exact vs the per-row `qmv_wide_kernel` at identical inputs (seed 42 per
 shape, bf16 x, 4-bit affine gs 64 with bias, bf16 scales/biases; ref run
 `MLX_QMV_NO_MR=1`, check run `MLX_QMV_MR_LX=1`, same wheel): **16/16
 combos (4 shapes x M=1..4) maxdiff 0.0, raw-uint16 `array_equal` True**.
-The hoist's FADD chain is the exact an earlier run per-row lx order, so the value is
+The hoist's FADD chain is the exact run-825 per-row lx order, so the value is
 bit-identical by construction; the gate confirms it end-to-end.
 
 ### 8.3 A/B measurement — GAIN-GATE FAIL (the hoist is a loss)
@@ -1256,16 +1256,16 @@ negligible, so the negative gains are real, not drift.
 doc section 2: gain >= 3% to count). M=1 is hit hardest (mean −19.1%);
 M=2..4 −10.6..−16.2%.
 
-Baseline consistency: the LX=0 (an earlier run path) numbers match the an earlier run section
+Baseline consistency: the LX=0 (run-825 path) numbers match the run-835 section
 7.4 measurement (same kernel, prior session) within the documented cross-run
 drift band (0-19%; section 6.1) — gate_up M=1 43.4 vs 43.2 µs/call,
-lm_head M=1 905.3 vs 906.0 — confirming the A/B baseline IS the an earlier run MR2
+lm_head M=1 905.3 vs 906.0 — confirming the A/B baseline IS the run-835 MR2
 baseline; the in-run A/B (control-stable) is the valid gate measurement.
 
 ### 8.4 Why the hoist loses
 
 The kernel is compute-bound (section 7.6: 99.5-100% CU active, SQ_WAVES
-constant in M). The an earlier run path computes the per-row lx inline (16-column
+constant in M). The run-825 path computes the per-row lx inline (16-column
 redundancy, 32-term FADD chain per row per k-tile) with NO in-k barrier.
 The hoist replaces that with one computation per (row, k-tile) + an
 `__syncthreads` per k-iteration + a 1 KB double-buffered LDS write/read
@@ -1276,9 +1276,9 @@ pipeline behind the MAC work), the barrier is not. The loss is worst at M=1
 MAC work per barrier), consistent with the measured −19% (M=1) → −10.6%
 (M=3) gradient.
 
-**Verdict: the section 6.4 lever (an earlier run LX hoist) is LOSSLESS (16/16
+**Verdict: the section 6.4 lever (run-852 LX hoist) is LOSSLESS (16/16
 bit-exact) but does NOT meet the >= 3% gain gate — it is a 0.7-31%
-performance loss on gfx1201. The an earlier run path (LX=0) remains the best measured
+performance loss on gfx1201. The run-825 path (LX=0) remains the best measured
 multi-row QMV configuration; the M=2..4 bars (section 7.5) still FAIL.**
 Follow-up flag: the dispatch default is `MLX_QMV_MR_LX=1` (hoist on) — with
 this measurement the default should flip to 0 (or the hoist instantiation
@@ -1286,15 +1286,15 @@ dropped) before the MR path is used in a serve config.
 
 Artifacts on the guest: `/models/tmp/qmv-mr2-lx/` (bitexact ref/check
 logs + .npy refs, bench0/1 logs, rocprofv3 traces, parse/combos/gain logs),
-build log `/models/an earlier run-build.log`, wheel `.so` in
-`/models/venv-an earlier run` (build dir `/models/mlx-clone-mr`).
+build log `/models/run-889-build.log`, wheel `.so` in
+`/models/venv-run-889` (build dir `/models/mlx-clone-mr`).
 
-## m8: full-state audit + T-dependence patch (an earlier run)
+## m8: full-state audit + T-dependence patch (run-915)
 
 ### P1: state inventory (static audit, no GPU)
 
 Guest stack audited: venv-d wheel 75ca881 (mlx-clone-mr; GDN tail
-fusion fbb7dc95 + an earlier runc + an earlier run), model qwen3_5 (32 layers,
+fusion fbb7dc95 + run-724c + run-761), model qwen3_5 (32 layers,
 full_attention_interval=4 → 24 GDN + 8 FA; 32 v-heads, 16 k-heads,
 head 128, conv kernel 4, conv_dim 8192), MTP = single full-attention
 drafter with its own KVCache. Fused path (MLX_GDN_TAIL_FUSION=1,
@@ -1305,12 +1305,12 @@ mask=None): gdn_prep (conv+silu, beta, g, qk_norm) → gated_delta
 
 | # | state | owner | shape | write path | verify-path rollback (bench/mtp-bench3.py) | verdict |
 |---|-------|-------|-------|-----------|-------------------------------------------|---------|
-| 1 | conv_state | GDN ArraysCache[0] | (1,3,8192) bf16 | `cache[0] = mx.contiguous(conv_input[:, -3:, :])` (qwen3_next.py fused) | save_gdn/restore_gdn (ref restore) | covered (an earlier run n=0) |
-| 2 | ssm_state | GDN ArraysCache[1] | (1,32,128,128) f32 | `cache[1] = state` (recurrent out) | save_gdn/restore_gdn | covered (an earlier run n=0) |
+| 1 | conv_state | GDN ArraysCache[0] | (1,3,8192) bf16 | `cache[0] = mx.contiguous(conv_input[:, -3:, :])` (qwen3_next.py fused) | save_gdn/restore_gdn (ref restore) | covered (run-893 n=0) |
+| 2 | ssm_state | GDN ArraysCache[1] | (1,32,128,128) f32 | `cache[1] = state` (recurrent out) | save_gdn/restore_gdn | covered (run-893 n=0) |
 | 3 | lengths | GDN ArraysCache | None | never prepared (probe/bench) | carried in save_gdn | n/a (None) |
 | 4 | left_padding | GDN ArraysCache | None | never set | carried in save_gdn | n/a (None) |
-| 5 | keys | FA KVCache | (1,n_kv,T,hd) | update_and_fetch append | c.trim(2) | covered (an earlier run n=0) |
-| 6 | values | FA KVCache | (1,n_kv,T,hd) | update_and_fetch append | c.trim(2) | covered (an earlier run n=0) |
+| 5 | keys | FA KVCache | (1,n_kv,T,hd) | update_and_fetch append | c.trim(2) | covered (run-893 n=0) |
+| 6 | values | FA KVCache | (1,n_kv,T,hd) | update_and_fetch append | c.trim(2) | covered (run-893 n=0) |
 | 7 | offset | FA KVCache | int | +1/forward; feeds RowInvariantRoPE position + k/v write slot | trim(2) restores | covered (m7: load-bearing, t14 4096/4096 drift when omitted) |
 | 8 | mtp keys | MTP KVCache | (1,16,T,256) | MTP draft forward | save_mtp/restore_mtp (m7, numpy forced-eval) | covered (m7 4096/4096 bit-exact) |
 | 9 | mtp values | MTP KVCache | (1,16,T,256) | MTP draft forward | save_mtp/restore_mtp | covered |
@@ -1337,14 +1337,14 @@ rollback (1-10, 11, 13; 3/4/12 are no-op Nones). The G4
 first_div=148 is a **compute-level** T-dependence in the GDN fused
 path, not a state leak. The row-0 T-dependence is item 15 (the conv
 in gdn_prep_kernel); items 16-17 are token-1-only OOB reads that the
-an earlier run state-identity (n=0) shows are benign in the current pool layout
+run-893 state-identity (n=0) shows are benign in the current pool layout
 but are not row-invariant by construction. The patch (P3) makes the
 gdn_prep conv row-invariant (per-token causal sliding window) and the
 beta/g + conv_weight reads in-range for all S, preserving S=1
 bit-exactness (sequential k-order sum) and matching the unfused
 nn.Conv1d reference for all S.
 
-**P2 (single-fork probe, one GPU run): DONE (an earlier run, venv-d 75ca881, step 100,
+**P2 (single-fork probe, one GPU run): DONE (run-915, venv-d 75ca881, step 100,
 prev=11 draft=6278).** scripts/m8-state-audit.py (hook fixed: class-level
 __call__ + id(self) lookup; the salvaged instance-attr __call__ hook
 does not fire — dunders are looked up on the type).
@@ -1390,7 +1390,7 @@ Row-0 logits (A[0,0] vs B1[0,0]): n=248320/248320 maxabs=2.443e+01
 (T-DEPENDENT, consistent with dbb6644's "row-0 logits differ on all
 248320 entries").
 
-**Root-cause re-localization (an earlier run):** the G4 first_div=148 is a
+**Root-cause re-localization (run-915):** the G4 first_div=148 is a
 **compute-level FA (SDPA) T-dependence at layer 3**, NOT a GDN conv
 T-dependence and NOT a state-rollback leak. The GDN layers 0,1,2 are
 row-0 T-invariant (clean state + clean row-0 output). The FA layer 3
@@ -1411,11 +1411,11 @@ other S values but is not the G4 first-div source.
 
 ---
 
-## P3 (an earlier run): root cause found - SDPA 1-pass kernel compile-time causal split (row-1 T-dependence)
+## P3 (run-966): root cause found - SDPA 1-pass kernel compile-time causal split (row-1 T-dependence)
 
 **Probe-discipline fix (this session):** all state snapshots are now
 numpy copies restored DTYPE-PRESERVING (`mx.array(numpy, dtype=orig)`).
-The P2/an earlier run "layer-3 row-0 T-dependence" was a probe artifact of the
+The P2/run-915 "layer-3 row-0 T-dependence" was a probe artifact of the
 f32 GDN-restore (see P2 addendum above); with dtype-preserving restore
 the 148-fork re-run shows **row 0 fully clean and row 1 clean at the
 147 state** (PREDICTED token@148: mtp(l1A)=33443,
@@ -1457,7 +1457,7 @@ rowx key-matching fixed):**
   (GDN 16+ conv/ssm, KV 15+ keys/values) - consistent with the FA15
   row-1 1-ulp input.
 
-**Mechanism (source read, venv wheel 75ca881b + vendor the earlier vendor base
+**Mechanism (source read, venv wheel 75ca881b + the vendor ref
 identical file):** `mlx/backend/rocm/scaled_dot_product_attention.hip`
 - the decode path (qL < 4) uses `kernel_sdpav_1pass<T, do_causal, D>`
   with **`do_causal` a compile-time template parameter**: S=2
@@ -1556,7 +1556,7 @@ one-round-max rule (first_div moved: FA15_sdpa_out -> FA15_sdpa_k).
 
 **Gates (baseline .so, this session):**
 - G4 5-arm: M2-M0-LOSSLESS **FAIL first_div=148 a=33443 b=24296**
-  (deterministic, matches pre-session an earlier run); M1-M0-CONTROL MATCH;
+  (deterministic, matches pre-session run-866); M1-M0-CONTROL MATCH;
   M1-M2A FAIL first_div=148 (a=24296 b=33443); M2-A-B MATCH;
   M2-B-C MATCH. Bench: AR 69.57 tok/s (baseline 69.65), MTP K=1
   65.44 tok/s (baseline 64.34), ACCEPTED=389/512.
@@ -1568,7 +1568,7 @@ one-round-max rule (first_div moved: FA15_sdpa_out -> FA15_sdpa_k).
 split (or force T=2 decode path for the re-forward row), rebuild,
 re-run state trace (expect n_leak_steps=0) + G4 + A/B.
 
-## m8 round 2 (an earlier run): rope 1D/batched dispatch unification - first_div fix
+## m8 round 2 (run-976): rope 1D/batched dispatch unification - first_div fix
 
 ### Correction of the P3 attribution
 
@@ -1641,7 +1641,7 @@ CPU/Metal paths; only the ROCm GPU dispatch changes.
 ### Build
 
 Fresh guest clone `/models/tmp/mlx-m8r2` from `75ca881b` (the m8
-wheel's base - not the vendor.json primary the earlier vendor base; `rope.hip` is
+wheel's base - not the vendor.json primary (the vendor ref); `rope.hip` is
 byte-identical between the two, so the patch applies to both). Both
 patches in the working tree: `patches/m8-sdpa1pass-single-kernel.diff`
 (P3) + `patches/m8-rope-single.diff` (this round). Wheel:
@@ -1744,7 +1744,7 @@ harness docstring; row-invariance itself is MATCH n=4096.
 
 ---
 
-# an earlier run — REBASE of PR #20 (worker/m8-full-state-audit) onto main @287aeb9
+# run-992 — REBASE of PR #20 (worker/m8-full-state-audit) onto main @287aeb9
 
 ## Result
 
@@ -1763,8 +1763,8 @@ since the fork (64b98b8). Conflicts and resolutions:
 |---|---|---|
 | 543f085, accc9e2 | — | auto-dropped ("patch contents already upstream") |
 | 447c2d9 | `scripts/diag-s62-sdpa.py` (add/add) | branch version |
-| 7d1f5ad | `scripts/diag-s62-m5.py` (add/add) | branch version (an earlier run note: slimmer, 800 ≤ main's ratchet 949) |
-| 9847f5b | `scripts/run-m6-g4.sh` (add/add); `scripts/diag-s62-m6.py`; `REPORT.md` (4 hunks) | run-m6-g4.sh: branch version (266d407 updates it to main-identical later). diag-s62-m6.py: branch version. REPORT.md: main-only sections (an earlier run/an earlier run/Step-0/qmv) kept from upstream; the m6 section kept the branch's intermediate text so 266d407's updates apply cleanly (final m6 section text = main's, verified) |
+| 7d1f5ad | `scripts/diag-s62-m5.py` (add/add) | branch version (run-986 note: slimmer, 800 ≤ main's ratchet 949) |
+| 9847f5b | `scripts/run-m6-g4.sh` (add/add); `scripts/diag-s62-m6.py`; `REPORT.md` (4 hunks) | run-m6-g4.sh: branch version (266d407 updates it to main-identical later). diag-s62-m6.py: branch version. REPORT.md: main-only sections (run-789/run-771/Step-0/qmv) kept from upstream; the m6 section kept the branch's intermediate text so 266d407's updates apply cleanly (final m6 section text = main's, verified) |
 | 3b6c0bc | `scripts/diag-s62-m7.py` (add/add) | branch version (885 ≤ main's ratchet 904) |
 | 0bd8203 | `scripts/m7-{mtp,state}-probe.py`, `scripts/m7-probe1..5.py` (7× add/add) | branch versions (main's #16 versions are ruff-formatted copies of the same code) |
 | a5af599 | `scripts/m7-mtp2-probe.py` (add/add) | branch version |
@@ -1773,9 +1773,9 @@ since the fork (64b98b8). Conflicts and resolutions:
 | c904b85 | `REPORT.md` (m8 section vs main's Step-0/qmv tail) | union: main's sections + branch's m8 section (m8 at file end) |
 | e4b8d88, c04c34c, 11f38ca | — | clean |
 
-No content was hand-edited. Main-only files (bench/qmv_mr*, bench/step0*, bench/an earlier run*,
-bench/bench-decode.sh, bench/README.md, patches/qmv-mr-lxhoist.diff, scripts/an earlier run-*,
-scripts/apply-qmv-mr-lxhoist.py, reports/tail-fusion-gdn.md, WORKSTATE.md,
+No content was hand-edited. Main-only files (bench/qmv_mr*, bench/step0*, bench/run-835*,
+bench/bench-decode.sh, bench/README.md, patches/qmv-mr-lxhoist.diff, scripts/run-789-*,
+scripts/apply-qmv-mr-lxhoist.py, reports/gdn-tail-fusion.md, WORKSTATE.md,
 qmm.hip, qmv_wide_mr_kernel.hip, tests/test_qmv_mr2_lx_instantiation.py) and main's
 `build-wheel.sh` / `vendor.json` / `size-ratchet.json` (2-entry ratchet) are all
 present at main's versions.
@@ -1789,14 +1789,14 @@ paths: `patches/m8-rope-single.diff`, `patches/m8-sdpa1pass-single-kernel.diff`,
 `scripts/m8-{state-audit,sdpa-isolated,mtp148-bisect,mtp-state-trace,fa-bisect,kproj-flowprobe}.py`,
 `scripts/diag-s62-{m5,m6,m7,sdpa}.py`, all m7 probes, run-m6/m5 scripts. No edits to the
 sdpa patch / k_proj / rope / mtp-restore paths → only the 4 merge-blocking gates
-re-run (not the full an earlier run check-line set).
+re-run (not the full run-986 check-line set).
 
 Hermetic gates on the rebased tree: `uv run pytest -m "not gpu"` 12 passed + 1 skipped
 (6 new = main's test_qmv_mr2_lx_instantiation); size gate OK (2 ratcheted; branch m5/m7
 800/885 ≤ budgets 949/904); `scripts/m8-kproj-flowprobe.py` ruff clean (other m7/m8
 script reds = the pre-existing set, unchanged).
 
-## Guest re-verify (the build VM, fresh build /models/tmp/mlx-m8rebase)
+## Guest re-verify (guest-a, fresh build /models/tmp/mlx-m8rebase)
 
 - Fresh vendor clone @ pin `75ca881b2e82f7b4069c8564a203792aa16d8a29` (full sha verified
   against the m8r2 clone); the two post-rebase patch files applied; patched
@@ -1811,19 +1811,19 @@ script reds = the pre-existing set, unchanged).
 - Evidence: `/models/tmp/m8rebase-ev/` (direct-kernels.out, flowprobe.out,
   state-trace-run1/2.out, g4/, ab/).
 
-| Gate | Expect (an earlier run) | Measured (fresh rebuild) |
+| Gate | Expect (run-986) | Measured (fresh rebuild) |
 |---|---|---|
 | (a) direct k_proj T=1 vs T=2 | 0/160 + 0/160 | **0/160 (draft) + 0/160 (prev)**, all 8 FA layers × 20 trials; FA15 q/v 0/40; direct rope 0/20480; SDPA 6-config n=0 + determinism n=0 (ALL-N0) |
 | (a) in-flow | n=0/1024, FA15_rope_1_out n=0 | **k_proj/k_norm/rope n=0/1024 on all 8 FA layers; FA15_rope_1_out n=0/1024**; fork@idx47 clean |
 | (b) state trace | n_leak_steps=0, 2 runs identical, token@148=33443 | **n_leak_steps=0, first_leak=None, accepted 68/85 (both runs), token@148=33443 (both); run2 byte-identical to run1** |
-| (c) G4 5-arm | M2-M0-LOSSLESS MATCH n=1024 + 4 controls MATCH | **M2-M0-LOSSLESS MATCH n=1024; M1-M0-CONTROL, M1-M2A, M2-A-B, M2-B-C all MATCH n=1024**; bench AR 69.24 tok/s (baseline 69.65; an earlier run 69.66 — parity), MTP K=1 61.06 tok/s, ACCEPTED 376/512 (same acceptance as an earlier run → consistent stream) |
-| (d) A/B | M6-AB-OK | **M6-AB-OK; first diverging component NONE; all 16 components MATCH; m3 cross-checks match (layer-3 k 0/91136; layer-4 gdn ssm 515560/524288); the documented m5 artifact 1/4096 (9.766e-04) present as expected**; ab.log byte-identical to an earlier run's re-run log |
+| (c) G4 5-arm | M2-M0-LOSSLESS MATCH n=1024 + 4 controls MATCH | **M2-M0-LOSSLESS MATCH n=1024; M1-M0-CONTROL, M1-M2A, M2-A-B, M2-B-C all MATCH n=1024**; bench AR 69.24 tok/s (baseline 69.65; run-986 69.66 — parity), MTP K=1 61.06 tok/s, ACCEPTED 376/512 (same acceptance as run-986 → consistent stream) |
+| (d) A/B | M6-AB-OK | **M6-AB-OK; first diverging component NONE; all 16 components MATCH; m3 cross-checks match (layer-3 k 0/91136; layer-4 gdn ssm 515560/524288); the documented m5 artifact 1/4096 (9.766e-04) present as expected**; ab.log byte-identical to run-978's re-run log |
 
 ## Verdict
 
 Rebase complete and clean: all 4 merge-blocking gates PASS on the fresh build of the
 rebased content. PR #20 is `MERGEABLE` at `d4d433c`. Ready for the peer merge
-(`--squash`; the an earlier run merge-mechanics notes still hold — m5/m7 resolve to the branch's
+(`--squash`; the run-986 merge-mechanics notes still hold — m5/m7 resolve to the branch's
 versions, which the rebase has already made the branch's committed state, and main's
 size-ratchet.json is in the tree).
 
