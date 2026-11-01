@@ -310,3 +310,36 @@ Round-3 results (g1xcH, probe logs on guest /models/tmp/):
   + VA ownership of the faulting VA; (4) fix = pin KV buffer or
   ExecUpdate the stale node param (G1B SetParams plumbing exists);
   (5) verify probe N=6 clean, lossless gates 14tok/29K, A/B bench.
+
+---
+
+# WORKSTATE — t1226 (fused-T4 GDN verify: K=3 S=4 on the fused path)
+
+Branch `worker/gdn-fused-t4` = main (509c1c3) + t1223 (T=2 fused kernel) +
+t1225 (K=3 bench + report) folded, then the T=4 kernel extension.
+
+## Timeline
+- base fold committed (d539608): t1223 graft + t1225 mtp-bench6 + report
+  section onto main; mtp-bench6.py added to the as-run extend-exclude.
+- T=4 source (72c8751): kernel TMAX 1/2 -> 1/2/4, generalized sliding conv
+  window (T=1/T=2 codegen unchanged by unroll-fold), fast.cpp T>4,
+  F-branch S<=4, probe + test extended. Hermetic green.
+- Guest: ONE rebuild (budget spent). Kernel md5 cf646082..., fast.cpp
+  pre 9b8ca998..., wheel 22,383,626 B, libmlx.so 7fb1717a... ->
+  d1acf5d1..., gdn_fused_step live. F-branch in venv S<=2 -> S<=4.
+- Gates (same session, sidecar pinned edef9ec6...): probe 14/14 PASS
+  (T=1/T=2/T=4 bit-exact + invariance); K=3 lossless A/B byte-identical
+  (md5 7b8c8c6d...); fused-AR 81.10 tok/s; GDN_FUSE_CALLS 2880 = 120
+  forwards x 24 GDN layers; m8 watch: rope m8 present, sdpa m8 ABSENT
+  (noted, not fixed).
+- K=3 re-bench: 34.68 tok/s (vs 34.30 unfused, +1.1%); wall/verify 94.49
+  ms vs 49.38/40.45 ms break-even -> NOT reached; 2.34x slower than AR.
+  Verdict: correctness PASS, speed hypothesis FAIL (GDN chain was not the
+  T=4 bottleneck; M=4 QMV generic path is). See REPORT.md section.
+
+## Open
+- K=3 parity needs the M=4 QMV/attention path (or merged/cheaper drafts);
+  the m8 sdpa single-kernel patch is absent from this wheel (watch item,
+  not fixed per instruction).
+- Branch pushed (worker/gdn-fused-t4 @ report commit); PR + adversarial
+  review pending.
