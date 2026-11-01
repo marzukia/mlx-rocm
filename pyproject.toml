@@ -96,6 +96,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 "bench/step0_streaming_read.py" = ["E501"]
 "bench/warm-mtp-bench.py" = ["E501"]
 "tests/test_gdn_fuse.py" = ["E501"]
+"tests/test_bench_syntax.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

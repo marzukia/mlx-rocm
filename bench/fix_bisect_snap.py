@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
-"""Rewrite the bisect snapshot/restore with dtype-correct copies.""" import sys p = sys.argv[1] s = open(p).read() old =
-Rewrite the bisect snapshot/restore with dtype-correct copies.""" import sys p = sys.argv[1] s = open(p).read() old ="""
+"""Rewrite the bisect snapshot/restore with dtype-correct copies."""
+
+import sys
+
+p = sys.argv[1]
+s = open(p).read()
+
+old = """def _copy(a):
     if a is None:
         return None
     return np.asarray(a.astype(mx.float32)).copy()
@@ -53,12 +59,35 @@ def _mk(np_a, is_bf16):
 
 
 def gdn_snap(c):
-    """Full copy-based snapshot (immune to in-place cache mutations).""" recs = [] for i, x in enumerate(c): if hasattr(x,
-    "cache"): a, ta = _nb(x[0]) b, tb = _nb(x[1]) recs.append((i, "g", a, ta, b, tb, np.asarray(x.lengths).copy()))
-    Else: a, ta = _nb(x.keys) b, tb = _nb(x.values) recs.append((i, "k", a, ta, b, tb, x.offset)) return recs def
-    Gdn_restore(c, snap): for i, kind, a, ta, b, tb, d in snap: if kind == "g": c[i][0] = _mk(a, ta) c[i][1] = _mk(b,
-    Tb) c[i].lengths = mx.array(d) else: c[i].keys = _mk(a, ta) c[i].values = _mk(b, tb) c[i].offset = d''' assert
-    S.count(old) == 1 s = s.replace(old, new) old2 ="""
+    """Full copy-based snapshot (immune to in-place cache mutations)."""
+    recs = []
+    for i, x in enumerate(c):
+        if hasattr(x, "cache"):
+            a, ta = _nb(x[0])
+            b, tb = _nb(x[1])
+            recs.append((i, "g", a, ta, b, tb, np.asarray(x.lengths).copy()))
+        else:
+            a, ta = _nb(x.keys)
+            b, tb = _nb(x.values)
+            recs.append((i, "k", a, ta, b, tb, x.offset))
+    return recs
+
+
+def gdn_restore(c, snap):
+    for i, kind, a, ta, b, tb, d in snap:
+        if kind == "g":
+            c[i][0] = _mk(a, ta)
+            c[i][1] = _mk(b, tb)
+            c[i].lengths = mx.array(d)
+        else:
+            c[i].keys = _mk(a, ta)
+            c[i].values = _mk(b, tb)
+            c[i].offset = d'''
+
+assert s.count(old) == 1
+s = s.replace(old, new)
+
+old2 = """import hashlib as _hl
 def _hn(a):
     return _hl.md5(np.asarray(a).tobytes()).hexdigest()[:10]
 print("BISect postf on:", _hn(s_on[0][2]), _hn(s_on[0][3]), flush=True)
