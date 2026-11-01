@@ -1,19 +1,9 @@
-#!/bin/bash
-# dist-decode speed bench (run-761 fixed wheel, clone @75ca881):
-#   (a) AR baseline      = mtp-bench3.py MLX_MTP=0  x3
-#   (b) MTP K=1 M=2      = mtp-bench3.py MLX_MTP=2  x3
-#   (c) MTP K=2 (S=3)    = mtp-bench5.py MLX_MTP=3  x1  (only if K2=1)
-# 1024 tokens, greedy, fresh process per run, all GPU work under flock.
-# 3 repeats per config, median reported.
-#
-# G4 lossless gate: same vacuity-guarded helper as bench4.sh / bench5.sh (PR #8).
-# Any empty compared stream -> STATUS=VACUOUS + exit 1; MATCH only on a
-# non-empty full-length compare.
-#
-# Usage (on guest-a):
-#   bash bench-decode.sh                 # AR x3 + MTP K=1 x3 + gate
-#   K2=1 bash bench-decode.sh           # + MTP K=2 x1 (run after (b) >= AR)
-#
+# !/bin/bash dist-decode speed bench (run-761 fixed wheel, clone @75ca881): (a) AR baseline = mtp-bench3.py MLX_MTP=0 x3 (b) MTP K=1 M=2 = mtp-bench3.py MLX_MTP=2 x3 (c) MTP K=2 (S=3) = mtp-bench5.py MLX_MTP=3 x1 (only if K2=1) 1024 tokens, greedy, fresh process per run, all GPU work under flock. 3 repeats per config, median reported.
+# 
+# G4 lossless gate: same vacuity-guarded helper as bench4.sh / bench5.sh (PR #8). Any empty compared stream -> STATUS=VACUOUS + exit 1; MATCH only on a non-empty full-length compare.
+# 
+# Usage (on guest-a): bash bench-decode.sh # AR x3 + MTP K=1 x3 + gate K2=1 bash bench-decode.sh # + MTP K=2 x1 (run after (b) >= AR)
+# 
 # Env overrides: BENCH_PY (venv python), BENCH_HDIR (harness dir), BENCH_OUT.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib
@@ -45,11 +35,7 @@ fi
 # --- lossless gate (vacuity-guarded; same helper as bench4.sh / bench5.sh) -----
 get_stream() { grep "^ALLTOKS:" "$1" 2>/dev/null | cut -d' ' -f2-; }
 
-# cmp_streams <label> <fileA> <fileB> [prefix]
-#   exact  : A and B non-empty, equal length, all positions equal -> MATCH
-#   prefix : A non-empty, B at least as long, all of A's positions equal -> MATCH
-# Prints: <label>: STATUS=<MATCH|FAIL|VACUOUS> first_div=<1-based tok|-> match=<m> diff=<d> of <n>
-# Returns: 0=MATCH 1=FAIL 2=VACUOUS
+# cmp_streams <label> <fileA> <fileB> [prefix] exact : A and B non-empty, equal length, all positions equal -> MATCH prefix : A non-empty, B at least as long, all of A's positions equal -> MATCH Prints: <label>: STATUS=<MATCH|FAIL|VACUOUS> first_div=<1-based tok|-> match=<m> diff=<d> of <n> Returns: 0=MATCH 1=FAIL 2=VACUOUS
 cmp_streams() {
   local label=$1 fa=$2 fb=$3 mode=${4:-exact}
   local A B

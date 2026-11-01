@@ -1,16 +1,8 @@
-#!/bin/bash
-# Step 1 (method-correction doc 2026-10-28, section 4 step 1): decode QMV
-# gates + bench. GB/s from rocprofv3 kernel time + bytes moved (doc rule 2);
-# bit-exact gate (doc rule 4); effective config printed + asserted (doc rule 6).
-#
-# Usage (ON guest-a):  bash qmv_mr_run.sh <tag> <python>
-#   tag    : ref (current wheel: bitexact ref + baseline bench + AR stream)
-#            new (new wheel: bitexact check + bench + AR stream)
-#   python : interpreter with the wheel under test on its path
-#
-#   e.g. bash qmv_mr_run.sh ref $MODELS/venv-d/bin/python
-#        bash qmv_mr_run.sh new $MODELS/venv-d/bin/python \
-#            (with PYTHONPATH=$MODELS/wheel-qmv exported)
+# !/bin/bash Step 1 (method-correction doc 2026-10-28, section 4 step 1): decode QMV gates + bench. GB/s from rocprofv3 kernel time + bytes moved (doc rule 2); bit-exact gate (doc rule 4); effective config printed + asserted (doc rule 6).
+# 
+# Usage (ON guest-a): bash qmv_mr_run.sh <tag> <python> tag : ref (current wheel: bitexact ref + baseline bench + AR stream) new (new wheel: bitexact check + bench + AR stream) python : interpreter with the wheel under test on its path
+# 
+# e.g. bash qmv_mr_run.sh ref $MODELS/venv-d/bin/python bash qmv_mr_run.sh new $MODELS/venv-d/bin/python \ (with PYTHONPATH=$MODELS/wheel-qmv exported)
 set -uo pipefail
 MODELS="${MODELS:-/models}"
 TAG=$1

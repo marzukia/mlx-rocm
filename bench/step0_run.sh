@@ -1,13 +1,8 @@
-#!/bin/bash
-# Step 0 (method-correction doc 2026-10-28, section 4): in-guest streaming-read
-# ceiling + runtime CU count. No model load.
-#
-# Usage (ON guest-a):  bash step0_run.sh
-#   env: STEP0_NBYTES (default 4 GiB), STEP0_WARMUP (3), STEP0_ITERS (10),
-#        STEP0_OUT (default $MODELS/tmp/step0)
-#
-# Timing: rocprofv3 kernel time only (doc rule 2). GB/s = bytes moved / kernel
-# time. CU count: what the runtime reports (doc section 1 row 4).
+# !/bin/bash Step 0 (method-correction doc 2026-10-28, section 4): in-guest streaming-read ceiling + runtime CU count. No model load.
+# 
+# Usage (ON guest-a): bash step0_run.sh env: STEP0_NBYTES (default 4 GiB), STEP0_WARMUP (3), STEP0_ITERS (10), STEP0_OUT (default $MODELS/tmp/step0)
+# 
+# Timing: rocprofv3 kernel time only (doc rule 2). GB/s = bytes moved / kernel time. CU count: what the runtime reports (doc section 1 row 4).
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib
 MODELS="${MODELS:-/models}"

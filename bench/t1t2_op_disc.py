@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
-"""T=1 vs T=2 op discrimination (real layer-0 values).
-
-From the same state, run:
-  - fused op T=1 (row 0)  vs  mx.fast.gated_delta_update T=1 (row 0)
-  - fused op T=2          vs  mx.fast.gated_delta_update T=2
-If T=1 matches and T=2 diverges -> row-carry/indexing bug in the fused op.
-"""
+"""T=1 vs T=2 op discrimination (real layer-0 values). From the same state, run: - fused op T=1 (row 0) vs
+Mx.fast.gated_delta_update T=1 (row 0) - fused op T=2 vs mx.fast.gated_delta_update T=2 If T=1 matches and T=2 diverges
+-> row-carry/indexing bug in the fused op."""
 
 import os
 
@@ -16,7 +12,7 @@ import numpy as np
 from mlx_lm.models.gated_delta import compute_g, normalize_qk
 from mlx_lm.utils import load
 
-model_full, tokenizer = load("/mnt/models/qwen3-9b-mlx")
+model_full, tokenizer = load(os.environ["MODELS"] + "/qwen3-9b-mlx")
 mx.eval(model_full.parameters())
 lm = model_full.language_model
 lay = lm.layers[0].linear_attn

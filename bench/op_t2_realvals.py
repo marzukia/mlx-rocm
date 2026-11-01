@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-"""Op-level T=2 comparison with REAL model values (layer 0).
-
-Compares mx.fast.gdn_fused_step (the F-branch op) against the model-default
-chain (nn.Conv1d + silu + compute_g + normalize_qk + mx.fast.gated_delta_update)
-on the exact layer-0 inputs of the bench's V2 step (tokens t1, 8160 from the
-prefill state). Determines whether the divergence is (a) an op kernel bug or
-(b) an F-branch glue bug.
-"""
+"""Op-level T=2 comparison with REAL model values (layer 0). Compares mx.fast.gdn_fused_step (the F-branch op) against the
+Model-default chain (nn.Conv1d + silu + compute_g + normalize_qk + mx.fast.gated_delta_update) on the exact layer-0
+Inputs of the bench's V2 step (tokens t1, 8160 from the prefill state). Determines whether the divergence is (a) an op
+Kernel bug or (b) an F-branch glue bug."""
 
 import os
 
@@ -16,7 +12,7 @@ import mlx.nn as nn
 import numpy as np
 from mlx_lm.utils import load
 
-model_dir = "/mnt/models/qwen3-9b-mlx"
+model_dir = os.environ["MODELS"] + "/qwen3-9b-mlx"
 model_full, tokenizer = load(model_dir)
 mx.eval(model_full.parameters())
 lm = model_full.language_model

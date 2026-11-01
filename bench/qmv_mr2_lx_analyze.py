@@ -1,17 +1,9 @@
 #!/usr/bin/env python3
-"""run-889: gain gate (method doc section 2: gain >= 3% to count) — run-852 LX
-hoist (LX=1) vs the run-825 path (LX=0), per-combo kernel-time gain from
-the two A/B combo files (one per env, identical sequence, per-position
-pairing).
-
-The down shape (K=12288) runs the per-row qmv_wide_kernel for BOTH env
-values at M >= 2 (LDS min(4,M)*K*2 > 32 KB) — those rows are the drift
-control (any A/B difference on them is session drift, not the lever).
-Down M=1 (LDS 24576 <= 32768) is an MR-kernel row like the other
-shapes.
-
-Usage: qmv_mr2_lx_analyze.py <combos_LX0.json> <combos_LX1.json>
-"""
+"""run-889: gain gate (method doc section 2: gain >= 3% to count) — run-852 LX hoist (LX=1) vs the run-825 path (LX=0),
+Per-combo kernel-time gain from the two A/B combo files (one per env, identical sequence, per-position pairing). The
+Down shape (K=12288) runs the per-row qmv_wide_kernel for BOTH env values at M >= 2 (LDS min(4,M)*K*2 > 32 KB) — those
+Rows are the drift control (any A/B difference on them is session drift, not the lever). Down M=1 (LDS 24576 <= 32768)
+Is an MR-kernel row like the other shapes. Usage: qmv_mr2_lx_analyze.py <combos_LX0.json> <combos_LX1.json>"""
 
 import json
 import sys

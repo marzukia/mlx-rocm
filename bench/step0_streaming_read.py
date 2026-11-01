@@ -1,22 +1,11 @@
 #!/usr/bin/env python3
-"""Step 0 (method-correction doc 2026-10-28, section 4 step 0): in-guest
-streaming-read ceiling.
-
-Plain read-only kernel (mx.sum reduction) over a >= 2 GiB device buffer.
-Timing source is rocprofv3 kernel time ONLY (doc section 2 rule 2: GB/s from
-kernel time + bytes moved; NEVER per-op latency including host op creation /
-mx.eval). Run under:
-
-  rocprofv3 -d <out> -f json --kernel-trace -- python step0_streaming_read.py
-
-Dispatch pattern (verified on gfx1201, ROCm 10.1): one H2D init copy, then
-per sum: one heavy all_reduce_kernel (reads the whole buffer once) + one tiny
-final scalar reduce. step0_parse.py groups accordingly.
-
-Doc section 2 rule 6: prints and asserts its effective config (env, wheel sha,
-buffer size). Kernel names actually dispatched are printed by step0_parse.py
-from the rocprof pass.
-"""
+"""Step 0 (method-correction doc 2026-10-28, section 4 step 0): in-guest streaming-read ceiling. Plain read-only kernel
+(mx.sum reduction) over a >= 2 GiB device buffer. Timing source is rocprofv3 kernel time ONLY (doc section 2 rule 2:
+GB/s from kernel time + bytes moved; NEVER per-op latency including host op creation / mx.eval). Run under: rocprofv3
+-d <out> -f json --kernel-trace -- python step0_streaming_read.py Dispatch pattern (verified on gfx1201, ROCm 10.1):
+One H2D init copy, then per sum: one heavy all_reduce_kernel (reads the whole buffer once) + one tiny final scalar
+Reduce. step0_parse.py groups accordingly. Doc section 2 rule 6: prints and asserts its effective config (env, wheel
+Sha, buffer size). Kernel names actually dispatched are printed by step0_parse.py from the rocprof pass."""
 
 import os
 

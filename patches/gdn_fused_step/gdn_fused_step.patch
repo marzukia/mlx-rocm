@@ -14,48 +14,18 @@ diff --git a/mlx/backend/rocm/gdn_fused_step.hip b/mlx/backend/rocm/gdn_fused_st
 new file mode 100644
 index 00000000..1cbb85b6
 +// Copyright © 2025 Apple Inc.
-+//
++// 
 +// Fused GDN T=1..2 decode/verify-step kernel (Phase 2, MLX_ROCM_GDN_FUSE=1).
-+//
-+// One launch per GDN layer per step, replacing the 4-kernel default tail
-+// chain (gdn_prep conv+silu+beta+g -> gdn_prep qk_norm -> r4d recurrent
-+// state update -> gdn_norm_gated) at B=1, T=1..2, Dk=Dv=128.
-+//
-+// T=2 (the S=2 spec-decode verify rows) extension: the recurrent state
-+// update loads h0 ONCE and updates the two rows sequentially in registers —
-+// exactly the r4d recurrent kernel's T loop (r4d_gdn_recurrent_update,
-+// `for (t = 0; t < T; ++t)` with h resident), so T=2 is bit-identical to
-+// two T=1 steps and to the default T=2 recurrent path (the ROCm
-+// gated_delta_update op routes T <= 8 to this same recurrent kernel). The
-+// conv1d window slides per row, mirroring the default
-+// `nn.silu(self.conv1d(conv_input))` (conv_input = [conv_state(3 rows),
-+// v0, v1]; row t = sum_j E[t+j]*w[j], E = [cs0, cs1, cs2, v0, v1]):
-+//   row 0 = cs0*w0 + cs1*w1 + cs2*w2 + v0*w3   (== the T=1 row, unchanged)
-+//   row 1 = cs1*w0 + cs2*w1 + v0*w2  + v1*w3
-+// (row 1 uses the PREVIOUS row's v, not the conv state — the causal-conv
-+// semantics of the default path; the T=1 path must NOT be changed).
-+//
-+// Losslessness: every phase below is a verbatim replication of the deployed
-+// 4-kernel chain's arithmetic, same FMA order, same per-op bf16 roundings,
-+// same 256-thread rms_norm block reduction. Fusion removes only the
-+// memory round-trips (intermediates live in shared) and the 3 extra
-+// launches; no math changes. The conv1d state update stays a separate COPY
-+// op in the model (not part of this op), so cache semantics are untouched.
-+//
-+// Geometry (fixed by the compiled path, mirrored from r4d VS=1): one workgroup
-+// per v head (32 blocks x 256 threads at Hv=32). The state update replicates
-+// the r4d_gdn_recurrent_update_kernel VS=1 layout (NR=128 rows, two threads
-+// per v row, lane<->lane^1 shfl close, 64 contiguous-k floats per thread in
-+// float4 x 16). Two v heads share one k/q head (Hv/Hk=2); the conv + qk_norm
-+// for the shared head is computed by both v-head blocks redundantly but
-+// identically (pure function of the same inputs, same order -> bit-equal).
-+//
-+// g is computed f32 (as the chain's gdn_prep outputs it) but the chain's
-+// r4d kernel receives it as BF16: fast.cpp's gated_delta_update does
-+// g = astype(gates, out_dtype) at the op boundary (out_dtype = q's dtype
-+// = bf16). The kernel's u16 read is therefore the full bf16 pattern; we
-+// replicate exactly by rounding s_g to bf16 (round-to-nearest, as the
-+// astype) before the read.
++// 
++// One launch per GDN layer per step, replacing the 4-kernel default tail chain (gdn_prep conv+silu+beta+g -> gdn_prep qk_norm -> r4d recurrent state update -> gdn_norm_gated) at B=1, T=1..2, Dk=Dv=128.
++// 
++// T=2 (the S=2 spec-decode verify rows) extension: the recurrent state update loads h0 ONCE and updates the two rows sequentially in registers — exactly the r4d recurrent kernel's T loop (r4d_gdn_recurrent_update, `for (t = 0; t < T; ++t)` with h resident), so T=2 is bit-identical to two T=1 steps and to the default T=2 recurrent path (the ROCm gated_delta_update op routes T <= 8 to this same recurrent kernel). The conv1d window slides per row, mirroring the default `nn.silu(self.conv1d(conv_input))` (conv_input = [conv_state(3 rows), v0, v1]; row t = sum_j E[t+j]*w[j], E = [cs0, cs1, cs2, v0, v1]): row 0 = cs0*w0 + cs1*w1 + cs2*w2 + v0*w3 (== the T=1 row, unchanged) row 1 = cs1*w0 + cs2*w1 + v0*w2 + v1*w3 (row 1 uses the PREVIOUS row's v, not the conv state — the causal-conv semantics of the default path; the T=1 path must NOT be changed).
++// 
++// Losslessness: every phase below is a verbatim replication of the deployed 4-kernel chain's arithmetic, same FMA order, same per-op bf16 roundings, same 256-thread rms_norm block reduction. Fusion removes only the memory round-trips (intermediates live in shared) and the 3 extra launches; no math changes. The conv1d state update stays a separate COPY op in the model (not part of this op), so cache semantics are untouched.
++// 
++// Geometry (fixed by the compiled path, mirrored from r4d VS=1): one workgroup per v head (32 blocks x 256 threads at Hv=32). The state update replicates the r4d_gdn_recurrent_update_kernel VS=1 layout (NR=128 rows, two threads per v row, lane<->lane^1 shfl close, 64 contiguous-k floats per thread in float4 x 16). Two v heads share one k/q head (Hv/Hk=2); the conv + qk_norm for the shared head is computed by both v-head blocks redundantly but identically (pure function of the same inputs, same order -> bit-equal).
++// 
++// g is computed f32 (as the chain's gdn_prep outputs it) but the chain's r4d kernel receives it as BF16: fast.cpp's gated_delta_update does g = astype(gates, out_dtype) at the op boundary (out_dtype = q's dtype = bf16). The kernel's u16 read is therefore the full bf16 pattern; we replicate exactly by rounding s_g to bf16 (round-to-nearest, as the astype) before the read.
 +
 +#include "mlx/backend/rocm/allocator.h"
 +#include "mlx/backend/rocm/device.h"
@@ -73,8 +43,7 @@ index 00000000..1cbb85b6
 +
 +namespace rocm {
 +
-+// ---- warp reduce (copied from gdn_prep.hip, which copied it from
-+// rms_norm.hip, same shfl tree) ----
++// ---- warp reduce (copied from gdn_prep.hip, which copied it from rms_norm.hip, same shfl tree) ----
 +__device__ float gdnf_warp_reduce_sum_rms(float val) {
 +  for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
 +    val += __shfl_xor(val, offset);
@@ -82,10 +51,7 @@ index 00000000..1cbb85b6
 +  return val;
 +}
 +
-+// ---- rms_norm row body (copied verbatim from gdn_prep.hip, which copied it
-+// verbatim from rms_norm.hip): the exact 256-thread block reduction. ----
-+// `out` must be block-wide visible (shared or global); the caller is
-+// responsible for a __syncthreads() before reading it if it is shared.
++// ---- rms_norm row body (copied verbatim from gdn_prep.hip, which copied it verbatim from rms_norm.hip): the exact 256-thread block reduction. ---- `out` must be block-wide visible (shared or global); the caller is responsible for a __syncthreads() before reading it if it is shared.
 +template <typename T, int BLOCK_DIM, int N_READS = 4>
 +__device__ void gdnf_rms_norm_row(
 +    const T* x,
@@ -144,20 +110,14 @@ index 00000000..1cbb85b6
 +__device__ __forceinline__ unsigned short gdnf_f2bf(float f) {
 +  return (unsigned short)((__builtin_bit_cast(unsigned, f) + 0x8000u) >> 16);
 +}
-+// f2bf RNE: identical to MLX's _MLX_BFloat16 float ctor (astype f32->bf16),
-+// which is what the chain's astype(gates, out_dtype) does before r4d reads g.
++// f2bf RNE: identical to MLX's _MLX_BFloat16 float ctor (astype f32->bf16), which is what the chain's astype(gates, out_dtype) does before r4d reads g.
 +__device__ __forceinline__ unsigned short gdnf_f2bf_rne(float f) {
 +  unsigned u = __builtin_bit_cast(unsigned, f);
 +  u += (u >> 16 & 1u) + 0x7FFFu;
 +  return (unsigned short)(u >> 16);
 +}
 +
-+// ---- The fused decode/verify step: one block per v head, 256 threads. ----
-+// T=1 is the original fused decode step (row-0 conv window: cs0, cs1, cs2,
-+// v0 — bit-identical to the original T=1 kernel). T=2 runs the two verify
-+// rows sequentially in ONE t-loop: phases 1..5 per row, with the phase-4
-+// recurrent update's h resident in registers across rows (exactly r4d's
-+// T loop, so T=2 is bit-identical to two T=1 steps).
++// ---- The fused decode/verify step: one block per v head, 256 threads. ---- T=1 is the original fused decode step (row-0 conv window: cs0, cs1, cs2, v0 — bit-identical to the original T=1 kernel). T=2 runs the two verify rows sequentially in ONE t-loop: phases 1..5 per row, with the phase-4 recurrent update's h resident in registers across rows (exactly r4d's T loop, so T=2 is bit-identical to two T=1 steps).
 +template <typename T, int TMAX>
 +__global__ __launch_bounds__(256) void gdn_fused_step_kernel(
 +    const T* __restrict__ q_raw,
@@ -201,19 +161,14 @@ index 00000000..1cbb85b6
 +  __shared__ T s_beta[2];
 +  __shared__ T s_one;
 +  __shared__ float s_g[2];
-+  // One reduction buffer PER rms_norm call: sequential calls in one block
-+  // must not share storage (the tail of call N reads shared_sum[0] while
-+  // the head of call N+1 writes shared_sum[0..7]; the reference kernels
-+  // only ever call once per block, so a function-local buffer would race).
++  // One reduction buffer PER rms_norm call: sequential calls in one block must not share storage (the tail of call N reads shared_sum[0] while the head of call N+1 writes shared_sum[0..7]; the reference kernels only ever call once per block, so a function-local buffer would race).
 +  __shared__ float s_ss_q[9];
 +  __shared__ float s_ss_k[9];
 +  __shared__ float s_ss_n[9];
 +
 +  s_one = static_cast<T>(1.0f);
 +
-+  // Phase-4 geometry (verbatim r4d VS=1): h is loaded ONCE, before the t
-+  // loop, and updated row-by-row in registers; state_new is written after
-+  // the loop — exactly r4d_gdn_recurrent_update_kernel's structure.
++  // Phase-4 geometry (verbatim r4d VS=1): h is loaded ONCE, before the t loop, and updated row-by-row in registers; state_new is written after the loop — exactly r4d_gdn_recurrent_update_kernel's structure.
 +  const int row = tid >> 1, half = tid & 1, k0 = half * 64;
 +  float h[64];
 +  {
@@ -225,13 +180,7 @@ index 00000000..1cbb85b6
 +  }
 +
 +  for (int t = 0; t < TMAX; ++t) {
-+    // ---------------- Phase 1: conv1d + silu ----------------
-+    // Verbatim gdn_prep_kernel conv body: 4-value sequential k-order sum in
-+    // f32, cast to T, silu = Multiply(conv_bf, Sigmoid(conv_bf)) in T. The
-+    // conv window slides per row (E = [cs0, cs1, cs2, v0, v1]; row t =
-+    // sum_j E[t+j]*w[j]); t=0 reduces exactly to the original T=1 window.
-+    // Channels: q c = hk*128+i ; k c = key_dim + hk*128+i ;
-+    //          v c = 2*key_dim + hv*128+i (value_dim/128 = Hv).
++    // ---------------- Phase 1: conv1d + silu ---------------- Verbatim gdn_prep_kernel conv body: 4-value sequential k-order sum in f32, cast to T, silu = Multiply(conv_bf, Sigmoid(conv_bf)) in T. The conv window slides per row (E = [cs0, cs1, cs2, v0, v1]; row t = sum_j E[t+j]*w[j]); t=0 reduces exactly to the original T=1 window. Channels: q c = hk*128+i ; k c = key_dim + hk*128+i ; v c = 2*key_dim + hv*128+i (value_dim/128 = Hv).
 +    if (tid < head_dim) {
 +      int cv = 2 * key_dim + hv * head_dim + tid;
 +      const int vch = hv * head_dim + tid;
@@ -296,10 +245,7 @@ index 00000000..1cbb85b6
 +    }
 +    __syncthreads();
 +
-+    // ---------------- Phase 2: beta + g ----------------
-+    // Verbatim gdn_prep_kernel gate body (thread 0 there == thread 0 here),
-+    // per row. g stays f32 (the state update reads its low u16, as the
-+    // chain does).
++    // ---------------- Phase 2: beta + g ---------------- Verbatim gdn_prep_kernel gate body (thread 0 there == thread 0 here), per row. g stays f32 (the state update reads its low u16, as the chain does).
 +    if (tid == 0) {
 +      s_beta[t] = Sigmoid{}(b[t * num_v_heads + hv]);
 +      T sum_bf = static_cast<T>(static_cast<float>(a[t * num_v_heads + hv]) +
@@ -315,10 +261,7 @@ index 00000000..1cbb85b6
 +    }
 +    __syncthreads();
 +
-+    // ---------------- Phase 3: q/k rms_norm + scale ----------------
-+    // Verbatim gdn_qk_norm_kernel body (one head per call; the chain runs
-+    // 32 heads in 32 blocks, this runs q then k sequentially in one block
-+    // -- the per-head reduction is the identical 256-thread computation).
++    // ---------------- Phase 3: q/k rms_norm + scale ---------------- Verbatim gdn_qk_norm_kernel body (one head per call; the chain runs 32 heads in 32 blocks, this runs q then k sequentially in one block -- the per-head reduction is the identical 256-thread computation).
 +    {
 +      float scale = inv_scale * inv_scale;
 +      float scale_f =
@@ -345,14 +288,7 @@ index 00000000..1cbb85b6
 +    }
 +    __syncthreads();
 +
-+    // ---------------- Phase 4: recurrent state update (one row) ----------
-+    // Verbatim r4d_gdn_recurrent_update_kernel VS=1 per-row body (B=1, row
-+    // = tid>>1, half = tid&1, k0 = half*64), with h resident across rows.
-+    // q/k are the phase-3 normalized rows (bf16, read as u16 exactly as the
-+    // chain reads q_normed/k_normed); v is the phase-1 silu'd conv (bf16);
-+    // g is the phase-2 value rounded to bf16 (the chain's r4d kernel
-+    // receives g as bf16 -- fast.cpp astype's it at the op boundary) and
-+    // read as that u16; beta is bf16.
++    // ---------------- Phase 4: recurrent state update (one row) ---------- Verbatim r4d_gdn_recurrent_update_kernel VS=1 per-row body (B=1, row = tid>>1, half = tid&1, k0 = half*64), with h resident across rows. q/k are the phase-3 normalized rows (bf16, read as u16 exactly as the chain reads q_normed/k_normed); v is the phase-1 silu'd conv (bf16); g is the phase-2 value rounded to bf16 (the chain's r4d kernel receives g as bf16 -- fast.cpp astype's it at the op boundary) and read as that u16; beta is bf16.
 +    float qq[64], kk[64];
 +#pragma unroll
 +    for (int j = 0; j < 64; j += 8) {
@@ -369,11 +305,7 @@ index 00000000..1cbb85b6
 +      }
 +    }
 +
-+    // The chain's r4d kernel receives g as BF16: fast.cpp's
-+    // gated_delta_update casts g = astype(gates, out_dtype) at the op
-+    // boundary (out_dtype = q's dtype = bf16), so the kernel's u16 read is
-+    // the full bf16 pattern, not the low 16 bits of the f32 mantissa.
-+    // Replicate exactly: round s_g to bf16, then read that pattern.
++    // The chain's r4d kernel receives g as BF16: fast.cpp's gated_delta_update casts g = astype(gates, out_dtype) at the op boundary (out_dtype = q's dtype = bf16), so the kernel's u16 read is the full bf16 pattern, not the low 16 bits of the f32 mantissa. Replicate exactly: round s_g to bf16, then read that pattern.
 +    const float eg = __expf(
 +        fmaxf(__logf(gdnf_bf2f16(gdnf_f2bf_rne(s_g[t]))), -80.0f));
 +    const float bt = gdnf_bf2f16(
@@ -406,9 +338,7 @@ index 00000000..1cbb85b6
 +    }
 +    __syncthreads();
 +
-+    // ---------------- Phase 5: norm_gated = rms_norm + precise_swiglu ----
-+    // Verbatim gdn_norm_gated_kernel body (weight = RMSNorm weight,
-+    // w_stride=1; silu in f32; (gate * x) cast to T), per row.
++    // ---------------- Phase 5: norm_gated = rms_norm + precise_swiglu ---- Verbatim gdn_norm_gated_kernel body (weight = RMSNorm weight, w_stride=1; silu in f32; (gate * x) cast to T), per row.
 +    gdnf_rms_norm_row<T, 256, 4>(
 +        s_out, norm_weight, s_xn, s_ss_n, norm_eps, head_dim, 1);
 +    __syncthreads();
@@ -433,8 +363,7 @@ index 00000000..1cbb85b6
 +  }
 +
 +  if (dbg != nullptr) {
-+    // Debug capture (P2_GDN_DEBUG=1): the LAST row's phase-1..4 intermediates
-+    // (shared holds the last row's values after the loop).
++    // Debug capture (P2_GDN_DEBUG=1): the LAST row's phase-1..4 intermediates (shared holds the last row's values after the loop).
 +    unsigned char* p = dbg + (size_t)hv * 1042;
 +    for (int i = tid; i < head_dim; i += 256) {
 +      memcpy(p + 2 * i, &s_qn[i], 2);
@@ -515,14 +444,7 @@ index 00000000..1cbb85b6
 +  auto& d = rocm::device(s.device);
 +  auto& encoder = d.get_command_encoder(s);
 +
-+  // The F-branch passes q3/k3/v3 as row-strided SLICES of the [1, T, 8192]
-+  // qkv buffer (row stride 8192 != key_dim 2048). The kernel reads them
-+  // packed (t * key_dim + ch), so T=1 (row 0 only, offset 0) looks right
-+  // while T=2 misreads row 1 as row 0's k-channel region. Force
-+  // contiguity only where the kernel needs it: T=1 decode reads row 0 at
-+  // offset 0 either way, so the T=1 path takes the input references with
-+  // zero extra host work (per-call array copies measurably regressed the
-+  // latency-bound AR loop by ~0.6%).
++  // The F-branch passes q3/k3/v3 as row-strided SLICES of the [1, T, 8192] qkv buffer (row stride 8192 != key_dim 2048). The kernel reads them packed (t * key_dim + ch), so T=1 (row 0 only, offset 0) looks right while T=2 misreads row 1 as row 0's k-channel region. Force contiguity only where the kernel needs it: T=1 decode reads row 0 at offset 0 either way, so the T=1 path takes the input references with zero extra host work (per-call array copies measurably regressed the latency-bound AR loop by ~0.6%).
 +  std::unique_ptr<array> tmps[7];
 +  const array *pq = &inputs[0], *pk = &inputs[1], *pv = &inputs[2],
 +              *pb = &inputs[3], *pa = &inputs[4], *pc = &inputs[7],
@@ -571,9 +493,7 @@ index 00000000..1cbb85b6
 +        mlx::core::rocm::malloc_async(dbg_arr.nbytes(), encoder));
 +  }
 +
-+  // Shape-based dims (B=1 guaranteed by use_fallback; T is 1 or 2):
-+  //   q [1, T, key_dim]  k [1, T, key_dim]  v [1, T, value_dim]
-+  //   z [1, T, Hv, 128]  nw [128]  cs [3, conv_dim]  cw [conv_dim, 4]
++  // Shape-based dims (B=1 guaranteed by use_fallback; T is 1 or 2): q [1, T, key_dim] k [1, T, key_dim] v [1, T, value_dim] z [1, T, Hv, 128] nw [128] cs [3, conv_dim] cw [conv_dim, 4]
 +  int Tlen = (int)q.shape(1);
 +  int key_dim = (int)q.shape(2);
 +  int value_dim = (int)v.shape(2);
@@ -582,10 +502,7 @@ index 00000000..1cbb85b6
 +  int num_v_heads = (int)zg.size() / head_dim / Tlen;
 +  int num_k_heads = key_dim / head_dim;
 +
-+  // TMAX is a template constant so the t loop unrolls and the (t == 0)
-+  // conv-window ternaries fold: the T=1 decode path compiles to exactly
-+  // the original straight-line T=1 kernel (a runtime Tlen bound left a
-+  // ~0.3% regression in the latency-bound AR loop).
++  // TMAX is a template constant so the t loop unrolls and the (t == 0) conv-window ternaries fold: the T=1 decode path compiles to exactly the original straight-line T=1 kernel (a runtime Tlen bound left a ~0.3% regression in the latency-bound AR loop).
 +  auto launch_one = [&](hipStream_t stream, int tmax) {
 +    return (tmax == 1)
 +        ? launch_gdn_fused_step<1>(
@@ -635,9 +552,9 @@ diff --git a/mlx/fast.cpp b/mlx/fast.cpp
 index 0244f122..488bdd72 100644
 --- a/mlx/fast.cpp
 +++ b/mlx/fast.cpp
-@@ -5,0 +5,1 @@
+@@ -5,0 +5 @@
 +#include "mlx/backend/gpu/copy.h"
-@@ -123,0 +124,191 @@
+@@ -123,0 +124,158 @@
 +array rms_norm_residual(
 +    const array& x,
 +    const array& residual,
@@ -725,9 +642,7 @@ index 0244f122..488bdd72 100644
 +    throw std::invalid_argument(
 +        "[kv_append] cache shapes must match keys/values on B, H, D.");
 +  }
-+  // K2 review MAJOR-3 (round 4): the fast kernel writes cv at
-+  // offset * cache_values strides[2] with no bounds check, so a smaller-T
-+  // cache_values would be written out of bounds. Validate up front.
++  // K2 review MAJOR-3 (round 4): the fast kernel writes cv at offset * cache_values strides[2] with no bounds check, so a smaller-T cache_values would be written out of bounds. Validate up front.
 +  if (cache_keys.shape(2) != cache_values.shape(2)) {
 +    throw std::invalid_argument(
 +        "[kv_append] cache_keys and cache_values must have the same "
@@ -741,10 +656,7 @@ index 0244f122..488bdd72 100644
 +    throw std::invalid_argument(
 +        "[kv_append] offset out of range for the cache.");
 +  }
-+  // K2 review MAJOR-4: the GPU kernel is templated on keys/values dtype and
-+  // writes into the cache buffers, so a dtype mismatch (e.g. f32 keys into a
-+  // bf16 cache) would write the wrong element size — silent memory
-+  // corruption. Validate up front and error cleanly.
++  // K2 review MAJOR-4: the GPU kernel is templated on keys/values dtype and writes into the cache buffers, so a dtype mismatch (e.g. f32 keys into a bf16 cache) would write the wrong element size — silent memory corruption. Validate up front and error cleanly.
 +  if (keys.dtype() != cache_keys.dtype()) {
 +    throw std::invalid_argument(
 +        "[kv_append] keys dtype must match cache_keys dtype.");
@@ -753,10 +665,7 @@ index 0244f122..488bdd72 100644
 +    throw std::invalid_argument(
 +        "[kv_append] values dtype must match cache_values dtype.");
 +  }
-+  // K2 review MAJOR-2 (round 4): the fast kernel is single-dtype (one T
-+  // for all four pointers, dispatch on keys dtype only), so a mixed
-+  // keys/values dtype pair (each matching its own cache) would be read
-+  // with the wrong element size — silent corruption. Validate up front.
++  // K2 review MAJOR-2 (round 4): the fast kernel is single-dtype (one T for all four pointers, dispatch on keys dtype only), so a mixed keys/values dtype pair (each matching its own cache) would be read with the wrong element size — silent corruption. Validate up front.
 +  if (keys.dtype() != values.dtype()) {
 +    throw std::invalid_argument(
 +        "[kv_append] keys and values must have the same dtype (the fast "
@@ -765,9 +674,7 @@ index 0244f122..488bdd72 100644
 +
 +  auto s = to_stream(s_);
 +  auto fallback = [offset, s](const std::vector<array>& inputs) {
-+    // K2 review MAJOR-3: start/stop of 0,0 for B/H/D normalized to empty
-+    // (size-0) slices, so the [B,H,1,D] update always threw. Use the full dim
-+    // sizes for B/H/D and [offset, offset+T) for T.
++    // K2 review MAJOR-3: start/stop of 0,0 for B/H/D normalized to empty (size-0) slices, so the [B,H,1,D] update always threw. Use the full dim sizes for B/H/D and [offset, offset+T) for T.
 +    auto start = Shape{(int)0, (int)0, (int)offset, (int)0};
 +    auto stop = Shape{
 +        (int)inputs[2].shape(0),
@@ -780,32 +687,9 @@ index 0244f122..488bdd72 100644
 +    return std::vector<array>{ok, ov};
 +  };
 +
-+  // K2 review MAJOR-5 (re-review MAJOR-A, fix round 3): the fast GPU kernel
-+  // treats [B,H,1,D] as 2D [B*H, D] rows addressed via strides[1] and
-+  // advances the dst base by offset * cache strides[2]. Its exact stride
-+  // requirements, per array, are:
-+  //   - strides[3] == 1 (or D == 1): unit-stride rows
-+  //   - strides[0] == H * strides[1] (or B == 1): the B*H row flattening
-+  // The T stride is never used (T == 1, only t == 0 is read), so a
-+  // non-row-contiguous T view is fine for the kernel. The row_contiguous
-+  // flag alone is insufficient: its size-1 allowance skips the H-stride
-+  // check when H == 1, leaving strides[1] unconstrained while the kernel
-+  // uses it as the B-row stride (e.g. a [2,1,1,8] view of a transposed
-+  // [1,2,8] buffer has strides (8,16,1,1), is row_contiguous, but the
-+  // kernel reads row b at b*16 instead of b*8). Check the kernel's
-+  // requirements directly and route everything else to the slice_update
-+  // fallback (arbitrary strides).
-+  //
-+  // Layout metadata is only trustworthy once the array is materialized:
-+  // an unscheduled graph node carries the C-default strides from
-+  // ArrayDesc::init() (and all-true default flags), not the true view
-+  // strides, while the kernel reads the input's strides at eval time
-+  // (after materialization). Checking the stale metadata would dispatch
-+  // the fast kernel for a transposed view (e.g. [2,2,1,8] strides
-+  // (8,16,1,1) of a transposed [1,2,8] buffer) and misaddress the B
-+  // rows. This matches the verify harness's _row_contiguous numpy-bridge
-+  // check, which materializes before reading strides: both reject the
-+  // view.
++  // K2 review MAJOR-5 (re-review MAJOR-A, fix round 3): the fast GPU kernel treats [B,H,1,D] as 2D [B*H, D] rows addressed via strides[1] and advances the dst base by offset * cache strides[2]. Its exact stride requirements, per array, are: - strides[3] == 1 (or D == 1): unit-stride rows - strides[0] == H * strides[1] (or B == 1): the B*H row flattening The T stride is never used (T == 1, only t == 0 is read), so a non-row-contiguous T view is fine for the kernel. The row_contiguous flag alone is insufficient: its size-1 allowance skips the H-stride check when H == 1, leaving strides[1] unconstrained while the kernel uses it as the B-row stride (e.g. a [2,1,1,8] view of a transposed [1,2,8] buffer has strides (8,16,1,1), is row_contiguous, but the kernel reads row b at b*16 instead of b*8). Check the kernel's requirements directly and route everything else to the slice_update fallback (arbitrary strides).
++  // 
++  // Layout metadata is only trustworthy once the array is materialized: an unscheduled graph node carries the C-default strides from ArrayDesc::init() (and all-true default flags), not the true view strides, while the kernel reads the input's strides at eval time (after materialization). Checking the stale metadata would dispatch the fast kernel for a transposed view (e.g. [2,2,1,8] strides (8,16,1,1) of a transposed [1,2,8] buffer) and misaddress the B rows. This matches the verify harness's _row_contiguous numpy-bridge check, which materializes before reading strides: both reject the view.
 +  auto kernel_layout_ok = [](const array& a) {
 +    if (a.status() == array::Status::unscheduled) {
 +      return false;
@@ -829,7 +713,7 @@ index 0244f122..488bdd72 100644
 +  return fallback({keys, values, cache_keys, cache_values});
 +}
 +
-@@ -183,0 +375,11 @@
+@@ -183,0 +342,11 @@
 +}
 +
 +bool RMSNormResidual::is_equivalent(const Primitive& other) const {
@@ -841,12 +725,11 @@ index 0244f122..488bdd72 100644
 +bool KVAppend::is_equivalent(const Primitive& other) const {
 +  const KVAppend& a_other = static_cast<const KVAppend&>(other);
 +  return offset_ == a_other.offset_;
-@@ -973,0 +1176,238 @@
+@@ -973,0 +1143,229 @@
 +
 +namespace {
 +
-+// Non-row-contiguous inputs get a row-contiguous copy (same helper as
-+// gdu.cpp); already-contiguous inputs pass through unchanged.
++// Non-row-contiguous inputs get a row-contiguous copy (same helper as gdu.cpp); already-contiguous inputs pass through unchanged.
 +static array gdnf_make_row_contiguous(const array& a, const Stream& s) {
 +  if (a.flags().row_contiguous) {
 +    return a;
@@ -881,9 +764,7 @@ index 0244f122..488bdd72 100644
 +  if (B != 1 || T == 0 || T > 2) {
 +    return true;
 +  }
-+  // NOTE: MLX_ROCM_GDN_FUSE_T2=0 no longer routes T=2 to the 4-op chain
-+  // (that chain is 1-D-only in gdn_prep and faults on the GPU for T>1).
-+  // Lossless A/B is done with MLX_ROCM_GDN_FUSE=0 vs =1.
++  // NOTE: MLX_ROCM_GDN_FUSE_T2=0 no longer routes T=2 to the 4-op chain (that chain is 1-D-only in gdn_prep and faults on the GPU for T>1). Lossless A/B is done with MLX_ROCM_GDN_FUSE=0 vs =1.
 +  if (Dk != 128 || Dv != 128) {
 +    return true;
 +  }
@@ -1015,10 +896,7 @@ index 0244f122..488bdd72 100644
 +
 +  auto fallback = [B, T, Hk, Hv, s, inv_scale, prep_eps, norm_eps](
 +                      std::vector<array> inputs) {
-+    // The default 4-op chain, bit-identical to the model's default path
-+    // (gdn_prep conv+silu+beta+g -> gdn_prep qk_norm -> r4d recurrent state
-+    // update -> gdn_norm_gated). The conv-cache update is model-side either
-+    // way, so it is not part of this op.
++    // The default 4-op chain, bit-identical to the model's default path (gdn_prep conv+silu+beta+g -> gdn_prep qk_norm -> r4d recurrent state update -> gdn_norm_gated). The conv-cache update is model-side either way, so it is not part of this op.
 +    auto q = inputs[0];
 +    auto k = inputs[1];
 +    auto v = inputs[2];
@@ -1066,10 +944,7 @@ index 0244f122..488bdd72 100644
 +        "gdn_fused_step: T=0 (empty) input is rejected; pass T >= 1");
 +  }
 +  if (T > 1) {
-+    // The 4-op fallback chain is 1-D-only in gdn_prep and unsafe for T>1
-+    // (it misinterprets multi-row inputs: out-of-bounds reads, GPU fault);
-+    // T=1 is safe, so the chain stays as the op fallback for FUSE=0,
-+    // CPU streams, and Dk/Dv != 128.
++    // The 4-op fallback chain is 1-D-only in gdn_prep and unsafe for T>1 (it misinterprets multi-row inputs: out-of-bounds reads, GPU fault); T=1 is safe, so the chain stays as the op fallback for FUSE=0, CPU streams, and Dk/Dv != 128.
 +    throw std::invalid_argument(
 +        "gdn_fused_step: no 4-op fallback for T>1 (T=" + std::to_string(T) +
 +        ") with the fused path disabled (MLX_ROCM_GDN_FUSE=0, a CPU "
@@ -1080,7 +955,7 @@ index 0244f122..488bdd72 100644
 +}
 +
 +
-@@ -1162,80 +1603,0 @@
+@@ -1162,80 +1561,0 @@
 -std::vector<array> gdn_prep(
 -    const array& q_raw,
 -    const array& k_raw,

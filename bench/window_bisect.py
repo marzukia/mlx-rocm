@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Bisect which t=1 window input causes the divergence: zero each candidate
-(cs row 1, cs row 2, qkv row 0, qkv row 1) in BOTH the fused op and the
-default chain, compare states."""
+"""Bisect which t=1 window input causes the divergence: zero each candidate (cs row 1, cs row 2, qkv row 0, qkv row 1) in
+BOTH the fused op and the default chain, compare states."""
 
 import os
 
@@ -12,7 +11,7 @@ import numpy as np
 from mlx_lm.models.gated_delta import compute_g, normalize_qk
 from mlx_lm.utils import load
 
-model_full, tokenizer = load("/mnt/models/qwen3-9b-mlx")
+model_full, tokenizer = load(os.environ["MODELS"] + "/qwen3-9b-mlx")
 mx.eval(model_full.parameters())
 lm = model_full.language_model
 lay = lm.layers[0].linear_attn

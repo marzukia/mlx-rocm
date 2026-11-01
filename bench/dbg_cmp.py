@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Compare the fused op's captured row-1 intermediates (dbg bin) against the
-model chain's row-1 values (qn, kn, v, beta, g). P2_GDN_DEBUG=1 required.
-FUSE=0 during the model forward (capture only), direct op call after."""
+"""Compare the fused op's captured row-1 intermediates (dbg bin) against the model chain's row-1 values (qn, kn, v, beta,
+G). P2_GDN_DEBUG=1 required. FUSE=0 during the model forward (capture only), direct op call after."""
 
 import os
 
@@ -13,7 +12,7 @@ import numpy as np
 from mlx_lm.models.gated_delta import compute_g, normalize_qk
 from mlx_lm.utils import load
 
-model_full, tokenizer = load("/mnt/models/qwen3-9b-mlx")
+model_full, tokenizer = load(os.environ["MODELS"] + "/qwen3-9b-mlx")
 mx.eval(model_full.parameters())
 lm = model_full.language_model
 lay = lm.layers[0].linear_attn

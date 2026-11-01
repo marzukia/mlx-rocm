@@ -45,8 +45,7 @@ extend-exclude = [
     "bench/mtp-bench3-side.py",
     "bench/mtp-bench5.py",
     "bench/g1-t3-parts.py",
-    # T=2 fused-kernel development diagnostics (guest bisect/probe runs): kept as
-    # as-run evidence; excluded from lint + format.
+    # T=2 fused-kernel development diagnostics (guest bisect/probe runs): kept as as-run evidence; excluded from lint + format.
     "bench/component_check.py",
     "bench/conv_fma_check.py",
     "bench/dbg_cmp.py",

@@ -1,18 +1,11 @@
 #!/usr/bin/env python3
-"""Step 1 (method-correction doc 2026-10-28, section 4 step 1): decode QMV
-bench — GB/s from rocprofv3 kernel time + bytes moved (doc section 2 rule 2:
-NEVER per-op latency including host op creation / mx.eval).
-
-Model's real shapes/dtypes (doc rule 3): bf16 x, 4-bit affine, gs 64,
-has_bias, transposed packed weights. Shapes: 4096->12288 (gate/up),
-12288->4096 (down), 4096->4096 (o_proj), 4096->248320 (lm_head); M=1..4.
-
-Run under:  rocprofv3 -d <out> -f json --kernel-trace -- python qmv_mr_bench.py
-Env: QMV_SHAPE=<K>x<N>  QMV_M=<1..4>  QMV_WARMUP (default 10)  QMV_REPS (default 50)
-
-Bytes per call = weights (N*K/2) + scales (N*K/64*2) + biases (N*K/64*2)
-+ x (M*K*2) + y (M*N*2).
-"""
+"""Step 1 (method-correction doc 2026-10-28, section 4 step 1): decode QMV bench — GB/s from rocprofv3 kernel time
++ bytes moved (doc section 2 rule 2: NEVER per-op latency including host op creation / mx.eval).
+Model's real shapes/dtypes (doc rule 3): bf16 x, 4-bit affine, gs 64, has_bias, transposed packed weights.
+Shapes: 4096->12288 (gate/up), 12288->4096 (down), 4096->4096 (o_proj), 4096->248320 (lm_head); M=1..4.
+Run under: rocprofv3 -d <out> -f json --kernel-trace -- python qmv_mr_bench.py
+Env: QMV_SHAPE=<K>x<N> QMV_M=<1..4> QMV_WARMUP (default 10) QMV_REPS (default 50)
+Bytes per call = weights (N*K/2) + scales (N*K/64*2) + biases (N*K/64*2) + x (M*K*2) + y (M*N*2)."""
 
 import os
 
@@ -42,9 +35,8 @@ wq, s, b = mx.quantize(w, 64, 4)
 assert wq.shape == (N, K // 8), wq.shape
 assert s.shape == (N, K // 64), s.shape
 assert b.shape == (N, K // 64), b.shape
-# Cast scales/biases to bf16 (the model's dtype). The wide/MR gate checks
-# x.dtype() but the kernel hard-codes ScaleT=bf16; f32 scales are misread
-# (all-zero output on the current wheel) — see REPORT.md section 3.
+# Cast scales/biases to bf16 (the model's dtype). The wide/MR gate checks x.dtype() but the kernel hard-codes
+# ScaleT=bf16; f32 scales are misread (all-zero output on the current wheel) — see REPORT.md section 3.
 s = s.astype(mx.bfloat16)
 b = b.astype(mx.bfloat16)
 x = mx.random.normal((M, K)).astype(mx.bfloat16)

@@ -1,14 +1,9 @@
-#!/bin/bash
-# GDN fused T=2 verification gates (run on guest-a, new wheel installed).
-# $1 = python (venv), $2 = model dir
-# NOTE: the old MLX_ROCM_GDN_FUSE_T2=0 kill-switch (routed T=2 to the op's
-# 4-op fallback chain, which is 1-D-only in gdn_prep and faults on the GPU
-# for T>1) has been removed from use_fallback; lossless A/B gating is
-# FUSE=0 (model default path) vs FUSE=1 (fused T<=2).
+# !/bin/bash GDN fused T=2 verification gates (run on guest-a, new wheel installed). $1 = python (venv), $2 = model dir NOTE: the old MLX_ROCM_GDN_FUSE_T2=0 kill-switch (routed T=2 to the op's 4-op fallback chain, which is 1-D-only in gdn_prep and faults on the GPU for T>1) has been removed from use_fallback; lossless A/B gating is FUSE=0 (model default path) vs FUSE=1 (fused T<=2).
 set -u
 PY=$1; MODEL=$2
-cd /home/andryo
+cd "$(dirname "$0")"
 B="mtp-bench3-side.py"
+mkdir -p gdn_gates
 
 run() { # name mode fuse
   local name=$1 mode=$2 fuse=$3

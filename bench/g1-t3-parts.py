@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Un-sandwiched per-component timing: T=1 fwd, S=3 fwd, K=2 draft step.
-Forces eval of the actual outputs (like the real decode loop)."""
+"""Un-sandwiched per-component timing: T=1 fwd, S=3 fwd, K=2 draft step. Forces eval of the actual outputs (like the real
+Decode loop)."""
+
 import os
 import time
 
 import mlx.core as mx
 from mlx_lm import load
 from mlx_lm.models.cache import KVCache
+
 MODELS = os.environ.get("MODELS", "/models")
 
 MODEL = f"{MODELS}/qwen3-9b-mlx"
@@ -20,9 +22,7 @@ mtp_cache = [KVCache()]
 prompt_ids = tok.encode(PROMPT, add_special_tokens=False)
 cache = lm.make_cache()
 
-logits, hidden = lm(
-    mx.array([prompt_ids]), cache=cache, return_hidden=True, return_prenorm=True
-)
+logits, hidden = lm(mx.array([prompt_ids]), cache=cache, return_hidden=True, return_prenorm=True)
 l = logits[0, -1]
 h = hidden[0, -1]
 t = int(mx.argmax(l))
@@ -39,6 +39,7 @@ for _ in range(3):
     out = lm(mx.array([[t]]), cache=cache, return_hidden=True, return_prenorm=True)
     mx.eval(*out)
 
+
 def timeit(fn, n=9):
     out = fn()  # warm
     mx.eval(*out)
@@ -51,11 +52,14 @@ def timeit(fn, n=9):
     ts.sort()
     return ts[len(ts) // 2]
 
+
 def t1_fwd():
     return lm(mx.array([[t]]), cache=cache, return_hidden=True, return_prenorm=True)
 
+
 def s3_fwd():
     return lm(mx.array([[t, draft1, draft2]]), cache=cache, return_hidden=True, return_prenorm=True)
+
 
 def draft_step():
     e = lm.model.embed_tokens(mx.array([[t]]))
@@ -65,6 +69,7 @@ def draft_step():
     d2 = lm.mtp(d1, e2, mtp_cache)
     x2 = int(mx.argmax(lm.lm_head(d2)[0, -1]))
     return (e, d1, e2, d2)
+
 
 T1 = timeit(t1_fwd)
 S3 = timeit(s3_fwd)

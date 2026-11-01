@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
-"""Add GDN/KV state checksum tracing to a copy of mtp-bench3-side.py."""
-
-import sys
-
-p = sys.argv[1]
-s = open(p).read()
-
-trace = """
+"""Add GDN/KV state checksum tracing to a copy of mtp-bench3-side.py.""" import sys p = sys.argv[1] s = open(p).read()
+Trace ="""
 import hashlib
 import mlx.core as _mxtrace
 
@@ -26,13 +20,8 @@ def gdn_trace(tag, cache, mtp_cache=None):
         s.append(_md5(mtp_cache[0].values))
     print("TRACE " + tag + " " + "-".join(s), flush=True)
 
-"""
-
-anchor = "_MTP4_GUARD = None"
-assert anchor in s
-s = s.replace(anchor, trace + anchor, 1)
-
-old = """            saved = save_gdn(cache)                 # GDN state BEFORE batched forward (S_k)
+"""anchor = "_MTP4_GUARD = None" assert anchor in s s = s.replace(anchor, trace + anchor, 1) old =
+anchor = "_MTP4_GUARD = None" assert anchor in s s = s.replace(anchor, trace + anchor, 1) old ="""
             logits, hidden = lm(
                 mx.array([[prev_token, d]]),
                 cache=cache,

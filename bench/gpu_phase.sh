@@ -1,8 +1,5 @@
-#!/bin/bash
-# run-835 GPU phase (run ON guest-a): gates + bench for the dequant-hoist
-# wheel (e144f39). Lock protocol: flock -n, on fail sleep 60s, retry up to
-# 20x, log all fails.
-#
+# !/bin/bash run-835 GPU phase (run ON guest-a): gates + bench for the dequant-hoist wheel (e144f39). Lock protocol: flock -n, on fail sleep 60s, retry up to 20x, log all fails.
+# 
 # Usage: bash run-835_gpu_phase.sh <new-wheel-dir>
 set -uo pipefail
 MODELS="${MODELS:-/models}"
@@ -49,8 +46,7 @@ WHEELSHA=$(sha256sum $WHEELNW/mlx/lib/libmlx.so | cut -d' ' -f1)
 echo "CONFIG: wheel_lib_sha256=$WHEELSHA gfx1201_strings=$(cat $T/new/gfx1201-count.txt)" | tee $T/new/config.log
 cat $T/new/gpuinfo.log >> $T/new/config.log
 
-# --- gate 1: bit-exact vs per-row wide kernel (16 refs) ------------------
-# refs regenerated with the baseline wheel (venv-d, per-row wide kernel)
+# --- gate 1: bit-exact vs per-row wide kernel (16 refs) ------------------ refs regenerated with the baseline wheel (venv-d, per-row wide kernel)
 try_locked bitexact-ref "$PYG4 $H/qmv_mr_bitexact.py ref $T/ref/bitexact" \
   > $T/ref/bitexact.log 2>&1 || { echo "GATE1-REF-FAIL"; exit 1; }
 grep "BITEXACT-GATE" $T/ref/bitexact.log

@@ -1,26 +1,8 @@
-#!/bin/bash
-# run-889 (method-correction doc 2026-10-28, section 4 step 1, lever 1
-# follow-up; REPORT.md section 6.4/7.6 pointer): run-852 LX-hoist A/B gates.
-#
-# (a) LOSSLESS: MR+hoist kernel bit-exact vs the per-row qmv_wide_kernel
-#     at identical inputs (maxdiff 0.0, raw-uint16 equality) — the
-#     reference is generated in the SAME wheel with MLX_QMV_NO_MR=1
-#     (per-row wide kernel), so both sides are the same code.
-# (b) GAIN >= 3%: per-combo kernel-time gain, LX=1 (hoist) vs LX=0
-#     (run-825 path), one fresh process per env (run-835 convention), identical
-#     combo sequence, per-position pairing; the down shape (K=12288,
-#     wide fallback for both envs) is the drift control.
-# (c) CONFIG: printed + asserted per run (doc rule 6) — the CONFIG lines
-#     carry the wheel version + MLX_* env; the parser prints the kernel
-#     names actually dispatched; this runner asserts the expected kernel
-#     family per shape + the template instantiation from the full symbol
-#     name (mangled Lb0/Lb1 or demangled — non-vacuous on this
-#     toolchain's mangled names; run-903 MINOR-2 fix).
-#
-# Usage (ON guest-a):
-#   bash qmv_mr2_lx_run.sh <python>
-#     python: interpreter with the wheel under test on its path
-#            (venv-d python + PYTHONPATH=$MODELS/wheel-qmv2)
+# !/bin/bash run-889 (method-correction doc 2026-10-28, section 4 step 1, lever 1 follow-up; REPORT.md section 6.4/7.6 pointer): run-852 LX-hoist A/B gates.
+# 
+# (a) LOSSLESS: MR+hoist kernel bit-exact vs the per-row qmv_wide_kernel at identical inputs (maxdiff 0.0, raw-uint16 equality) — the reference is generated in the SAME wheel with MLX_QMV_NO_MR=1 (per-row wide kernel), so both sides are the same code. (b) GAIN >= 3%: per-combo kernel-time gain, LX=1 (hoist) vs LX=0 (run-825 path), one fresh process per env (run-835 convention), identical combo sequence, per-position pairing; the down shape (K=12288, wide fallback for both envs) is the drift control. (c) CONFIG: printed + asserted per run (doc rule 6) — the CONFIG lines carry the wheel version + MLX_* env; the parser prints the kernel names actually dispatched; this runner asserts the expected kernel family per shape + the template instantiation from the full symbol name (mangled Lb0/Lb1 or demangled — non-vacuous on this toolchain's mangled names; run-903 MINOR-2 fix).
+# 
+# Usage (ON guest-a): bash qmv_mr2_lx_run.sh <python> python: interpreter with the wheel under test on its path (venv-d python + PYTHONPATH=$MODELS/wheel-qmv2)
 set -uo pipefail
 MODELS="${MODELS:-/models}"
 PY=$1
@@ -46,8 +28,7 @@ flock -w 1200 $LOCK -c "MLX_QMV_NO_MR=1 $PY $HERE/qmv_mr_bitexact.py ref $T/bite
 flock -w 1200 $LOCK -c "MLX_QMV_MR_LX=1 $PY $HERE/qmv_mr_bitexact.py check $T/bitexact" \
   > $T/bitexact-check.log 2>&1 || { echo "FLOCK-FAIL bitexact-check"; exit 1; }
 grep -E "^CONFIG:|^BITEXACT-GATE:" $T/bitexact-ref.log $T/bitexact-check.log
-# gate (a) verdict: 16/16 combos (4 shapes x M=1..4) bit-exact, and the
-# ref run actually ran with NO_MR=1 (per-row wide kernel reference).
+# gate (a) verdict: 16/16 combos (4 shapes x M=1..4) bit-exact, and the ref run actually ran with NO_MR=1 (per-row wide kernel reference).
 NPASS=$(grep -c "maxdiff=0.0 bitexact=True PASS" $T/bitexact-check.log)
 [ "$NPASS" = "16" ] || { echo "BITEXACT-GATE-FAIL: $NPASS/16"; exit 1; }
 grep -q "'MLX_QMV_NO_MR': '1'" $T/bitexact-ref.log || { echo "CONFIG-ASSERT-FAIL: ref env"; exit 1; }
@@ -69,12 +50,7 @@ done
 grep -E "^CONFIG:" $T/bench0.log $T/bench1.log
 grep -E "^COMBO:" $T/parse0.log $T/parse1.log
 
-# --- gate (c): config assertions (kernel names actually dispatched) ------
-# The template-instantiation check is non-vacuous on the mangled names
-# rocprofv3 actually reports (mangled Lb0 = run-825 path / Lb1 = hoist, or
-# demangled ", false>" / ", true>"; run-903 MINOR-2 fix — the run-889 check
-# was a no-op for mangled names). Proven non-vacuous offline by
-# tests/test_qmv_mr2_lx_instantiation.py.
+# --- gate (c): config assertions (kernel names actually dispatched) ------ The template-instantiation check is non-vacuous on the mangled names rocprofv3 actually reports (mangled Lb0 = run-825 path / Lb1 = hoist, or demangled ", false>" / ", true>"; run-903 MINOR-2 fix — the run-889 check was a no-op for mangled names). Proven non-vacuous offline by tests/test_qmv_mr2_lx_instantiation.py.
 python3 $HERE/qmv_mr2_lx_instantiation.py $T/combos0.json $T/combos1.json || { echo "CONFIG-ASSERT-FAIL"; exit 1; }
 
 # --- gate (b) verdict ----------------------------------------------------

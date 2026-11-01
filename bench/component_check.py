@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Component check: which of conv+silu / beta sigmoid / qk rms_norm differs
-between the model-default chain and the kernel's verbatim formulas (real V2
-layer-0 values)."""
+"""Component check: which of conv+silu / beta sigmoid / qk rms_norm differs between the model-default chain and the
+Kernel's verbatim formulas (real V2 layer-0 values)."""
 
 import os
 
@@ -12,7 +11,7 @@ import numpy as np
 from mlx_lm.models.gated_delta import normalize_qk
 from mlx_lm.utils import load
 
-model_full, tokenizer = load("/mnt/models/qwen3-9b-mlx")
+model_full, tokenizer = load(os.environ["MODELS"] + "/qwen3-9b-mlx")
 mx.eval(model_full.parameters())
 lm = model_full.language_model
 lay = lm.layers[0].linear_attn
@@ -58,20 +57,16 @@ cw = np.asarray(lay.conv1d.weight.reshape(lay.conv_dim, lay.conv_kernel_size).as
 print("qkv", qkv.shape, "conv_state", conv_state.shape, "cw", cw.shape, flush=True)
 D = qkv.shape[2]
 
-# ---- 1) conv + silu ----
-# model path
+# ---- 1) conv + silu ---- model path
 conv_input = mx.concatenate([mx.array(conv_state).astype(mx.bfloat16), mx.array(qkv).astype(mx.bfloat16)], axis=1)
 conv_out_m = np.asarray(nn.silu(lay.conv1d(conv_input)).astype(mx.float32))  # [1,5,D]
 
 
-# kernel source order (lines 225-234 / 245-254 / 266-275), per row t:
-#   w[0] * (t==0 ? cs[0] : cs[1]) + w[1] * (t==0 ? cs[1] : cs[2])
-#   + w[2] * (t==0 ? cs[2] : x[t-1...]) ... need exact; do it from the file:
-# row t: [c_{2-t+?}] -- use the documented window:
-#   row0 = [cs0, cs1, cs2, x0]; row1 = [cs1, cs2, x0, x1]
-# additive order in kernel: w0*e0 + w1*e1 + w2*e2 + w3*e3 (sequential FMAs,
-# but each e_i is a f32 multiply; the kernel does:
-#   (cond) * w0 + (cond) * w1 + ... as a nested sum in source order)
+# kernel source order (lines 225-234 / 245-254 / 266-275), per row t: w[0] * (t==0 ? cs[0] : cs[1]) + w[1] * (t==0 ?
+# Cs[1] : cs[2]) + w[2] * (t==0 ? cs[2] : x[t-1...]) ... need exact; do it from the file: row t: [c_{2-t+?}] -- use the
+# Documented window: row0 = [cs0, cs1, cs2, x0]; row1 = [cs1, cs2, x0, x1] additive order in kernel: w0*e0 + w1*e1 +
+# W2*e2 + w3*e3 (sequential FMAs, but each e_i is a f32 multiply; the kernel does: (cond) * w0 + (cond) * w1 + ... as a
+# Nested sum in source order)
 def kernel_conv_row(t):
     e = [
         conv_state[0, 0 + t - 1 if t else 0],
@@ -99,12 +94,10 @@ def kernel_conv_row(t):
 for t in range(2):
     cm = conv_out_m[0, t]
     cf = kernel_conv_row(t)
-    # silu: model nn.silu (f32 compute? on bf16 input) vs kernel:
-    # Multiply(conv_bf, Sigmoid(conv_bf)): conv is cast to bf16 first? in the
-    # kernel the conv sum (f32) is rounded to bf16, THEN sigmoid in f32,
-    # then product cast to bf16? Read from source: s_qconv = Multiply(conv_bf,
-    # Sigmoid(conv_bf)) with conv_bf = T(sum) -- so: bf16 sum -> f32 sigmoid
-    # of bf16 value -> product f32 -> bf16.
+    # silu: model nn.silu (f32 compute? on bf16 input) vs kernel: Multiply(conv_bf, Sigmoid(conv_bf)): conv is cast to
+    # Bf16 first? in the kernel the conv sum (f32) is rounded to bf16, THEN sigmoid in f32, then product cast to bf16?
+    # Read from source: s_qconv = Multiply(conv_bf, Sigmoid(conv_bf)) with conv_bf = T(sum) -- so: bf16 sum -> f32
+    # Sigmoid of bf16 value -> product f32 -> bf16.
     sum_bf = f2bf(cf)
     sig = 1.0 / (1.0 + np.exp(-sum_bf))
     silu_k = f2bf(sig * sum_bf)
@@ -119,9 +112,8 @@ print(
     flush=True,
 )
 
-# ---- 3) qk rms_norm ----
-# model: normalize_qk uses mx.fast.rms_norm (256-thread ROCm kernel)
-# get conv_out (model, bf16) split into q,k
+# ---- 3) qk rms_norm ---- model: normalize_qk uses mx.fast.rms_norm (256-thread ROCm kernel) get conv_out (model,
+# Bf16) split into q,k
 q3 = qkv[:, :, : lay.key_dim]
 k3 = qkv[:, :, lay.key_dim : 2 * lay.key_dim]
 # need silu'd q,k from the MODEL conv output (last 2 rows)
@@ -137,11 +129,10 @@ km = mx.array(k_m).astype(mx.bfloat16).reshape(1, 2, lay.num_k_heads, HD)
 qn_m, kn_m = normalize_qk(qm, km, inv_scale=lay.head_k_dim**-0.5, eps=1e-6)
 
 
-# kernel: rms = 256-thread tree over 128 elems (threads 128..255 = 0), then
-# x/rms * scale -- the reduction order: warp tree (shfl_xor 16,8,4,2,1) across
-# 256 threads. Replicate: each thread has 1 element (128) or 0; sum =
-# sequential tree. With 128 active of 256: level1 pairs (t,t+1)... do the
-# tree in numpy per the standard pattern (pairs of adjacent, halving).
+# kernel: rms = 256-thread tree over 128 elems (threads 128..255 = 0), then x/rms * scale -- the reduction order: warp
+# Tree (shfl_xor 16,8,4,2,1) across 256 threads. Replicate: each thread has 1 element (128) or 0; sum = sequential
+# Tree. With 128 active of 256: level1 pairs (t,t+1)... do the tree in numpy per the standard pattern (pairs of
+# Adjacent, halving).
 def tree256(xv):
     n = 256
     x = np.concatenate([xv, np.zeros(n - len(xv))])

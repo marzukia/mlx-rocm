@@ -1,19 +1,8 @@
-#!/bin/bash
-# K=2 MTP spec-decode bench: m0 (AR) + m3 (K=2, S=3) x3 + m2 sanity anchor.
-# 1024 tokens, greedy, fresh process per run, flock.
-#
-# Lossless gate (run-638 audit B-1 fix): mtp-bench5.py prints "ALLTOKS: <toks>"
-# (no '='), so the stream is extracted with cut -d' '. The executed guest copy
-# (md5 42efb930) used grep '^ALLTOKS=' | cut -d= -> every stream var empty ->
-# every compare passed on empty==empty (vacuous). Every compare now fails LOUD
-# when a compared stream is empty: STATUS=VACUOUS, exit 1. MATCH may only be
-# printed on a non-empty full-length compare (for the prefix check: the full
-# length of the shorter stream, i.e. all of m0's 1024 tokens).
-#
-# Usage:
-#   bash bench5.sh                          # full bench (GPU, under flock) + lossless gate
-#   BENCH5_OUT=$MODELS/tmp/bench5 bash bench5.sh check
-#                                          # no-GPU: lossless gate on saved streams only
+# !/bin/bash K=2 MTP spec-decode bench: m0 (AR) + m3 (K=2, S=3) x3 + m2 sanity anchor. 1024 tokens, greedy, fresh process per run, flock.
+# 
+# Lossless gate (run-638 audit B-1 fix): mtp-bench5.py prints "ALLTOKS: <toks>" (no '='), so the stream is extracted with cut -d' '. The executed guest copy (md5 42efb930) used grep '^ALLTOKS=' | cut -d= -> every stream var empty -> every compare passed on empty==empty (vacuous). Every compare now fails LOUD when a compared stream is empty: STATUS=VACUOUS, exit 1. MATCH may only be printed on a non-empty full-length compare (for the prefix check: the full length of the shorter stream, i.e. all of m0's 1024 tokens).
+# 
+# Usage: bash bench5.sh # full bench (GPU, under flock) + lossless gate BENCH5_OUT=$MODELS/tmp/bench5 bash bench5.sh check # no-GPU: lossless gate on saved streams only
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib
 MODELS="${MODELS:-/models}"
@@ -22,15 +11,10 @@ OUT=${BENCH5_OUT:-$MODELS/tmp/bench5}
 mkdir -p $OUT
 LOCK=$MODELS/gpu-bench.lock
 
-# --- lossless gate (vacuity-guarded) ------------------------------------------
-# mtp-bench5.py prints exactly:  MTP=...  /  FIRST16: ...  /  ALLTOKS: <toks>  /  TEXT: ...
+# --- lossless gate (vacuity-guarded) ------------------------------------------ mtp-bench5.py prints exactly: MTP=... / FIRST16: ... / ALLTOKS: <toks> / TEXT: ...
 get_stream() { grep "^ALLTOKS:" "$1" 2>/dev/null | cut -d' ' -f2-; }
 
-# cmp_streams <label> <fileA> <fileB> [prefix]
-#   exact  : A and B non-empty, equal length, all positions equal -> MATCH
-#   prefix : A non-empty, B at least as long, all of A's positions equal -> MATCH
-# Prints: <label>: STATUS=<MATCH|FAIL|VACUOUS> first_div=<1-based tok|-> match=<m> diff=<d> of <n>
-# Returns: 0=MATCH 1=FAIL 2=VACUOUS
+# cmp_streams <label> <fileA> <fileB> [prefix] exact : A and B non-empty, equal length, all positions equal -> MATCH prefix : A non-empty, B at least as long, all of A's positions equal -> MATCH Prints: <label>: STATUS=<MATCH|FAIL|VACUOUS> first_div=<1-based tok|-> match=<m> diff=<d> of <n> Returns: 0=MATCH 1=FAIL 2=VACUOUS
 cmp_streams() {
   local label=$1 fa=$2 fb=$3 mode=${4:-exact}
   local A B

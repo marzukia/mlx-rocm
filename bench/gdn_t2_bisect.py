@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-"""Isolate the S=2 F-branch divergence (gate-1 FAIL at token 5).
-
-One process: prefill the prompt once (FUSE=1), snapshot the GDN caches, then
-run ONE S=2 verify forward twice from bit-identical restored caches with
-MLX_ROCM_GDN_FUSE=1 and =0 (use_fallback reads the env at call time).
-Compares final logits and per-layer linear_attn outputs; reports the first
-divergent layer.
-"""
+"""Isolate the S=2 F-branch divergence (gate-1 FAIL at token 5). One process: prefill the prompt once (FUSE=1), snapshot
+The GDN caches, then run ONE S=2 verify forward twice from bit-identical restored caches with MLX_ROCM_GDN_FUSE=1 and
+=0 (use_fallback reads the env at call time). Compares final logits and per-layer linear_attn outputs; reports the
+First divergent layer."""
 
 import glob
 import os
@@ -14,7 +10,7 @@ import os
 import mlx.core as mx
 import numpy as np
 
-MODEL = os.environ.get("MTP_MODEL", "/mnt/models/qwen3-9b-mlx")
+MODEL = os.environ.get("MTP_MODEL") or (os.environ["MODELS"] + "/qwen3-9b-mlx")
 
 # park all but the canonical sidecar (bench mtp-bench3-side.py pattern)
 for _f in (
