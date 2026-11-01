@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Parse the rocprofv3 JSON trace from step0_streaming_read.py. Usage: step0_parse.py <trace.json> <iters> <warmup>
-<nbytes> Dispatch pattern (verified on gfx1201): [init H2D copy] [warmup: (heavy all_reduce, tiny final reduce) *
-Warmup] [measure: (heavy all_reduce, tiny final reduce) * iters] GB/s = bytes moved / rocprofv3 kernel time (doc
-Section 2 rule 2). Per measured iteration: bytes = nbytes (read) + 8 (partial read + scalar write, negligible). Prints
-Kernel names actually dispatched (doc section 2 rule 6) and asserts the effective config."""
+"""Parse the rocprofv3 JSON trace from step0_streaming_read.py. Usage: step0_parse.py <trace.json> <iters> <warmup> <nbytes> Dispatch pattern (verified on gfx1201): [init H2D copy] [warmup: (heavy all_reduce, tiny final reduce) * Warmup] [measure: (heavy all_reduce, tiny final reduce) * iters] GB/s = bytes moved / rocprofv3 kernel time (doc Section 2 rule 2). Per measured iteration: bytes = nbytes (read) + 8 (partial read + scalar write, negligible). Prints Kernel names actually dispatched (doc section 2 rule 6) and asserts the effective config."""
 
 import json
 import statistics

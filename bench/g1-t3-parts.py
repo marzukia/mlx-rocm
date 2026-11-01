@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Un-sandwiched per-component timing: T=1 fwd, S=3 fwd, K=2 draft step. Forces eval of the actual outputs (like the real
-Decode loop)."""
+"""Un-sandwiched per-component timing: T=1 fwd, S=3 fwd, K=2 draft step. Forces eval of the actual outputs (like the real Decode loop)."""
 
 import os
 import time

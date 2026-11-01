@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the fused op's captured row-1 intermediates (dbg bin) against the model chain's row-1 values (qn, kn, v, beta,
-G). P2_GDN_DEBUG=1 required. FUSE=0 during the model forward (capture only), direct op call after."""
+"""Compare the fused op's captured row-1 intermediates (dbg bin) against the model chain's row-1 values (qn, kn, v, beta, G). P2_GDN_DEBUG=1 required. FUSE=0 during the model forward (capture only), direct op call after."""
 
 import os
 

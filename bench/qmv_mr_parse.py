@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Parse the rocprofv3 JSON trace from qmv_mr_bench.py
-(Doc section 2 rule 2: GB/s = bytes moved / rocprofv3 kernel time; Rule 6: print the kernel names actually dispatched).
-Usage: qmv_mr_parse.py <trace.json> <K> <N> <M> <warmup> <reps>
-Dispatch pattern: [H2D/init copies] + [QMV kernel * (warmup + reps)].
-The QMV kernel is the LAST symbol by name family (qmv_wide* / qmv_wide_mr*).
-Init copies (copy_*) are excluded by name."""
+"""Parse the rocprofv3 JSON trace from qmv_mr_bench.py (Doc section 2 rule 2: GB/s = bytes moved / rocprofv3 kernel time; Rule 6: print the kernel names actually dispatched). Usage: qmv_mr_parse.py <trace.json> <K> <N> <M> <warmup> <reps> Dispatch pattern: [H2D/init copies] + [QMV kernel * (warmup + reps)]. The QMV kernel is the LAST symbol by name family (qmv_wide* / qmv_wide_mr*). Init copies (copy_*) are excluded by name."""
 
 import json
 import sys
