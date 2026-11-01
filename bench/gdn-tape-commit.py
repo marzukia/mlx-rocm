@@ -49,6 +49,7 @@ and the three rejection branches):
     # (replaces the 2-4 S=1 re-forwards; the 0-accepted case's
     # correction = argmax(l0), its 1-accepted case's = argmax(l1), etc.)
 """
+
 import mlx.core as mx
 from mlx_lm.models.cache import KVCache
 
@@ -77,8 +78,7 @@ def tape_commit(cache, tapes, keep, verify_rows=4):
         raise TapeCommitError(f"keep={keep} out of range 0..{verify_rows}")
     gdn = _gdn_entries(cache)
     if len(tapes) != len(gdn):
-        raise TapeCommitError(
-            f"tape count {len(tapes)} != GDN layer count {len(gdn)}")
+        raise TapeCommitError(f"tape count {len(tapes)} != GDN layer count {len(gdn)}")
 
     # ---------- PHASE 1: CHECK ALL LAYERS (before any mutation) ----------
     for i, c in gdn:
@@ -87,24 +87,18 @@ def tape_commit(cache, tapes, keep, verify_rows=4):
         hv = c[1].shape[0]
         conv_dim = cst.shape[2]
         if st.shape != (t, hv) + S_HEAD or st.dtype != mx.float32:
-            raise TapeCommitError(
-                f"layer {i} state_tape {st.shape}/{st.dtype} != "
-                f"expected ({t}, {hv}) + {S_HEAD} f32")
+            raise TapeCommitError(f"layer {i} state_tape {st.shape}/{st.dtype} != expected ({t}, {hv}) + {S_HEAD} f32")
         if cst.shape != (t, 3, conv_dim) or cst.dtype != mx.bfloat16:
             raise TapeCommitError(
-                f"layer {i} conv_state_tape {cst.shape}/{cst.dtype} != "
-                f"expected ({t}, 3, {conv_dim}) bf16")
+                f"layer {i} conv_state_tape {cst.shape}/{cst.dtype} != expected ({t}, 3, {conv_dim}) bf16"
+            )
         if c[1].shape[1:] != S_HEAD:
-            raise TapeCommitError(
-                f"layer {i} live SSM shape {c[1].shape} tail != {S_HEAD}")
-    for i, c in gdn:
-        # KV trimmability (FA layers): the verify appended verify_rows
-        # entries; trimming back must not underflow the cache start.
-        pass
+            raise TapeCommitError(f"layer {i} live SSM shape {c[1].shape} tail != {S_HEAD}")
+    # KV trimmability (FA layers): the verify appended verify_rows
+    # entries; trimming back must not underflow the cache start.
     for c in cache:
-        if isinstance(c, KVCache):
-            if c.offset - verify_rows < 0:
-                raise TapeCommitError("KV cache underflow on trim")
+        if isinstance(c, KVCache) and c.offset - verify_rows < 0:
+            raise TapeCommitError("KV cache underflow on trim")
     # keep == 0: no rebind — but the checks above still run (the tapes
     # must be sound even when unused; a corrupt tape at keep=0 means the
     # verify's GDN path misbehaved and the round must fall back).
@@ -114,8 +108,8 @@ def tape_commit(cache, tapes, keep, verify_rows=4):
         row = keep - 1
         for i, c in gdn:
             st, cst = tapes[i]
-            c[0] = cst[row]           # conv leaf -> tape row (lazy rebind)
-            c[1] = st[row]            # SSM leaf  -> tape row (lazy rebind)
+            c[0] = cst[row]  # conv leaf -> tape row (lazy rebind)
+            c[1] = st[row]  # SSM leaf  -> tape row (lazy rebind)
             # c.lengths is unchanged (the GDN state is stateful, not
             # length-indexed; the bench's save_gdn/restore_gdn restores
             # lengths for symmetry, they are untouched here by design).
@@ -125,8 +119,7 @@ def tape_commit(cache, tapes, keep, verify_rows=4):
     return keep
 
 
-def single_correction_forward(
-        lm, correction, cache, return_hidden=True, return_prenorm=True):
+def single_correction_forward(lm, correction, cache, return_hidden=True, return_prenorm=True):
     """The ONE S=1 forward the tape protocol keeps on rejection (the
     correction token, from the committed state). Replaces the 2-4 S=1
     re-forwards of the t1250 cascade (the accepted-prefix rows were
