@@ -156,8 +156,18 @@ not ≈ good *run*.)
 3. **Shared-venv race.** The `andryo` account is shared across sessions; during
    this RCA the venv's `core...so` was swapped by a concurrent session
    (1c → 1093, md5 `8679f3…`), and the 1c wheel file (a pip ephemeral build)
-   was since deleted. Pin wheel identity by md5 in any long-running bench
-   session and re-verify before trusting a run.
+   was since deleted. The 1c wheel was therefore **rebuilt from its documented
+   source state** (graft kept + the 4 `r4d_gdn_*` kernels reverted to 75ca881,
+   clean build, `CMAKE_ARGS="-DMLX_BUILD_ROCM=ON
+   -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=OpenBLAS"`), installed back
+   into the venv, and verified healthy (m0 AR 73.58 tok/s; `/tmp/benchAR_1c.out`).
+   The rebuild's `.so` md5 is `8679f3…` — byte-identical to the pr3/1093
+   family, i.e. the 4 reverted kernels do not change this build's `.so`; the
+   1c-era bisect cells are therefore all the same wheel family, which the
+   verdict in Section 1 already covers. The original `6c125d…` file cannot be
+   recovered (ephemeral cache deleted); the rebuild is the functional 1c.
+   Pin wheel identity by md5 in any long-running bench session and re-verify
+   before trusting a run.
 4. **`mtp_ref.py` had a syntax error** (unclosed paren) and a wrong
    `mx.dequantize` positional-arg call — both fixed to run the probes this
    report relies on.
