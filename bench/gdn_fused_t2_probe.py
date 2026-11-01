@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Op-level bit-exactness probe for the T<=2 fused GDN step (gate 0).
+"""Op-level bit-exactness probe for the T<=4 fused GDN step (gate 0).
 
 Reference = the MODEL DEFAULT PATH (not the op's fallback chain, which is
-1-D-only in gdn_prep and thus invalid for T=2):
+1-D-only in gdn_prep and thus invalid for T=2/4):
   conv:  mx.nn.Conv1d sliding window over [conv_state(3), qkv(T)]
   beta:  mx.sigmoid(b)
   g:     model compute_g  (exp(-exp(A_log) * softplus(a + dt_bias)), f32)
@@ -12,9 +12,13 @@ Reference = the MODEL DEFAULT PATH (not the op's fallback chain, which is
 
 Checks:
   1. fused T=1 == model-default chain T=1 (regression)
-  2. fused T=2 == model-default chain T=2 (new path)
+  2. fused T=2 == model-default chain T=2 (regression)
   3. invariance: model chain T=2 == two sequential model-chain T=1 steps
      (conv-state updated between), fused T=2 == two sequential fused T=1
+  4. fused T=4 == model-default chain T=4 (new path, S=4 MTP verify)
+  5. invariance: model chain T=4 == four sequential model-chain T=1 steps,
+     fused T=4 == four sequential fused T=1 steps (conv-state updated
+     between rows)
 """
 
 import sys
@@ -130,6 +134,20 @@ def single_row(i, t):
     return d
 
 
+def advance_cs(d):
+    """Roll the conv state one row forward (in place on d): after a row-t
+    forward the 3-row window becomes [cs1, cs2, row_t]."""
+    d["conv_state"] = mx.stack(
+        [
+            d["conv_state"][1],
+            d["conv_state"][2],
+            mx.concatenate([d["q"][0, 0], d["k"][0, 0], d["v"][0, 0]], axis=-1)[None],
+        ],
+        axis=0,
+    )
+    return d
+
+
 def main():
     ok = True
     i1 = mk(1, seed=42)
@@ -147,35 +165,43 @@ def main():
     # Invariance, model-default path: T=2 == two T=1 with conv-state update
     a_ = mk(2, seed=42)
     r0, s0 = chain_default(single_row(a_, 0), 1)
-    a1 = dict(a_)
-    a1["conv_state"] = mx.stack(
-        [
-            a_["conv_state"][1],
-            a_["conv_state"][2],
-            mx.concatenate([a_["q"][0, 0], a_["k"][0, 0], a_["v"][0, 0]], axis=-1)[None],
-        ],
-        axis=0,
-    )
-    a1 = single_row(a1, 1)
+    advance_cs(a_)
+    a1 = single_row(a_, 1)
     r1, s1 = chain_default(a1, 1)
     ok &= check("invar chain out  (T=2 vs two T=1)", c2[0, 1], r1[0, 0])
     ok &= check("invar chain state(T=2 vs two T=1)", cs2, s1)
 
     # Invariance, fused path: fused T=2 == two fused T=1
     fr0, fso = fused(single_row(i2, 0), 1)
-    i2b = dict(i2)
-    i2b["conv_state"] = mx.stack(
-        [
-            i2["conv_state"][1],
-            i2["conv_state"][2],
-            mx.concatenate([i2["q"][0, 0], i2["k"][0, 0], i2["v"][0, 0]], axis=-1)[None],
-        ],
-        axis=0,
-    )
-    i2b = single_row(i2b, 1)
+    advance_cs(i2)
+    i2b = single_row(i2, 1)
     fr1, fs1b = fused(i2b, 1)
     ok &= check("invar fused out  (T=2 vs two T=1)", f2[0, 1], fr1[0, 0])
     ok &= check("invar fused state(T=2 vs two T=1)", fs2, fs1b)
+
+    # T=4 (S=4 MTP verify): fused vs model default
+    i4 = mk(4, seed=42)
+    f4, fs4 = fused(i4, 4)
+    c4, cs4 = chain_default(i4, 4)
+    ok &= check("T=4 out  (fused vs model default)", f4, c4)
+    ok &= check("T=4 state(fused vs model default)", fs4, cs4)
+
+    # Invariance, model-default path: T=4 == four T=1 with conv-state update
+    a4 = mk(4, seed=42)
+    for t in range(4):
+        rt, st = chain_default(single_row(a4, t), 1)
+        if t < 3:
+            advance_cs(a4)
+    ok &= check("invar chain out  (T=4 vs four T=1)", c4[0, 3], rt[0, 0])
+    ok &= check("invar chain state(T=4 vs four T=1)", cs4, st)
+
+    # Invariance, fused path: fused T=4 == four fused T=1
+    for t in range(4):
+        ft, ftst = fused(single_row(i4, t), 1)
+        if t < 3:
+            advance_cs(i4)
+    ok &= check("invar fused out  (T=4 vs four T=1)", f4[0, 3], ft[0, 0])
+    ok &= check("invar fused state(T=4 vs four T=1)", fs4, ftst)
 
     print("RESULT:", "PASS" if ok else "FAIL")
     sys.exit(0 if ok else 1)

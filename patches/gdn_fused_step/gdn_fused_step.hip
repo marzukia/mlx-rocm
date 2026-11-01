@@ -1,12 +1,12 @@
 // Copyright © 2025 Apple Inc.
 //
-// Fused GDN T=1..2 decode/verify-step kernel (Phase 2, MLX_ROCM_GDN_FUSE=1).
+// Fused GDN T=1..4 decode/verify-step kernel (Phase 2, MLX_ROCM_GDN_FUSE=1).
 //
 // One launch per GDN layer per step, replacing the 4-kernel default tail
 // chain (gdn_prep conv+silu+beta+g -> gdn_prep qk_norm -> r4d recurrent
-// state update -> gdn_norm_gated) at B=1, T=1..2, Dk=Dv=128.
+// state update -> gdn_norm_gated) at B=1, T=1..4, Dk=Dv=128.
 //
-// T=2 (the S=2 spec-decode verify rows) extension: the recurrent state
+// T=2/T=4 (the S=2/S=4 spec-decode verify rows) extension: the recurrent state
 // update loads h0 ONCE and updates the two rows sequentially in registers —
 // exactly the r4d recurrent kernel's T loop (r4d_gdn_recurrent_update,
 // `for (t = 0; t < T; ++t)` with h resident), so T=2 is bit-identical to
@@ -19,6 +19,16 @@
 //   row 1 = cs1*w0 + cs2*w1 + v0*w2  + v1*w3
 // (row 1 uses the PREVIOUS row's v, not the conv state — the causal-conv
 // semantics of the default path; the T=1 path must NOT be changed).
+//
+// T=4 (K=3 MTP verify, rows 2,3) extends the same sliding window to the
+// full 4-row context: E = [cs0, cs1, cs2, v0..v3], row t = sum_j E[t+j]*w[j]:
+//   row 2 = cs2*w0 + v0*w1 + v1*w2 + v2*w3
+//   row 3 = v0*w0 + v1*w1 + v2*w2 + v3*w3
+// The window tap expressions are written in the generalized form
+// (tap j = conv_state[j-t] while j-t in [0,2), else raw row t+1-j); with
+// TMAX=2 (or 1) the loop unrolls to constants and every ternary folds
+// EXACTLY to the T=2/T=1 straight-line windows, so the T=1/T=2 codegen is
+// unchanged. h stays register-resident across all TMAX rows (r4d's T loop).
 //
 // Losslessness: every phase below is a verbatim replication of the deployed
 // 4-kernel chain's arithmetic, same FMA order, same per-op bf16 roundings,
@@ -139,10 +149,10 @@ __device__ __forceinline__ unsigned short gdnf_f2bf_rne(float f) {
 
 // ---- The fused decode/verify step: one block per v head, 256 threads. ----
 // T=1 is the original fused decode step (row-0 conv window: cs0, cs1, cs2,
-// v0 — bit-identical to the original T=1 kernel). T=2 runs the two verify
+// v0 — bit-identical to the original T=1 kernel). T=2/T=4 run the verify
 // rows sequentially in ONE t-loop: phases 1..5 per row, with the phase-4
 // recurrent update's h resident in registers across rows (exactly r4d's
-// T loop, so T=2 is bit-identical to two T=1 steps).
+// T loop, so T=2/T=4 are bit-identical to the sequential T=1 steps).
 template <typename T, int TMAX>
 __global__ __launch_bounds__(256) void gdn_fused_step_kernel(
     const T* __restrict__ q_raw,
@@ -183,9 +193,9 @@ __global__ __launch_bounds__(256) void gdn_fused_step_kernel(
   __shared__ __attribute__((aligned(16))) T s_kn[128];
   __shared__ T s_out[128];
   __shared__ T s_xn[128];
-  __shared__ T s_beta[2];
+  __shared__ T s_beta[4];
   __shared__ T s_one;
-  __shared__ float s_g[2];
+  __shared__ float s_g[4];
   // One reduction buffer PER rms_norm call: sequential calls in one block
   // must not share storage (the tail of call N reads shared_sum[0] while
   // the head of call N+1 writes shared_sum[0..7]; the reference kernels
@@ -213,8 +223,10 @@ __global__ __launch_bounds__(256) void gdn_fused_step_kernel(
     // ---------------- Phase 1: conv1d + silu ----------------
     // Verbatim gdn_prep_kernel conv body: 4-value sequential k-order sum in
     // f32, cast to T, silu = Multiply(conv_bf, Sigmoid(conv_bf)) in T. The
-    // conv window slides per row (E = [cs0, cs1, cs2, v0, v1]; row t =
-    // sum_j E[t+j]*w[j]); t=0 reduces exactly to the original T=1 window.
+    // conv window slides per row (E = [cs0, cs1, cs2, v0..v3]; row t =
+    // sum_j E[t+j]*w[j]); written generalized over t in [0, TMAX): with
+    // TMAX=2/1 the loop unrolls and every ternary folds to the original
+    // T=2/T=1 windows (bit-identical codegen).
     // Channels: q c = hk*128+i ; k c = key_dim + hk*128+i ;
     //          v c = 2*key_dim + hv*128+i (value_dim/128 = Hv).
     if (tid < head_dim) {
@@ -222,16 +234,16 @@ __global__ __launch_bounds__(256) void gdn_fused_step_kernel(
       const int vch = hv * head_dim + tid;
       float acc = 0.0f;
       acc += static_cast<float>(
-                 (t == 0) ? conv_state[0 * conv_dim + cv]
-                         : conv_state[1 * conv_dim + cv]) *
+                 (t <= 2) ? conv_state[t * conv_dim + cv]
+                         : v_raw[(t - 3) * value_dim + vch]) *
           static_cast<float>(conv_weight[cv * kernel_size + 0]);
       acc += static_cast<float>(
-                 (t == 0) ? conv_state[1 * conv_dim + cv]
-                         : conv_state[2 * conv_dim + cv]) *
+                 (t <= 1) ? conv_state[(t + 1) * conv_dim + cv]
+                         : v_raw[(t - 2) * value_dim + vch]) *
           static_cast<float>(conv_weight[cv * kernel_size + 1]);
       acc += static_cast<float>(
                  (t == 0) ? conv_state[2 * conv_dim + cv]
-                         : v_raw[0 * value_dim + vch]) *
+                         : v_raw[(t - 1) * value_dim + vch]) *
           static_cast<float>(conv_weight[cv * kernel_size + 2]);
       acc += static_cast<float>(v_raw[t * value_dim + vch]) *
           static_cast<float>(conv_weight[cv * kernel_size + 3]);
@@ -242,16 +254,16 @@ __global__ __launch_bounds__(256) void gdn_fused_step_kernel(
       const int kch = hk * head_dim + tid;
       float acc2 = 0.0f;
       acc2 += static_cast<float>(
-                  (t == 0) ? conv_state[0 * conv_dim + ck]
-                          : conv_state[1 * conv_dim + ck]) *
+                  (t <= 2) ? conv_state[t * conv_dim + ck]
+                          : k_raw[(t - 3) * key_dim + kch]) *
           static_cast<float>(conv_weight[ck * kernel_size + 0]);
       acc2 += static_cast<float>(
-                  (t == 0) ? conv_state[1 * conv_dim + ck]
-                          : conv_state[2 * conv_dim + ck]) *
+                  (t <= 1) ? conv_state[(t + 1) * conv_dim + ck]
+                          : k_raw[(t - 2) * key_dim + kch]) *
           static_cast<float>(conv_weight[ck * kernel_size + 1]);
       acc2 += static_cast<float>(
                   (t == 0) ? conv_state[2 * conv_dim + ck]
-                          : k_raw[0 * key_dim + kch]) *
+                          : k_raw[(t - 1) * key_dim + kch]) *
           static_cast<float>(conv_weight[ck * kernel_size + 2]);
       acc2 += static_cast<float>(k_raw[t * key_dim + kch]) *
           static_cast<float>(conv_weight[ck * kernel_size + 3]);
@@ -263,16 +275,16 @@ __global__ __launch_bounds__(256) void gdn_fused_step_kernel(
       int cq = hk * head_dim + qi;
       float acc = 0.0f;
       acc += static_cast<float>(
-                 (t == 0) ? conv_state[0 * conv_dim + cq]
-                         : conv_state[1 * conv_dim + cq]) *
+                 (t <= 2) ? conv_state[t * conv_dim + cq]
+                         : q_raw[(t - 3) * key_dim + qch]) *
           static_cast<float>(conv_weight[cq * kernel_size + 0]);
       acc += static_cast<float>(
-                 (t == 0) ? conv_state[1 * conv_dim + cq]
-                         : conv_state[2 * conv_dim + cq]) *
+                 (t <= 1) ? conv_state[(t + 1) * conv_dim + cq]
+                         : q_raw[(t - 2) * key_dim + qch]) *
           static_cast<float>(conv_weight[cq * kernel_size + 1]);
       acc += static_cast<float>(
                  (t == 0) ? conv_state[2 * conv_dim + cq]
-                         : q_raw[0 * key_dim + qch]) *
+                         : q_raw[(t - 1) * key_dim + qch]) *
           static_cast<float>(conv_weight[cq * kernel_size + 2]);
       acc += static_cast<float>(q_raw[t * key_dim + qch]) *
           static_cast<float>(conv_weight[cq * kernel_size + 3]);
@@ -284,7 +296,8 @@ __global__ __launch_bounds__(256) void gdn_fused_step_kernel(
     // ---------------- Phase 2: beta + g ----------------
     // Verbatim gdn_prep_kernel gate body (thread 0 there == thread 0 here),
     // per row. g stays f32 (the state update reads its low u16, as the
-    // chain does).
+    // chain does). s_beta/s_g are sized [4] (the TMAX=4 row count); the
+    // TMAX=1/2 instantiations use only [0](+[1]) exactly as before.
     if (tid == 0) {
       s_beta[t] = Sigmoid{}(b[t * num_v_heads + hv]);
       T sum_bf = static_cast<T>(static_cast<float>(a[t * num_v_heads + hv]) +
@@ -447,6 +460,8 @@ __global__ __launch_bounds__(256) void gdn_fused_step_kernel(
 }  // namespace rocm
 
 // ---- host launcher ----
+// Instantiates TMAX in {1, 2, 4}, selected at launch from T (T=1 decode,
+// T=2 S=2 verify, T=4 S=4 verify).
 template <int TMAX>
 int launch_gdn_fused_step(
     const void* q_raw,
@@ -556,7 +571,7 @@ void GdnFusedStep::eval_gpu(
         mlx::core::rocm::malloc_async(dbg_arr.nbytes(), encoder));
   }
 
-  // Shape-based dims (B=1 guaranteed by use_fallback; T is 1 or 2):
+  // Shape-based dims (B=1 guaranteed by use_fallback; T is 1, 2 or 4):
   //   q [1, T, key_dim]  k [1, T, key_dim]  v [1, T, value_dim]
   //   z [1, T, Hv, 128]  nw [128]  cs [3, conv_dim]  cw [conv_dim, 4]
   int Tlen = (int)q.shape(1);
@@ -567,10 +582,12 @@ void GdnFusedStep::eval_gpu(
   int num_v_heads = (int)zg.size() / head_dim / Tlen;
   int num_k_heads = key_dim / head_dim;
 
-  // TMAX is a template constant so the t loop unrolls and the (t == 0)
-  // conv-window ternaries fold: the T=1 decode path compiles to exactly
-  // the original straight-line T=1 kernel (a runtime Tlen bound left a
-  // ~0.3% regression in the latency-bound AR loop).
+  // TMAX is a template constant so the t loop unrolls and the conv-window
+  // ternaries fold: the T=1 decode path compiles to exactly the original
+  // straight-line T=1 kernel (a runtime Tlen bound left a ~0.3% regression
+  // in the latency-bound AR loop), and TMAX=2 folds to the T=2 windows.
+  // T=4 (S=4 MTP verify) instantiates the same unrolled structure over 4
+  // rows; h stays register-resident across all rows (r4d's T loop).
   auto launch_one = [&](hipStream_t stream, int tmax) {
     return (tmax == 1)
         ? launch_gdn_fused_step<1>(
@@ -585,7 +602,20 @@ void GdnFusedStep::eval_gpu(
                   ? dbg_arr.data<unsigned char>()
                   : nullptr,
               stream)
-        : launch_gdn_fused_step<2>(
+        : (tmax == 2)
+        ? launch_gdn_fused_step<2>(
+              gpu_ptr<void>(q), gpu_ptr<void>(k), gpu_ptr<void>(v),
+              gpu_ptr<void>(bb), gpu_ptr<void>(aa), gpu_ptr<float>(al),
+              gpu_ptr<float>(db), gpu_ptr<void>(cs), gpu_ptr<void>(cw),
+              gpu_ptr<void>(zg), gpu_ptr<float>(st), gpu_ptr<void>(nw),
+              gpu_ptr<void>(result), gpu_ptr<void>(state_new), key_dim,
+              value_dim, conv_dim, 4, num_v_heads, num_k_heads, head_dim,
+              inv_scale_, eps_ * inv_scale_ * inv_scale_, norm_eps_,
+              (dbg_env != nullptr && dbg_env[0] == '1')
+                  ? dbg_arr.data<unsigned char>()
+                  : nullptr,
+              stream)
+        : launch_gdn_fused_step<4>(
               gpu_ptr<void>(q), gpu_ptr<void>(k), gpu_ptr<void>(v),
               gpu_ptr<void>(bb), gpu_ptr<void>(aa), gpu_ptr<float>(al),
               gpu_ptr<float>(db), gpu_ptr<void>(cs), gpu_ptr<void>(cw),

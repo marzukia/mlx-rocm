@@ -32,31 +32,46 @@ def test_env_gate_is_the_only_switch():
     assert 'getenv("MLX_ROCM_GDN_FALLBACK")' in t
     # Default path: env unset -> use_fallback true -> 4-op chain.
     assert "e == nullptr || e[0] != '1'" in t
+    # T=4 (S=4 MTP verify) is in the fused range; T>4 falls back.
+    assert "if (B != 1 || T > 4) {" in t
 
 
 def test_conv_phase_reuses_the_4tap_sequential_sum():
     src = _src()
-    # Per-row sliding window (E = [cs0, cs1, cs2, q0, q1]; row t = sum_j
-    # E[t+j]*w[j]) keeps gdn_prep's 4-tap k-order sequential f32 sum; with
-    # TMAX=1 the (t == 0) ternaries fold and this reduces exactly to the
-    # original T=1 window.
-    assert src.count("(t == 0) ? conv_state[0 * conv_dim + ") == 3
-    assert src.count("(t == 0) ? conv_state[1 * conv_dim + ") == 3
+    # Per-row sliding window (E = [cs0, cs1, cs2, raw rows t-2..t]; row t =
+    # sum_j E[t+j]*w[j], tap j sources conv_state[j-t] while j-t in [0,2)
+    # else raw row t+1-j) keeps gdn_prep's 4-tap k-order sequential f32 sum.
+    # Written generalized over t in [0, TMAX): with TMAX=2/1 the loop
+    # unrolls to constants and every ternary folds EXACTLY to the original
+    # T=2/T=1 straight-line windows (bit-identical codegen).
+    # Tap 0/1/2 (v, k, q channels = 3 each):
+    assert src.count("(t <= 2) ? conv_state[t * conv_dim + ") == 3
+    assert src.count("(t <= 1) ? conv_state[(t + 1) * conv_dim + ") == 3
     assert src.count("(t == 0) ? conv_state[2 * conv_dim + ") == 3
-    # Row 1's window shifts by one: tap2 = raw row 0, tap3 = raw row 1.
     # Raw inputs are read as packed t-indexed rows (the op force-copies the
-    # model's row-strided q3/k3/v3 slices for T>1).
-    assert "v_raw[0 * value_dim + vch])" in src
-    assert "k_raw[0 * key_dim + kch])" in src
-    assert "q_raw[0 * key_dim + qch])" in src
-    assert "static_cast<float>(v_raw[t * value_dim + vch])" in src
-    assert "static_cast<float>(k_raw[t * key_dim + kch])" in src
-    assert "static_cast<float>(q_raw[t * key_dim + qch])" in src
+    # model's row-strided q3/k3/v3 slices for T>1); tap3 = raw row t.
+    for raw, dim, ch in (
+        ("v_raw", "value_dim", "vch"),
+        ("k_raw", "key_dim", "kch"),
+        ("q_raw", "key_dim", "qch"),
+    ):
+        assert f"{raw}[(t - 3) * {dim} + {ch}]" in src
+        assert f"{raw}[(t - 2) * {dim} + {ch}]" in src
+        assert f"{raw}[(t - 1) * {dim} + {ch}]" in src
+        assert f"static_cast<float>({raw}[t * {dim} + {ch}])" in src
     # silu via the exact op structs (not a re-derivation)
     assert "Multiply{}(conv_bf, Sigmoid{}(conv_bf))" in src
-    # TMAX is a template constant: T=1 unrolls to the straight-line kernel.
+    # TMAX is a template constant: T=1 unrolls to the straight-line kernel;
+    # T=2 to the T=2 windows; T=4 instantiates the same structure over 4 rows.
     assert "template <typename T, int TMAX>" in src
     assert "for (int t = 0; t < TMAX; ++t)" in src
+    assert "launch_gdn_fused_step<1>" in src
+    assert "launch_gdn_fused_step<2>" in src
+    assert "launch_gdn_fused_step<4>" in src
+    assert "launch_gdn_fused_step<3>" not in src
+    # s_beta/s_g shared buffers are sized for the T=4 row count.
+    assert "__shared__ T s_beta[4];" in src
+    assert "__shared__ float s_g[4];" in src
 
 
 def test_qk_norm_phase_reuses_the_block_reduction():
