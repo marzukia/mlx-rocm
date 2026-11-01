@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""run-835: parse run-835 bench logs -> in-run bar table. Input: the 16 bench-<K>x<N>-M<M>.log files (each ends with the
-Qmv_mr_parse.py QMV: line). Output: per-shape table with in-run M-ratios (vs M=1), per-call kernel time (us), GB/s, pct
-Of the 640 GB/s measured peak (method doc: 9070 XT = 640 GB/s, NOT 960), and bar verdicts (M=1 >= 541 on gate_up; M=2
-<= 1.15x; M=3 <= 1.3x; M=4 <= 1.3x)."""
+"""run-835: parse run-835 bench logs -> in-run bar table. Input: the 16 bench-<K>x<N>-M<M>.log files (each ends with the Qmv_mr_parse.py QMV: line). Output: per-shape table with in-run M-ratios (vs M=1), per-call kernel time (us), GB/s, pct Of the 640 GB/s measured peak (method doc: 9070 XT = 640 GB/s, NOT 960), and bar verdicts (M=1 >= 541 on gate_up; M=2 <= 1.15x; M=3 <= 1.3x; M=4 <= 1.3x)."""
 
 import glob
 import os

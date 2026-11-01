@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""T=1 vs T=2 op discrimination (real layer-0 values). From the same state, run: - fused op T=1 (row 0) vs
-Mx.fast.gated_delta_update T=1 (row 0) - fused op T=2 vs mx.fast.gated_delta_update T=2 If T=1 matches and T=2 diverges
--> row-carry/indexing bug in the fused op."""
+"""T=1 vs T=2 op discrimination (real layer-0 values). From the same state, run: - fused op T=1 (row 0) vs Mx.fast.gated_delta_update T=1 (row 0) - fused op T=2 vs mx.fast.gated_delta_update T=2 If T=1 matches and T=2 diverges -> row-carry/indexing bug in the fused op."""
 
 import os
 

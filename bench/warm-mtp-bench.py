@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""run-1014 BENCH: AR / MTP K=1 / MTP K=2 tok/s at a 14-token AND a 29K prompt, WARMUP FIRST, on the lane wheel
-(run-1012-29k/venv-m8, .so de6de5f154c0). Harness = the mtp-bench5.py MTP flow (mode 0 = AR greedy, mode 2 = K=1
-Batched S=2 verify, mode 3 = K=2 batched S=3 verify; draft chain / reject rollbacks verbatim from mtp-bench5) + the
-Run-1012-29k.py deterministic 29K prompt (fixed 1264-char corpus tiled, truncated to exactly T29K_TARGET tokens) and
-Chunked prefill (T29K_CHUNK=1024; for the 14-token prompt the chunk == the whole prompt, i.e. single-pass prefill - the
-Stock mtp-bench3/5 flow). Op-order WARMUP FIRST: with T14_WARM=1 (default) one full prefill+decode pass at the same
-Context is run and DISCARDED (fresh cache for the measured pass), so kernels / hipBLASLt heuristic selection / L2 / KV
-Allocation are steady before measurement. Warm numbers are logged separately (WARM line). Steady-state window: the
-First T14_SKIP (default 56) decode iterations are excluded from the window tok/s (same convention as run-1012: steps
-57-256). For MTP modes each iteration is a single-token (draft) step or a verify step (emits 1-3 tokens); window tok/s
-= tokens emitted inside the window / window wall-time (iteration-based, documented in the report). Prints: MEASURE
-(toks, prefill ms/tok_s, decode tok_s overall + window, iteration stats, acceptance D1ACC/D2ACC/verifies/tok_per_step,
-.so sha), WARM (same fields, discarded), ALLTOKS."""
+"""run-1014 BENCH: AR / MTP K=1 / MTP K=2 tok/s at a 14-token AND a 29K prompt, WARMUP FIRST, on the lane wheel (run-1012-29k/venv-m8, .so de6de5f154c0). Harness = the mtp-bench5.py MTP flow (mode 0 = AR greedy, mode 2 = K=1 Batched S=2 verify, mode 3 = K=2 batched S=3 verify; draft chain / reject rollbacks verbatim from mtp-bench5) + the Run-1012-29k.py deterministic 29K prompt (fixed 1264-char corpus tiled, truncated to exactly T29K_TARGET tokens) and Chunked prefill (T29K_CHUNK=1024; for the 14-token prompt the chunk == the whole prompt, i.e. single-pass prefill - the Stock mtp-bench3/5 flow). Op-order WARMUP FIRST: with T14_WARM=1 (default) one full prefill+decode pass at the same Context is run and DISCARDED (fresh cache for the measured pass), so kernels / hipBLASLt heuristic selection / L2 / KV Allocation are steady before measurement. Warm numbers are logged separately (WARM line). Steady-state window: the First T14_SKIP (default 56) decode iterations are excluded from the window tok/s (same convention as run-1012: steps 57-256). For MTP modes each iteration is a single-token (draft) step or a verify step (emits 1-3 tokens); window tok/s = tokens emitted inside the window / window wall-time (iteration-based, documented in the report). Prints: MEASURE (toks, prefill ms/tok_s, decode tok_s overall + window, iteration stats, acceptance D1ACC/D2ACC/verifies/tok_per_step, .so sha), WARM (same fields, discarded), ALLTOKS."""
 
 import hashlib
 import os
@@ -88,8 +76,7 @@ def forward(lm, tok_arr, cache):
 
 
 def generate(lm, prompt_ids, mode):
-    """One full pass: prefill + <= MAX_TOKENS decode iterations. Returns (out, prefill_ms, it_times, it_toks, decode_ms,
-    Verifies, d1_acc, d2_acc). it_times/it_toks are per decode iteration (a draft step or a verify step)."""
+    """One full pass: prefill + <= MAX_TOKENS decode iterations. Returns (out, prefill_ms, it_times, it_toks, decode_ms, Verifies, d1_acc, d2_acc). it_times/it_toks are per decode iteration (a draft step or a verify step)."""
     mtp_on = mode in ("2", "3")
     if mtp_on:
         assert lm.mtp is not None

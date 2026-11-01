@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""run-889: parse the rocprofv3 JSON trace from qmv_mr2_lx_bench.py (method doc section 2 rule 2: GB/s = bytes moved /
-Rocprofv3 kernel time; rule 6: print the kernel names actually dispatched). The bench runs 16 combos (4 shapes x
-M=1..4) in a fixed order, each WARMUP + REPS quantized_matmul calls; each call dispatches exactly one qmv* kernel
-(run-835: 60/60 dispatches per shape). The parser segments the qmv dispatch stream by that order. Usage:
-Qmv_mr2_lx_parse.py <trace.json> <warmup> <reps> <outdir> Writes <outdir>/combos.json (per-combo kernel time / GB/s /
-Kernel names) and prints one line per combo."""
+"""run-889: parse the rocprofv3 JSON trace from qmv_mr2_lx_bench.py (method doc section 2 rule 2: GB/s = bytes moved / Rocprofv3 kernel time; rule 6: print the kernel names actually dispatched). The bench runs 16 combos (4 shapes x M=1..4) in a fixed order, each WARMUP + REPS quantized_matmul calls; each call dispatches exactly one qmv* kernel (run-835: 60/60 dispatches per shape). The parser segments the qmv dispatch stream by that order. Usage: Qmv_mr2_lx_parse.py <trace.json> <warmup> <reps> <outdir> Writes <outdir>/combos.json (per-combo kernel time / GB/s / Kernel names) and prints one line per combo."""
 
 import json
 import sys

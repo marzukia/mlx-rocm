@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Step 1 lossless gate (doc section 2 rule 4): bit-exact vs the current qmv_wide_kernel — maxdiff 0.0 on
-All four shapes, M=1..4.
-Modes: ref : compute + save reference outputs (run with the CURRENT wheel)
-check : compute + compare vs saved references (run with the NEW wheel)
-Usage: qmv_mr_bitexact.py <ref|check> <outdir>
-Inputs are seed-deterministic (mx.random.seed(42) per shape), so both runs see identical inputs.
-Comparison is bit-exact (raw uint16 view equality)."""
+"""Step 1 lossless gate (doc section 2 rule 4): bit-exact vs the current qmv_wide_kernel — maxdiff 0.0 on All four shapes, M=1..4. Modes: ref : compute + save reference outputs (run with the CURRENT wheel) check : compute + compare vs saved references (run with the NEW wheel) Usage: qmv_mr_bitexact.py <ref|check> <outdir> Inputs are seed-deterministic (mx.random.seed(42) per shape), so both runs see identical inputs. Comparison is bit-exact (raw uint16 view equality)."""
 
 import os
 import sys
@@ -36,8 +30,7 @@ for K, N, tag in SHAPES:
         mx.random.seed(42)
         w = mx.random.normal((N, K)) * 0.05
         wq, s, b = mx.quantize(w, 64, 4)
-        # bf16 scales (the model's dtype); f32 scales are misread by the wide/MR kernels (all-zero on the current
-        # Wheel) — REPORT.md §3.
+        # bf16 scales (the model's dtype); f32 scales are misread by the wide/MR kernels (all-zero on the current Wheel) — REPORT.md §3.
         s = s.astype(mx.bfloat16)
         b = b.astype(mx.bfloat16)
         x = mx.random.normal((M, K)).astype(mx.bfloat16)

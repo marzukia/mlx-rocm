@@ -82,6 +82,21 @@ extend-exclude = [
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+# Reflowed single-line prose (docstrings/comments) in these as-run bench probes and the
+# hermetic gate test exceeds 120 columns; E501 is ignored there (the no-exemption line-wrap
+# rule keeps prose on single flowing lines; the other lint rules still apply).
+[tool.ruff.lint.per-file-ignores]
+"bench/gpu_phase_analyze.py" = ["E501"]
+"bench/qmv_mr2_lx_analyze.py" = ["E501"]
+"bench/qmv_mr2_lx_bench.py" = ["E501"]
+"bench/qmv_mr2_lx_instantiation.py" = ["E501"]
+"bench/qmv_mr2_lx_parse.py" = ["E501"]
+"bench/qmv_mr_bench.py" = ["E501"]
+"bench/qmv_mr_bitexact.py" = ["E501"]
+"bench/step0_streaming_read.py" = ["E501"]
+"bench/warm-mtp-bench.py" = ["E501"]
+"tests/test_gdn_fuse.py" = ["E501"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

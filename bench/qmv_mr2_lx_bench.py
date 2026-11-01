@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""run-889: decode QMV A/B bench — run-852 LX hoist (MLX_QMV_MR_LX=1) vs the run-825 path (MLX_QMV_MR_LX=0), one process
-Per env (fresh process per run, the run-835 convention). GB/s from rocprofv3 kernel time + bytes moved (method doc
-Section 2 rule 2: NEVER per-op latency including host op creation / mx.eval). Model's real shapes/dtypes (doc rule 3):
-Bf16 x, 4-bit affine, gs 64, has_bias, transposed packed weights. Shapes: 4096->12288 (gate/up), 12288->4096 (down —
-The A/B drift control: K=12288 -> LDS 96 KB > 32 KB gate, so it runs the per-row qmv_wide_kernel for BOTH env values),
-4096->4096 (o_proj), 4096->248320 (lm_head); M=1..4. Run under: rocprofv3 -d <out> -f json --kernel-trace -- python
-Qmv_mr2_lx_bench.py Env: MLX_QMV_MR_LX (0 = run-825 path, 1 = run-852 hoist; the dispatch gate enables the hoist only
-When K % 1024 == 0 for 4-bit), QMV_WARMUP (default 10), QMV_REPS (default 50). The combo order is fixed (SHAPES x M
-Below); the parser segments the dispatch stream by that order. Both env processes run the identical sequence, so
-Per-position pairing is drift-free except for the between-process offset, which hits both equally."""
+"""run-889: decode QMV A/B bench — run-852 LX hoist (MLX_QMV_MR_LX=1) vs the run-825 path (MLX_QMV_MR_LX=0), one process Per env (fresh process per run, the run-835 convention). GB/s from rocprofv3 kernel time + bytes moved (method doc Section 2 rule 2: NEVER per-op latency including host op creation / mx.eval). Model's real shapes/dtypes (doc rule 3): Bf16 x, 4-bit affine, gs 64, has_bias, transposed packed weights. Shapes: 4096->12288 (gate/up), 12288->4096 (down — The A/B drift control: K=12288 -> LDS 96 KB > 32 KB gate, so it runs the per-row qmv_wide_kernel for BOTH env values), 4096->4096 (o_proj), 4096->248320 (lm_head); M=1..4. Run under: rocprofv3 -d <out> -f json --kernel-trace -- python Qmv_mr2_lx_bench.py Env: MLX_QMV_MR_LX (0 = run-825 path, 1 = run-852 hoist; the dispatch gate enables the hoist only When K % 1024 == 0 for 4-bit), QMV_WARMUP (default 10), QMV_REPS (default 50). The combo order is fixed (SHAPES x M Below); the parser segments the dispatch stream by that order. Both env processes run the identical sequence, so Per-position pairing is drift-free except for the between-process offset, which hits both equally."""
 
 import os
 
@@ -42,8 +33,7 @@ for K, N, tag in SHAPES:
         # uint32 packing: 8 nibbles/element -> (N, K//8).
         assert wq.shape == (N, K // 8), wq.shape
         assert s.shape == (N, K // 64), s.shape
-        # Cast scales/biases to bf16 (the model's dtype). The wide/MR gate checks x.dtype() but the kernel hard-codes
-        # ScaleT=bf16; f32 scales are misread (all-zero output) — REPORT.md section 3.
+        # Cast scales/biases to bf16 (the model's dtype). The wide/MR gate checks x.dtype() but the kernel hard-codes ScaleT=bf16; f32 scales are misread (all-zero output) — REPORT.md section 3.
         s = s.astype(mx.bfloat16)
         b = b.astype(mx.bfloat16)
         x = mx.random.normal((M, K)).astype(mx.bfloat16)

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Bisect which t=1 window input causes the divergence: zero each candidate (cs row 1, cs row 2, qkv row 0, qkv row 1) in
-BOTH the fused op and the default chain, compare states."""
+"""Bisect which t=1 window input causes the divergence: zero each candidate (cs row 1, cs row 2, qkv row 0, qkv row 1) in BOTH the fused op and the default chain, compare states."""
 
 import os
 

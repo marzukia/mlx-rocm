@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Op-level bit-exactness probe for the T<=2 fused GDN step (gate 0). Reference = the MODEL DEFAULT PATH (not the op's
-Fallback chain, which is 1-D-only in gdn_prep and thus invalid for T=2): conv: mx.nn.Conv1d sliding window over
-[conv_state(3), qkv(T)] beta: mx.sigmoid(b) g: model compute_g (exp(-exp(A_log) * softplus(a + dt_bias)), f32) qk:
-Normalize_qk (inv_scale**2 * rms_norm, eps=1e-6*inv_scale**2) gdu: mx.fast.gated_delta_update (r4d recurrent for T<=8)
-Norm: mx.fast.rms_norm + precise_swiglu (RMSNormGated call) Checks: 1. fused T=1 == model-default chain T=1
-(regression) 2. fused T=2 == model-default chain T=2 (new path) 3. invariance: model chain T=2 == two sequential
-Model-chain T=1 steps (conv-state updated between), fused T=2 == two sequential fused T=1"""
+"""Op-level bit-exactness probe for the T<=2 fused GDN step (gate 0). Reference = the MODEL DEFAULT PATH (not the op's Fallback chain, which is 1-D-only in gdn_prep and thus invalid for T=2): conv: mx.nn.Conv1d sliding window over [conv_state(3), qkv(T)] beta: mx.sigmoid(b) g: model compute_g (exp(-exp(A_log) * softplus(a + dt_bias)), f32) qk: Normalize_qk (inv_scale**2 * rms_norm, eps=1e-6*inv_scale**2) gdu: mx.fast.gated_delta_update (r4d recurrent for T<=8) Norm: mx.fast.rms_norm + precise_swiglu (RMSNormGated call) Checks: 1. fused T=1 == model-default chain T=1 (regression) 2. fused T=2 == model-default chain T=2 (new path) 3. invariance: model chain T=2 == two sequential Model-chain T=1 steps (conv-state updated between), fused T=2 == two sequential fused T=1"""
 
 import sys
 
