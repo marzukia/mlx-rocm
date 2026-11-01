@@ -1812,8 +1812,7 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
   }
   // G1H2D: record + neutralize the in-graph H2D staging nodes BEFORE the
   // exec is (re)instantiated, so the instantiated exec carries them.
-  decode_capture_record_neutralize_h2d(slot, g);
-  // Refresh the slot's exec in place (hipGraphExecUpdate) when one exists —
+  decode_capture_record_neutralize_h2d(slot, g); Refresh the slot's exec in place (hipGraphExecUpdate) when one exists —
   // the decode topology is stable across tokens, so the update succeeds and
   // the exec's baked pointers (arena buffers) stay valid. Fall back to a
   // fresh instantiate when there is no exec yet or the update fails (shape

@@ -145,8 +145,7 @@ void gd_tear_down(GraphDecodePilot& p) {
 }
 
 // Shared arena setup for capture AND replay steps: deferred arena
-// teardown, arena begin/reset, floor (re)freeze, decode mode on.
-// Returns false when the step must run eager (arena setup failed).
+// teardown, arena begin/reset, floor (re)freeze, decode mode on. Returns false when the step must run eager (arena setup failed).
 bool gd_step_prepare(GraphDecodePilot& p, Stream s) {
   auto& enc = rocm::get_command_encoder(s);
   auto stream = static_cast<hipStream_t>(enc.stream());
@@ -210,8 +209,7 @@ bool gd_step_prepare(GraphDecodePilot& p, Stream s) {
   }
   // Reserve the slot region (5 wrappers: value slots 0-3 + zero slot)
   // so capture and replay steps advance the offset identically: a capture step allocates the slots (bumping the offset), a replay step reuses them (no bump) — reserving in both keeps the step's re-allocations at identical relative addresses.
-  rocm::allocator().decode_arena_reserve_wrappers(5);
-  // Pre-allocate the value-slot device buffers (arena bump, no hip calls) and their pinned host buffers BEFORE the capture window: hipHostMalloc during a capture invalidates it on ROCm 10.1 (observed: first capture step died at the first slot use, the next launch failing with hipErrorStreamCaptureInvalidated).
+  rocm::allocator().decode_arena_reserve_wrappers(5); Pre-allocate the value-slot device buffers (arena bump, no hip calls) and their pinned host buffers BEFORE the capture window: hipHostMalloc during a capture invalidates it on ROCm 10.1 (observed: first capture step died at the first slot use, the next launch failing with hipErrorStreamCaptureInvalidated).
   for (int i = 0; i < 4; ++i) {
     (void)rocm::allocator().decode_value_slot(i);
   }

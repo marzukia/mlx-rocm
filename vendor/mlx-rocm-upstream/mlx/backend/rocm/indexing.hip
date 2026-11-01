@@ -617,8 +617,7 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& encoder = rocm::get_command_encoder(s);
 
   // K3 (t1082): in graph decode mode, a small gather out goes to the
-  // persistent 4 KB value slot 3, each row at a distinct 256 B offset (a per-step cursor, reset with the arena): rows do not clobber each other in-graph (a decode step has several fast_rows gathers), and no row overflows into an adjacent wrapper. Out > 4 KB keeps the stable-address arena buffer (the row fits its own block there).
-  // MLX_GD_K3OFF=1 disables this (and the idx redirect below) for the t1099 on/off A/B.
+  // persistent 4 KB value slot 3, each row at a distinct 256 B offset (a per-step cursor, reset with the arena): rows do not clobber each other in-graph (a decode step has several fast_rows gathers), and no row overflows into an adjacent wrapper. Out > 4 KB keeps the stable-address arena buffer (the row fits its own block there). MLX_GD_K3OFF=1 disables this (and the idx redirect below) for the t1099 on/off A/B.
   if (rocm::graph_decode_mode() && !rocm::gd_k3_off() && out.nbytes() <= 4096) {
     auto sl3 = rocm::allocator().decode_value_slot(3);
     size_t off = rocm::allocator().decode_value_slot3_cursor(out.nbytes());
