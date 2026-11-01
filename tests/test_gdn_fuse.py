@@ -1,9 +1,7 @@
 """Hermetic Phase 2 gate: the fused GDN decode-step kernel is a verbatim replication of the 4-op chain's arithmetic.
 No GPU needed.
 
-These pin the lossless contract: the exact per-phase op sequence (conv 4-tap sequential sum, the 256-thread rms_norm
-reduction, the r4d state looperational order, the f32-g/low-u16 read, the f2bf rounding, the bf16 pre-rounding of the
-qk scales). If any of these strings move, the bit-exactness argument moves with it - review the test in the same PR.
+These pin the lossless contract: the exact per-phase op sequence (conv 4-tap sequential sum, the 256-thread rms_norm reduction, the r4d state looperational order, the f32-g/low-u16 read, the f2bf rounding, the bf16 pre-rounding of the qk scales). If any of these strings move, the bit-exactness argument moves with it - review the test in the same PR.
 """
 
 import re
@@ -42,16 +40,12 @@ def test_env_gate_is_the_only_switch():
 
 def test_conv_phase_reuses_the_4tap_sequential_sum():
     src = _src()
-    # Sliding window (E = [cs0, cs1, cs2, raw rows t-2..t]; row t = sum_j E[t+j]*w[j], tap j sources conv_state[j-t]
-    # while j-t in [0,2) else raw row t+1-j) keeps gdn_prep's 4-tap k-order sequential f32 sum. Written generalized over
-    # t in [0, TMAX): for TMAX=2/1 the loop unrolls to constants and every ternary folds EXACTLY to the original T=2/T=1
-    # straight-line windows (bit-identical codegen).
+    # Sliding window (E = [cs0, cs1, cs2, raw rows t-2..t]; row t = sum_j E[t+j]*w[j], tap j sources conv_state[j-t] while j-t in [0,2) else raw row t+1-j) keeps gdn_prep's 4-tap k-order sequential f32 sum. Written generalized over t in [0, TMAX): for TMAX=2/1 the loop unrolls to constants and every ternary folds EXACTLY to the original T=2/T=1 straight-line windows (bit-identical codegen).
     # Tap 0/1/2 (v, k, q channels = 3 each):
     assert src.count("(t <= 2) ? conv_state[t * conv_dim + ") == 3
     assert src.count("(t <= 1) ? conv_state[(t + 1) * conv_dim + ") == 3
     assert src.count("(t == 0) ? conv_state[2 * conv_dim + ") == 3
-    # Raw inputs read as packed t-indexed rows (the op force-copies the model's row-strided q3/k3/v3 slices for T>1);
-    # tap3 = raw row t.
+    # Raw inputs read as packed t-indexed rows (the op force-copies the model's row-strided q3/k3/v3 slices for T>1); tap3 = raw row t.
     for raw, dim, ch in (
         ("v_raw", "value_dim", "vch"),
         ("k_raw", "key_dim", "kch"),
@@ -91,8 +85,7 @@ def test_qk_norm_phase_reuses_the_block_reduction():
 
 def test_state_update_phase_matches_r4d_order():
     src = _src()
-    # r4d per-thread looperational order: decay+dot, shfl(1), u=(v-dot)*beta, outer-product+on,
-    # shfl(1), f2bf store by half==0 only.
+    # r4d per-thread looperational order: decay+dot, shfl(1), u=(v-dot)*beta, outer-product+on, shfl(1), f2bf store by half==0 only.
     m = re.search(
         r"for \(int j = 0; j < 64; \+\+j\) \{\s*h\[j\] \*= eg;\s*dot \+= "
         r"h\[j\] \* kk\[j\];\s*\}\s*dot \+= __shfl_xor\(dot, 1, 32\);",
@@ -106,23 +99,20 @@ def test_state_update_phase_matches_r4d_order():
     )
     assert m, "r4d outer-product/on phase order moved"
     assert "if (half == 0)" in src
-    # g is computed f32 but the chain's r4d kernel receives it as BF16 (fast.cpp astypes g at the op boundary to q's
-    # dtype); replicate by rounding s_g to bf16 before the u16 read.
+    # g is computed f32 but the chain's r4d kernel receives it as BF16 (fast.cpp astypes g at the op boundary to q's dtype); replicate by rounding s_g to bf16 before the u16 read.
     assert "gdnf_bf2f16(gdnf_f2bf_rne(s_g[t]))" in src
     assert "gdnf_bf2f_low16f32" not in src
     # the s_g->bf16 cast is RNE, matching MLX's astype (u += (u>>16&1)+0x7FFF).
     assert "u >> 16 & 1u) + 0x7FFFu" in src
     assert "__expf(" in src and "fmaxf(" in src and "-80.0f" in src
-    # f2bf round-half-away, not RTNE; the u16->T store is a bit-cast (an integer-to-float static_cast would
-    # re-interpret the bits as a value).
+    # f2bf round-half-away, not RTNE; the u16->T store is a bit-cast (an integer-to-float static_cast would re-interpret the bits as a value).
     assert "+ 0x8000u) >> 16" in src
     assert "*reinterpret_cast<T*>(&out_bf)" in src
 
 
 def test_gate_phase_matches_gdn_prep_g_chain():
     src = _src()
-    # compute_g chain: bf16(a+dt_bias) -> logaddexp via max/log1p(exp(min-max)) -> bf16 round of softplus
-    # -> expf(A_log) -> g = expf(-e_al*sp) in f32.
+    # compute_g chain: bf16(a+dt_bias) -> logaddexp via max/log1p(exp(min-max)) -> bf16 round of softplus -> expf(A_log) -> g = expf(-e_al*sp) in f32.
     for s in (
         "T sum_bf = static_cast<T>(static_cast<float>(a[t * num_v_heads + hv]) +",
         "float mxv = fmaxf(fx, 0.0f);",
@@ -169,9 +159,7 @@ def test_patch_touches_only_the_expected_files():
 
 
 def test_patch_hunk_counts_are_wellformed():
-    # A hunk whose claimed line counts do not match its body makes the patch unapplicable (git apply: "corrupt Patch",
-    # GNU patch: "malformed patch"); the base patch of record was well-formed, so every hunk in every .patch/.diff
-    # under patches/ must be.
+    # A hunk whose claimed line counts do not match its body makes the patch unapplicable (git apply: "corrupt Patch", GNU patch: "malformed patch"); the base patch of record was well-formed, so every hunk in every .patch/.diff under patches/ must be.
     for patch in sorted(ROOT.glob("patches/**/*")):
         if patch.suffix not in (".patch", ".diff"):
             continue

@@ -12,7 +12,7 @@ index 49d4985f..fc535622 100644
      ${CMAKE_CURRENT_SOURCE_DIR}/flash_attention.hip
 diff --git a/mlx/backend/rocm/gdn_fused_step.hip b/mlx/backend/rocm/gdn_fused_step.hip
 new file mode 100644
-index 00000000..05df3a2d830fb9192f4b0d43c91988476bc6e788
+index 00000000..cc2b8b03daab1cd5d9e7524ac5aed0cf986cbbfe
 +// Copyright © 2025 Apple Inc.
 +//
 +// Fused GDN T=1..4 decode/verify-step kernel (Phase 2, MLX_ROCM_GDN_FUSE=1).
