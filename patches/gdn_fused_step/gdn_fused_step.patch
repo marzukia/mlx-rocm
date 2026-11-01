@@ -871,7 +871,7 @@ index 0244f122..488bdd72 100644
 +bool KVAppend::is_equivalent(const Primitive& other) const {
 +  const KVAppend& a_other = static_cast<const KVAppend&>(other);
 +  return offset_ == a_other.offset_;
-@@ -973,0 +1176,229 @@
+@@ -973,0 +1176,232 @@
 +namespace {
 +
 +// Non-row-contiguous inputs get a row-contiguous copy (same helper as

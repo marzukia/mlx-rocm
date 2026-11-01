@@ -176,3 +176,47 @@ def test_patch_touches_only_the_expected_files():
         "mlx/backend/rocm/gdn_fused_step.hip",
     }
     assert files == expected, f"unexpected patch file set: {files}"
+
+
+def test_patch_hunk_counts_are_wellformed():
+    # A hunk whose claimed line counts do not match its body makes the whole patch unapplicable (git apply: "corrupt
+    # Patch", GNU patch: "malformed patch"); the base patch of record was well-formed, so every hunk in every
+    # .patch/.diff under patches/ must be.
+    for patch in sorted(ROOT.glob("patches/**/*")):
+        if patch.suffix not in (".patch", ".diff"):
+            continue
+        text = patch.read_text().split("\n")
+        i = 0
+        while i < len(text):
+            m = re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", text[i])
+            if not m:
+                i += 1
+                continue
+            old_n = int(m.group(2) or 1)
+            new_n = int(m.group(4) or 1)
+            j = i + 1
+            n_old = n_new = 0
+            while j < len(text):
+                ln = text[j]
+                if (
+                    ln.startswith("@@ ")
+                    or ln.startswith("--- ")
+                    or ln.startswith("+++ ")
+                    or ln.startswith("diff --git")
+                ):
+                    break
+                if ln.startswith("+"):
+                    n_new += 1
+                elif ln.startswith("-"):
+                    n_old += 1
+                elif ln.startswith(" "):
+                    n_old += 1
+                    n_new += 1
+                j += 1
+            assert n_old == old_n, (
+                f"{patch.name}: hunk at line {i + 1} ({m.group(0)}): {n_old} old lines != {old_n} claimed"
+            )
+            assert n_new == new_n, (
+                f"{patch.name}: hunk at line {i + 1} ({m.group(0)}): {n_new} new lines != {new_n} claimed"
+            )
+            i = j
