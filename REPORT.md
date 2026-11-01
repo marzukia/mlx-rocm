@@ -1834,3 +1834,87 @@ own as-run-evidence convention (np-rca-* precedent): all 17 flagged scripts adde
 `[tool.ruff] extend-exclude`, kept byte-identical to as-run evidence. `ruff check .`
 and `ruff format --check .` both clean at the new head. No kernel/patch/build input
 touched - the 4-gate evidence stands.
+
+## PR3-HYBRID fused wheel — durability restoration (the 80.93 tok/s wheel, from git)
+
+The 80.93 tok/s fused-AR wheel (gdn_fused_step live, +11.5% vs 72.57 tok/s
+no-fuse) existed only as a dirty vendor tree + installed venv on the GPU host.
+This section records the tree↔repo relationship, the established pristine graft
+state, and the extraction evidence. Deliverables: `BUILD-RECIPE.md` (the exact
+proven build + install + bench commands), `patches/qwen35_fuse_branch/` (the
+model-side patch), `bench/mtp-bench3-side.py` (the as-run side bench; the
+`mtp-bench3.py` no-fuse arm was already in the repo).
+
+### Vendor tree ↔ repo relationship (first step)
+
+- The GPU host's vendor tree (`<guest>/vendor/mlx`) at the time was a FRESH
+  shallow clone (2026-11-01 06:41 UTC, done by the concurrent t1196 bisection
+  run) of the private ROCm-port fork (`lifeofpiboy/mlx`), detached at
+  `FETCH_HEAD` = `75ca881` (full sha `75ca881b2e82f7b4069c8564a203792aa16d8a29`).
+  `75ca881` is a SINGLE-commit snapshot of the entire mlx source with the ROCm
+  port (GDN tail fusion + the `gdn_prep` launcher pointer fix in the base; the
+  reflog shows only `clone` + `checkout`).
+- This repo is the public wrapper: `pyproject`/`scripts`/`docs`/`patches`/`reports`
+  plus a committed, pruned copy of the vendor tree at `vendor/mlx-rocm-upstream`
+  (STALE: it predates the graft, lacks root files like `CMakeLists.txt`/`docs`/
+  `examples`, and is NOT byte-identical to `75ca881` despite the `vendor.json`
+  comment). `vendor.json` pins `sha 75ca881` with the `fork` field pointing at
+  THIS repo — that fork field is stale/inaccurate: `75ca881` is a commit of the
+  vendor fork, not of this repo (this repo's main = `da9eeca`).
+- SHA comparison: `75ca881` = vendor base (the wheel's `+75ca881` suffix);
+  `9320ee9` = the `t1082-exec-replay-fix` branch tip in this repo (a different
+  workline — the exec-cache replay fix; force-updated `255d441` → `9320ee9`
+  around the same date, NOT the PR3-HYBRID graft); main `da9eeca` = the graph
+  decode 2nd-capture fault fix (#2). None of `9320ee9`/`da9eeca` are vendor-base
+  commits; the graft applies to `75ca881` only.
+
+### Pristine graft state — established unambiguously (despite the t1196 race)
+
+A concurrent run (t1196) was actively bisecting the vendor tree during this
+restoration (it later DELETED both backup dirs and the side bench copy mid-run;
+all evidence was pulled before the deletions). The graft is nonetheless
+unambiguous:
+
+- **Graft = base `75ca881` + `patches/gdn_fused_step/gdn_fused_step.patch`**
+  (the patch file is already in main, md5 `b9693851…`, byte-identical between
+  the GPU-host repo copy and this repo).
+- Evidence:
+  1. The patch dry-runs cleanly against `75ca881` (6 files, 0 rejects, 0 fuzz).
+  2. The patch's `gdn_fused_step.hip` is byte-identical (md5 `d8d4a30f…`) to
+     the working-tree copy in the pre-build vendor snapshot (taken
+     2026-10-31, before the 2026-11-01 04:42 wheel build), whose
+     `fast.cpp.orig`/`fast.h.orig`/`fast_primitives.h.orig` are the pre-patch
+     backups.
+  3. The built wheel's `libmlx.so` contains `GdnFusedStep` (34 symbol hits) and
+     `gdn_fused` in the python extension; it LACKS `RMSNormResidual`
+     (0 hits) — the K2 `rms_norm_residual` graft present in the pre-build
+     working-tree snapshot was NOT in the built wheel. The proven build tree
+     was base + GDN patch only.
+  4. The installed venv (`venv-fused2`, CPython 3.14.8) reports
+     `mx.fast.gdn_fused_step = True`, `rms_norm_residual = False`.
+  5. The r4d GDN kernel files (`r4d_gdn_*.hip`, `r4d_gdn_wmma.h`,
+     `gated_delta_update.cpp`) differ from base `75ca881` in the pre-build
+     snapshot by a COSMETIC comment scrub only (a provenance attribution line,
+     in 4 files) — no functional r4d kernel change is part of the graft; the
+     r4d GDN kernels in the base are already GDN-ready.
+
+### Model-side patch
+
+Extracted by diffing the installed
+`<venv>/lib/python3.14/site-packages/mlx_lm/models/qwen3_5.py` (25,912 bytes,
+mtime 2026-11-01 07:43) against stock `mlx-lm==0.32.2` (fresh `pip download
+--no-deps`): `patches/qwen35_fuse_branch/qwen35_fuse_branch.diff`. Verified:
+the diff applies cleanly to stock and round-trips to a BYTE-IDENTICAL copy of
+the installed file. Markers: `FUSE_BRANCH_PATCH` (the S==1 && B==1 branch
+dispatching to `mx.fast.gdn_fused_step`, gated on `MLX_ROCM_GDN_FUSE=1`, with
+the `GDN_FUSE_CALLS` dispatch counter; idempotent apply = grep the marker
+first), plus `MTP_INJECT_PATCH` (MTP drafter module) and `PRENORM_PATCH`
+(pre-norm hidden plumbing) — both inert under `MLX_MTP=0`.
+
+### Result
+
+Fused AR (S==1, `MLX_ROCM_GDN_FUSE=1`): **80.93 tok/s**; no-fuse AR
+(`MLX_MTP=0`, no env gate): **72.57 tok/s** — **+11.5%**, lossless
+(byte-identical token streams, per the as-run bench pair
+`bench/mtp-bench3.py` / `bench/mtp-bench3-side.py`). The exact proven build +
+install + bench commands are in `BUILD-RECIPE.md`.
