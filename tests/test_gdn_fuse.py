@@ -32,8 +32,18 @@ def test_env_gate_is_the_only_switch():
     assert 'getenv("MLX_ROCM_GDN_FALLBACK")' in t
     # Default path: env unset -> use_fallback true -> 4-op chain.
     assert "e == nullptr || e[0] != '1'" in t
-    # T=4 (S=4 MTP verify) is in the fused range; T>4 falls back.
-    assert "if (B != 1 || T > 4) {" in t
+    # T in (1, 2, 4) is the fused range (the only TMAX instantiations);
+    # T=3 (S=3, K=2 spec-decode) and T>4 are rejected. The launcher maps
+    # tmax 1 -> <1>, 2 -> <2>, everything else -> <4>, so admitting T=3
+    # would fall through to the TMAX=4 kernel = OOB read+write on a
+    # 3-row buffer: T=3 is unreachable on the fused path because
+    # use_fallback rejects it (degrade to the clear error; model default
+    # chain via MLX_ROCM_GDN_FUSE=0).
+    assert "if (B != 1 || (T != 1 && T != 2 && T != 4)) {" in t
+    # The eval_gpu comment stays consistent with the admission gate.
+    assert "T is 1, 2 or 4" in t
+    # No T=3 instantiation exists for the fallthrough to reach.
+    assert "launch_gdn_fused_step<3>" not in _src()
 
 
 def test_conv_phase_reuses_the_4tap_sequential_sum():

@@ -907,7 +907,12 @@ index 0244f122..488bdd72 100644
 +  if (f != nullptr && f[0] == '1') {
 +    return true;
 +  }
-+  if (B != 1 || T > 4) {
++  // T must be one of the TMAX instantiations (1, 2, 4): the launcher
++  // maps tmax 1 -> <1>, 2 -> <2>, everything else -> <4>, so admitting
++  // T=3 (S=3, K=2 spec-decode) would fall through to the TMAX=4 kernel
++  // = OOB read+write on a 3-row buffer. Reject it: it degrades to the
++  // clear error below (model default path via MLX_ROCM_GDN_FUSE=0).
++  if (B != 1 || (T != 1 && T != 2 && T != 4)) {
 +    return true;
 +  }
 +  // NOTE: MLX_ROCM_GDN_FUSE_T2=0 no longer routes T=2 to the 4-op chain
@@ -1095,7 +1100,8 @@ index 0244f122..488bdd72 100644
 +  throw std::invalid_argument(
 +      "gdn_fused_step: fallback disabled for this shape (the 4-op chain is "
 +      "1-D-only in gdn_prep and unsafe for T>1); use the model default "
-+      "path (MLX_ROCM_GDN_FUSE=0) or T<=4 with MLX_ROCM_GDN_FUSE=1");
++      "path (MLX_ROCM_GDN_FUSE=0) or T of 1, 2 or 4 with "
++      "MLX_ROCM_GDN_FUSE=1");
 +}
 +
 @@ -1162,80 +1594,0 @@
