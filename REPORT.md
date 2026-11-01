@@ -141,3 +141,79 @@ Extracted by diffing the installed `<venv>/lib/python3.14/site-packages/mlx_lm/m
 ### Result
 
 Fused AR (S==1, `MLX_ROCM_GDN_FUSE=1`): **80.93 tok/s**; no-fuse AR (`MLX_MTP=0`, no env gate): **72.57 tok/s** — **+11.5%**, lossless (byte-identical token streams, per the as-run bench pair `bench/mtp-bench3.py` / `bench/mtp-bench3-side.py`). The exact proven build + install + bench commands are in `BUILD-RECIPE.md`.
+
+## K=3 MTP full bench (3 drafts, batched S=4 verify) vs fused-AR baseline
+
+**Verdict: K=3 LOSES — 34.30 tok/s vs 81.01 tok/s fused-AR (2.36x slower), D1/D2/D3 = 80.1/59.5/48.4, measured 3.28 tokens/verify, 82.0% of the 100%-acceptance ceiling (41.85 tok/s, itself only 51.7% of AR); the S=4 verify falls back to the unfused GDN chain, so even 100% acceptance cannot reach parity on the current wheel.**
+
+### Setup and preflight
+
+- Wheel (recorded first, same wheel for all three runs): `mlx.__version__ = 0.32.3.dev20261101+75ca881`, `libmlx.so` md5 `7fb1717a900f36ab74fabb42eb6f7b1c` (the PR3-HYBRID fused-T2 wheel, `gdn_fused_step` live, last installed by t1223 ~01:40Z).
+- Prereq (a) PASS: `/home/<host-user>/venv-fused2` (CPython 3.14) loads `<model-mount>/qwen3-9b-mlx` and generates at `MLX_MTP=0 MTP_MAX_TOKENS=2` (2 tokens, clean).
+- Prereq (b) PASS: `rocm-smi` (run on `<guest>`, RX 9070 XT / gfx1201) — GPU[0] VRAM used 93,118,464 B (88.8 MB) < 1 GB at dispatch; lane clear, no retry needed.
+- Sidecar: only `model-mtp.safetensors` active; sha256 `edef9ec6f48a31f40659ec7937bae93b4a1c501c4cd23959933c992df31d1df8` (expected), verified before the FUSE=1 smoke and before the K=3 full run. `model-mtp-4bit.safetensors` / `model-mtp-fixed.safetensors` parked as `*.disabled` for the whole session and restored at the end.
+- Bench: `bench/mtp-bench6.py` on `<guest>` (t1224; present, no copy needed). K-generic: `MLX_MTP=0` = greedy AR, `=4` = K=3 (3 sequential 1-layer draft forwards + ONE batched S=4 verify + 3-level rejection cascade; D1/D2/D3 + TOK_PER_STEP + FIRST20).
+- Run env for all runs: `MODELS=<model-mount> LD_PRELOAD=libhsa-runtime64.so.1 HCC_AMDGPU_TARGET=gfx1201 MLX_ROCM_GDN_FUSE=1`.
+- Known mechanics, confirmed: the S=4 verify runs T=4 > 2, so the fused GDN op does NOT apply (F-branch gate is S<=2; T>2 throws under FUSE=1) — the verify takes the default GDN chain (the honest K=3 cost). The S=1 draft forwards DO hit the fused op.
+
+### Runs (back to back, same wheel)
+
+1. **Smoke** (`MLX_MTP=4`, MAX_TOKENS=50): PASS — 3 drafts produced, `GEN=2.42s TOKS=78 VERIFIES=25 D1ACC=18 D2ACC=10 D3ACC=2 TOK_PER_STEP=2.200`, no crash. A non-fused repeat was byte-consistent (same 78 tokens, same FIRST20), matching the mechanics (verify unaffected by the fuse; only the S=1 drafts use it).
+2. **AR baseline** (`MLX_MTP=0`, MAX_TOKENS=1024): `GEN=12.64s TOKS=1024 TOKS_S=81.01` — the valid paired reference for this session (t1223 measured 80.9-81.1 in this env; the older 81.37 was a faster env).
+3. **K=3 full** (`MLX_MTP=4`, MAX_TOKENS=1024, EOS 248044): `GEN=48.93s TOKS=1678 TOKS_S=34.30 VERIFIES=512 D1ACC=410 D2ACC=244 D3ACC=118 (D1PCT=80.1 D2PCT=59.5 D3PCT=48.4) TOK_PER_STEP=2.508` (printed).
+
+### Bench counting mechanics (affects the printed TOK_PER_STEP)
+
+The K=3 arm interleaves a single-token step (emit greedy token + 3 draft forwards; state stays S_k) with each verify step (drafts reset after the verify). In the S=4 verify branch the third slot token `t4` is emitted whether D3 is accepted (`t4 = D3`, state = batched l3) or rejected (`t4 = true greedy`, then 4 re-forwards) — so verify emissions = 1 + D1 + D2, and D3 acceptance affects only cost (re-forward vs not), not the token count. Exact check: 512 single-token steps + (512 + 410 + 244) verify emissions = **1678 = TOKS** (matches the run). The printed `TOK_PER_STEP = 1 + (D1+D2+D3)/N = 2.508` double-counts the third slot; measured tokens/verify = 1678/512 = **3.277**.
+
+### Analysis
+
+(a) **Acceptance + tokens/step**: D1 = 80.1% (410/512); D2 = 59.5% conditional (244/410, i.e. 47.7% of verify steps); D3 = 48.4% conditional (118/244). Printed TOK_PER_STEP 2.508; measured 3.277 tokens/verify (3.28 including the interleaved single-token steps; 1.64 tokens/loop-iteration).
+
+(b) **Step cost, K=3 vs AR**: K=3 wall/verify = 48.93 s / 512 = **95.57 ms** (includes the interleaved single-token step + 3 drafts + the batched S=4 verify + rejection re-forwards); AR step = 12.64 s / 1024 = **12.34 ms**/token. **Ratio = 7.74x**.
+
+(c) **Ceiling math (t1223 style, K=3)**: 100%-acceptance ceiling = 4 tokens / 95.57 ms = **41.85 tok/s**. Measured 34.30 tok/s = **82.0% of the ceiling**. But the ceiling is only **51.7% of AR** (81.01) — acceptance alone can never close the gap on this wheel. Break-even step cost: 4 tokens x 12.34 ms = **49.38 ms** at 100% acceptance (a 48.3% cut from 95.57 ms); **40.45 ms** at the measured 3.277 tokens/step.
+
+(d) **Lossless check**: K=3 FIRST20 = `271 1919 369 264 15352 11 70042 29006 314 1204 264 6278 20853 5568 13 357 20853 369 34383 279` — **identical to (a prefix of) the AR token stream. PASS.** (The smoke run matched too.)
+
+(e) **Verdict and gap-closure**: K=3 loses 34.30 vs 81.01 tok/s (42.3% of AR). Cost anatomy per the run: ~3254 single-token-equivalent forwards (512 S-steps + 1536 drafts (already on the fused S=1 path) + 1206 rejection re-forwards: 126x4 + 166x3 + 102x2) vs 1024 for AR — 3.2x the work — plus 512 batched S=4 forwards on the generic path (no QMV M=4 specialization; the K=2 arm had the M=3 path). To close the gap, in order of leverage: (1) **fuse the S=4 verify to T=4** (extend the F-branch gate from S<=2 to S=4) — removes the 4-launch GDN chain and the 1206 re-forward passes' GDN cost; (2) **cheaper/merged drafts** (3 fused S=1 drafts per step); (3) **higher acceptance** (helps toward the 4-token ceiling — 82.0% -> 100% buys 34.30 -> 41.85 tok/s, still 51.7% of AR, so it is not sufficient alone). Parity requires the per-step cost below 49.38 ms, i.e. the fused-T4 verify is the load-bearing piece.
+
+## Fused-T4 GDN verify (S=4 MTP) — bit-exact, lossless, but K=3 barely moves: the GDN chain was not the T=4 bottleneck
+
+**Verdict: PASS on correctness, FAIL on the speed hypothesis. The T=4 fused GDN verify is bit-exact (op-level, vs the model-default chain, invariance to four T=1 steps) and lossless (K=3 FUSE=0 vs FUSE=1 byte-identical, 1678 tokens; fused-AR unchanged at 81.10 tok/s). But K=3 moves 34.30 -> 34.68 tok/s (+1.1%) — cross-session (t1225 env vs this session; the in-session A/B is 97.68 -> 94.49 ms per verify, −3.2 ms, +3.4%, 33.55 -> 34.69 tok/s) — still 2.34x slower than the 81.10 tok/s in-session AR baseline, 42.8% of it. Wall/verify = 94.49 ms vs the 49.38 ms break-even (100% acceptance) / 40.45 ms (measured 3.277 tokens/step): break-even NOT reached. The 4-launch GDN chain was a small fraction of the S=4 verify step; the generic M=4 QMV path + the 3 draft forwards + rejection re-forwards dominate. t1225's "fused-T4 is the gap-closer" hypothesis is refuted by measurement; the F-branch now safely routes S<=4 (so the fused T=4 path is live and free), but K=3 parity needs the QMV/attention side, not GDN.**
+
+### Setup
+
+- Branch `worker/gdn-fused-t4` = main (509c1c3) + t1223 (T=2 fused kernel) + t1225 (K=3 bench + report) folded, then the T=4 extension: kernel `TMAX` template 1/2 -> 1/2/4 with the per-row sliding conv window written generalized over `t in [0, TMAX)` (with TMAX=2/1 the unrolled ternaries fold to the original windows, so T=1/T=2 codegen is unchanged), `use_fallback` `T>2` -> T in (1, 2, 4) (round-1 fix: originally `T>4`, which let T=3 fall through to the TMAX=4 kernel = OOB; see Round-1 review fix), F-branch gate `S<=2` -> `S<=4`, probe extended to T=4 (fused vs model default + invariance).
+- ONE rebuild (budget spent): `<vendor>` tree with the T=4 kernel + `fast.cpp` T<=4; wheel `mlx-0.32.3.dev20261101+75ca881` (22,383,626 B); `libmlx.so` md5 `7fb1717a900f36ab74fabb42eb6f7b1c` (T=2 wheel, prior) -> `d1acf5d1ea992d11995144e992547b5a` (T=4); `mx.fast.gdn_fused_step` live; model F-branch in `<venv>` updated `S<=2` -> `S<=4` (marker updated, marker-greppable, byte-consistent with `patches/qwen35_fuse_branch/qwen35_fuse_branch.diff`).
+- Lane clear at dispatch (both GPUs 0% busy); sidecar pinned: only `model-mtp.safetensors` active, sha256 `edef9ec6f48a31f40659ec7937bae93b4a1c501c4cd23959933c992df31d1df8` (expected), verified at session start; 4bit/fixed parked `*.disabled`, restored at the end.
+- Run env for all runs: `MODELS=<model-mount> LD_PRELOAD=libhsa-runtime64.so.1 HCC_AMDGPU_TARGET=gfx1201 MLX_ROCM_GDN_FUSE=<0|1>` on `<guest>` (RX 9070 XT / gfx1201), bench `bench/mtp-bench6.py` (K=3 arm), MAX_TOKENS=1024 unless noted.
+- m8 watch item (checked, NOT fixed, per instruction): `rope.hip` in the wheel's tree HAS the m8 round-2 `single = false` fix; `scaled_dot_product_attention.hip` does NOT have the m8 single-kernel causal patch (0 marker hits) — the S=4 verify attention runs the stock SDPA dispatch. Noted only.
+
+### Gates (all on the T=4 wheel, same session)
+
+1. **Op bit-exactness + invariance (probe, 14 checks): PASS.** T=1, T=2, T=4: fused out+state bit-identical to the model-default chain (conv/beta/g/qk-norm/r4d/rms-norm-gated); invariance T=4 == four sequential T=1 (conv-state rolled between rows) for both the chain and the fused path; T=1/T=2 regression PASS.
+2. **T=1/T=2 regression: PASS** (probe above + gate 4 AR below).
+3. **K=3 lossless A/B: PASS.** `MLX_MTP=4` FUSE=0: `GEN=50.01s TOKS=1678 TOKS_S=33.55`; FUSE=1: `GEN=48.37s TOKS=1678 TOKS_S=34.69`; md5(ALLTOKS) `7b8c8c6d4beee1ded1837bc6d4d8660f` = `7b8c8c6d4beee1ded1837bc6d4d8660f` — byte-identical. `GDN_FUSE_CALLS` counter (64-token FUSE=1 run): 2880 = 120 main-model forwards (64 base iterations + 56 rejection re-forwards) x 24 GDN layers — the fused op is taken on every forward, S=1 and S=4. FIRST20 = `271 1919 369 264 15352 11 70042 29006 314 1204 264 6278 20853 5568 13 357 20853 369 34383 279` = the AR stream prefix.
+4. **Fused-AR unchanged: PASS.** `MLX_MTP=0` FUSE=1: `GEN=12.63s TOKS=1024 TOKS_S=81.10` (t1225: 81.01; t1223 band 80.9-81.1).
+5. **K=3 re-bench (fused T=4, same session as the AR baseline): `GEN=48.38s TOKS=1678 TOKS_S=34.68 VERIFIES=512 D1ACC=410 D2ACC=244 D3ACC=118 (D1PCT=80.1 D2PCT=59.5 D3PCT=48.4) TOK_PER_STEP=2.508` (printed; measured 1678/512 = 3.277 tokens/verify — identical acceptance to t1225, as expected: the fused path is bit-exact, so the token stream, hence acceptance, cannot change).**
+
+### Step cost and break-even (the speed verdict)
+
+- AR step = 12.63 s / 1024 = **12.33 ms**/token (t1225: 12.34).
+- K=3 wall/verify = 48.38 s / 512 = **94.49 ms**; in-session A/B vs the unfused repeat (gate 3 FUSE=0: 50.01 s / 512 = **97.68 ms**): **97.68 -> 94.49 ms (−3.2 ms per verify, +3.4%)** — the fused T=4 save is the 4-launch GDN chain -> 1 launch delta across 48 GDN layers (a small fraction of the step); t1225's 95.57 ms is cross-session.
+- 100%-acceptance ceiling = 4 / 94.49 ms = **42.33 tok/s** = **52.2% of AR** (t1225: 51.7%) — acceptance alone still cannot close the gap.
+- Break-even step cost: **49.38 ms** (100% acceptance) / **40.45 ms** (measured 3.277). Measured 94.49 ms is **1.91x / 2.34x over** the two lines. **NOT reached.**
+- Delta attribution: fusing the GDN chain (4 launches -> 1 per layer) moved the K=3 number 97.68 -> 94.49 ms (−3.2 ms, +3.4%) in-session (33.55 -> 34.69 tok/s); the 34.30 -> 34.68 tok/s (+1.1%) figure is cross-session (t1225 env vs this session). The S=4 verify step's dominant costs are the generic **M=4 QMV/4bit-QMM path** (no M=4 specialization — the K=2 arm had M=3), the 3 draft forwards per step (already fused S=1), and the rejection re-forwards (1206 in the run). GDN was never the load-bearing piece at T=4; the gap-closer order for K=3 parity is (1) an M=4 QMV/attention path (or a merged/cheaper draft mechanism), (2) higher acceptance (82.0% -> 100% buys 34.68 -> 42.33, still 52.2% of AR — not sufficient alone).
+
+### Round-1 review fix (host-side; GPU re-probe out of scope)
+
+- **T=3 (S=3, K=2 spec-decode) OOB hazard fixed (HIGH):** the F-branch `S<=4` gate admits S=3, but the only `TMAX` instantiations are 1/2/4 and the launcher maps `tmax 1 -> <1>, 2 -> <2>, everything else -> <4>` — so under the original `T > 4` admission, T=3 fell through to the TMAX=4 kernel = OOB read+write on a 3-row buffer. Fix: `use_fallback` (fast.cpp) now admits only `T in (1, 2, 4)`; T=3 degrades to the op's clear `invalid_argument` error (model default chain via `MLX_ROCM_GDN_FUSE=0`) instead of the OOB fallthrough; the F-branch `S<=4` gate and the kernel arithmetic are unchanged. `tests/test_gdn_fuse.py` now pins the new predicate and asserts T=3 is unreachable on the fused path (no `launch_gdn_fused_step<3>`; the "T is 1, 2 or 4" comment matches the code).
+- **GPU re-probe is out of scope this round** (host-side gating fix; the guest wheel still carries the pre-fix `fast.cpp` — the fix lands in `patches/gdn_fused_step/gdn_fused_step.patch` and needs a rebuild + re-probe before merge).
+- **Known LOW, no code change this round: Dk/Dv != 128 path** — the op calls `use_fallback` with hardcoded `128, 128`, so its Dk/Dv check never sees the real dims; an exotic non-128 shape (e.g. q last-dim 64 -> `Hk = 64/128 = 0`) hits a host division-by-zero (UB/SIGFPE) instead of the clean throw. The model always calls with Dk=Dv=128 (impact limited to direct `mx.fast.gdn_fused_step` calls); follow-up: explicit `q.shape(2) % 128` / `v.shape(2) % 128` guard in the op.
+- Persona scrub + line-wrap reflow (bench files, commit messages): review hygiene, no behavior change.
+
+### Artifacts
+
+- Kernel/patch/model-diff: `patches/gdn_fused_step/{gdn_fused_step.hip,gdn_fused_step.patch}`, `patches/qwen35_fuse_branch/qwen35_fuse_branch.diff` (S<=4); static-source test updated (`tests/test_gdn_fuse.py`); probe extended (`bench/gdn_fused_t2_probe.py`, T=4 checks; as-run copy on `<guest>`).
+- Guest state: `<vendor>` dirty tree = base 75ca881 + PR3-HYBRID + T=4 graft; kernel file md5 `cf646082b3458cc202f6d3b9123689f8`; `fast.cpp` pre-edit md5 `9b8ca9983820d99609e0dab885d65ede`; gate logs `t4_gates/gate_{g3_default,g3_t4on,g3b_count,g4_ar,g5_k3}.log`.

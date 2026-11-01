@@ -88,8 +88,8 @@
                  cache[0] = mx.take_along_axis(conv_input, positions, axis=1)
              else:
                  cache[0] = mx.contiguous(conv_input[:, -n_keep:, :])
-+        # FUSE_BRANCH_PATCH: single gdn_fused_step for S==1 decode (81-build F-branch port)
-+        if os.environ.get("MLX_ROCM_GDN_FUSE", "0") == "1" and S == 1 and B == 1:
++        # FUSE_BRANCH_PATCH: single gdn_fused_step for S<=4 decode/verify (81-build F-branch port, T=1..4 kernel)
++        if os.environ.get("MLX_ROCM_GDN_FUSE", "0") == "1" and S <= 4 and B == 1:
 +            global GDN_FUSE_CALLS
 +            GDN_FUSE_CALLS += 1
 +            q3 = qkv[:, :, : self.key_dim]

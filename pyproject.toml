@@ -35,16 +35,31 @@ line-length = 120
 target-version = "py311"
 # np-rca-*.py = one-off RCA diagnostic probes (run-605/run-606, MTP norms fix).
 # Kept byte-identical to as-run evidence; excluded from lint + format.
-# bench/mtp-bench{3,5}.py, bench/mtp-bench3-side.py + bench/g1-t3-parts.py = as-run
+# bench/mtp-bench{3,5,6}.py, bench/mtp-bench3-side.py + bench/g1-t3-parts.py = as-run
 # guest bench harness (run-612/run-631, audit run-638; mtp-bench3-side.py = the
-# as-run fused-arm bench of the PR3-HYBRID 80.93 tok/s wheel); kept
-# byte-identical to as-run evidence; excluded.
+# as-run fused-arm bench of the PR3-HYBRID 80.93 tok/s wheel; mtp-bench6.py = the
+# K=3 arm, t1224/t1225); kept byte-identical to as-run evidence; excluded.
 extend-exclude = [
     "np-rca-*.py",
     "bench/mtp-bench3.py",
     "bench/mtp-bench3-side.py",
     "bench/mtp-bench5.py",
+    "bench/mtp-bench6.py",
     "bench/g1-t3-parts.py",
+    # T=2 fused-kernel development diagnostics (guest bisect/probe runs): kept as
+    # as-run evidence; excluded from lint + format.
+    "bench/component_check.py",
+    "bench/conv_fma_check.py",
+    "bench/dbg_cmp.py",
+    "bench/dbg_cmp_t1.py",
+    "bench/fix_bisect_snap.py",
+    "bench/g_formula_check.py",
+    "bench/gdn_fused_t2_probe.py",
+    "bench/gdn_t2_bisect.py",
+    "bench/op_t2_realvals.py",
+    "bench/patch_bench_trace.py",
+    "bench/t1t2_op_disc.py",
+    "bench/window_bisect.py",
     # m8 full-state audit as-run probe scripts (run-942/run-976/run-986/run-992): kept
     # byte-identical to as-run evidence; excluded from lint + format.
     "scripts/m8-mtp148-bisect.py",
@@ -68,6 +83,10 @@ extend-exclude = [
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+# R4 finding 1: reflowed prose in tests/test_gdn_fuse.py exceeds line-length by design; E501 ignored for it only.
+[tool.ruff.lint.per-file-ignores]
+"tests/test_gdn_fuse.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
