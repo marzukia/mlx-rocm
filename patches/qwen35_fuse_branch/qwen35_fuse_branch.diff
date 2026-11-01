@@ -1,0 +1,187 @@
+--- a/mlx_lm/models/qwen3_5.py	2026-11-01 21:38:21.914152913 +1100
++++ b/mlx_lm/models/qwen3_5.py	2026-11-01 21:38:21.916878805 +1100
+@@ -1,3 +1,4 @@
++import os
+ # Copyright © 2026 Apple Inc.
+ 
+ from dataclasses import dataclass, field
+@@ -16,6 +17,67 @@
+ )
+ from .cache import ArraysCache, KVCache
+ from .gated_delta import gated_delta_update, normalize_qk
++
++
++# MTP_INJECT_PATCH: MTP drafter module (mlx-lm PR #990 MTPModule, vendored via
++# vllm_mlx/spec_decode/mtp/head.py, verbatim upstream). Predicts token t+2 from
++# (prenorm hidden at t, embedding of token t+1); shared lm_head applies after.
++class MTPDecoderLayer(nn.Module):
++    def __init__(self, args: TextModelArgs, quant: bool = False):
++        super().__init__()
++        self.self_attn = Attention(args)
++        if quant:
++            a = self.self_attn
++            for n in ("q_proj", "k_proj", "v_proj", "o_proj"):
++                old = getattr(a, n)
++                setattr(a, n, nn.QuantizedLinear(old.weight.shape[1], old.weight.shape[0], bias=False, bits=int(os.environ.get("MTP_QBITS", "4"))))
++        self.input_layernorm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
++        self.post_attention_layernorm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
++        if getattr(args, "num_experts", 0) > 0:
++            self.mlp = SparseMoeBlock(args)
++        else:
++            m = MLP(args.hidden_size, args.intermediate_size)
++            if quant:
++                for n in ("gate_proj", "up_proj", "down_proj"):
++                    old = getattr(m, n)
++                    nl = nn.QuantizedLinear(old.weight.shape[1], old.weight.shape[0], bias=False, bits=int(os.environ.get("MTP_QBITS", "4")))
++                    setattr(m, n, nl)
++            self.mlp = m
++
++    def __call__(self, x, mask=None, cache=None):
++        r = self.self_attn(self.input_layernorm(x), mask, cache)
++        h = x + r
++        return h + self.mlp(self.post_attention_layernorm(h))
++
++
++class MTPModule(nn.Module):
++    def __init__(self, args: TextModelArgs, n_layers: int, quant: bool = False):
++        super().__init__()
++        self.pre_fc_norm_hidden = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
++        self.pre_fc_norm_embedding = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
++        if quant:
++            self.fc = nn.QuantizedLinear(args.hidden_size * 2, args.hidden_size, bias=False, bits=int(os.environ.get("MTP_QBITS", "4")))
++        else:
++            self.fc = nn.Linear(args.hidden_size * 2, args.hidden_size, bias=False)
++        self.layers = [MTPDecoderLayer(args, quant=quant) for _ in range(n_layers)]
++        self.norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
++
++    def __call__(self, hidden_states: mx.array, embedding: mx.array, cache=None):
++        if hidden_states.ndim == 1:
++            hidden_states = hidden_states.reshape(1, 1, -1)
++        if embedding.ndim == 1:
++            embedding = embedding.reshape(1, 1, -1)
++        e = self.pre_fc_norm_embedding(embedding)
++        h = self.pre_fc_norm_hidden(hidden_states)
++        fused = self.fc(mx.concatenate([e, h], axis=-1))
++        if cache is None:
++            cache = [None] * len(self.layers)
++        mask = create_attention_mask(fused, cache[0])
++        for layer, c in zip(self.layers, cache):
++            fused = layer(fused, mask, c)
++        return self.norm(fused)
++
++GDN_FUSE_CALLS = 0  # F-branch fused-op dispatch counter
+ from .pipeline import PipelineMixin
+ from .qwen3_next import Qwen3NextAttention as Attention
+ from .qwen3_next import Qwen3NextMLP as MLP
+@@ -52,6 +114,10 @@
+     moe_intermediate_size: int = 0
+     norm_topk_prob: bool = True
+ 
++    # MTP fields (MTP_INJECT_PATCH)
++    mtp_num_hidden_layers: int = 0
++    mtp_use_dedicated_embeddings: bool = False
++
+     # Rope parameters
+     rope_parameters: Optional[Dict[str, Union[float, str, bool, List[int]]]] = field(
+         default_factory=lambda: {
+@@ -166,6 +232,30 @@
+                 cache[0] = mx.take_along_axis(conv_input, positions, axis=1)
+             else:
+                 cache[0] = mx.contiguous(conv_input[:, -n_keep:, :])
++        # FUSE_BRANCH_PATCH: single gdn_fused_step for S<=4 decode/verify (81-build F-branch port, T=1..4 kernel)
++        if os.environ.get("MLX_ROCM_GDN_FUSE", "0") == "1" and S <= 4 and B == 1:
++            global GDN_FUSE_CALLS
++            GDN_FUSE_CALLS += 1
++            q3 = qkv[:, :, : self.key_dim]
++            k3 = qkv[:, :, self.key_dim : 2 * self.key_dim]
++            v3 = qkv[:, :, 2 * self.key_dim :]
++            state = cache[1] if cache is not None else None
++            out, state = mx.fast.gdn_fused_step(
++                q3, k3, v3, b, a, self.A_log, self.dt_bias,
++                conv_state.reshape(self.conv_kernel_size - 1, self.conv_dim),
++                self.conv1d.weight.reshape(self.conv_dim, self.conv_kernel_size),
++                z, state, self.norm.weight,
++                inv_scale=self.head_k_dim**-0.5,
++                prep_eps=1e-6,
++                norm_eps=self.layer_norm_epsilon,
++            )
++            if cache is not None:
++                cache[1] = state
++                cache.advance(S)
++            out = self.out_proj(out.reshape(B, S, -1))
++            if self.sharding_group is not None:
++                out = mx.distributed.all_sum(out, group=self.sharding_group)
++            return out
+         conv_out = nn.silu(self.conv1d(conv_input))
+ 
+         q, k, v = [
+@@ -268,6 +358,7 @@
+         inputs: mx.array,
+         cache: Optional[Any] = None,
+         input_embeddings: Optional[mx.array] = None,
++        return_prenorm: bool = False,
+     ) -> mx.array:
+         if input_embeddings is not None:
+             hidden_states = input_embeddings
+@@ -312,7 +403,11 @@
+                 : hidden_states.shape[0]
+             ]
+ 
+-        return self.norm(hidden_states)
++        # PRENORM_PATCH: expose pre-final-norm hidden for MTP drafter
++        post = self.norm(hidden_states)
++        if return_prenorm:
++            return hidden_states, post
++        return post
+ 
+ 
+ class TextModel(nn.Module):
+@@ -321,6 +416,11 @@
+         self.args = args
+         self.model_type = args.model_type
+         self.model = Qwen3_5TextModel(args)
++        # MTP_INJECT_PATCH: build the MTP drafter module when the config asks for it
++        mtp_n = getattr(args, "mtp_num_hidden_layers", 0) or 0
++        # MTP_4BIT=1 -> quantized MTP module (model-mtp-4bit.safetensors sidecar)
++        _q4 = os.environ.get("MTP_4BIT", "0") == "1"
++        self.mtp = MTPModule(args, mtp_n, quant=_q4) if mtp_n > 0 else None
+         if not args.tie_word_embeddings:
+             self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
+         self.sharding_group = None
+@@ -330,14 +430,24 @@
+         inputs: mx.array,
+         cache: Optional[Any] = None,
+         input_embeddings: Optional[mx.array] = None,
++        return_hidden: bool = False,
++        return_prenorm: bool = False,
+     ) -> mx.array:
+-        out = self.model(inputs, cache, input_embeddings=input_embeddings)
++        out = self.model(
++            inputs, cache, input_embeddings=input_embeddings,
++            return_prenorm=return_prenorm,
++        )
++        hidden_pre = None
++        if return_prenorm:
++            hidden_pre, out = out
+         if self.args.tie_word_embeddings:
+             out = self.model.embed_tokens.as_linear(out)
+         else:
+             out = self.lm_head(out)
+             if self.sharding_group is not None:
+                 out = gather_last_axis(out, self.sharding_group)
++        if return_hidden:  # PRENORM_PATCH
++            return out, hidden_pre
+         return out
+ 
+     @property
+@@ -351,7 +461,9 @@
+         has_unsanitized_conv1d = any(
+             "conv1d.weight" in k and v.shape[-1] != 1 for k, v in weights.items()
+         )
+-        weights = {k: v for k, v in weights.items() if "mtp." not in k}
++        # MTP_INJECT_PATCH: keep mtp.* keys when the module exists so they load
++        if getattr(self, "mtp", None) is None:
++            weights = {k: v for k, v in weights.items() if "mtp." not in k}
+ 
+         if self.args.tie_word_embeddings:
+             weights.pop("lm_head.weight", None)
