@@ -96,8 +96,8 @@ def fused(inp, Tlen):
 
 def chain_default(inp, Tlen):
     """Model default path for Tlen rows, using inp's qkv rows as-is."""
-    conv = mx.nn.Conv1d(inp["conv_dim"], inp["conv_dim"], 4, groups=inp["conv_dim"], bias=False)
-    conv.weight = inp["conv_weight"].reshape(inp["conv_dim"], 1, 4)
+    conv = nn.Conv1d(inp["conv_dim"], inp["conv_dim"], 4, groups=inp["conv_dim"], bias=False)
+    conv.weight = inp["conv_weight"].reshape(inp["conv_dim"], 4, 1)
     qkv = mx.concatenate([inp["q"], inp["k"], inp["v"]], axis=-1)  # (1, T, 6144)
     conv_in = mx.concatenate([inp["conv_state"][None], qkv], axis=1)
     conv_out = nn.silu(conv(conv_in))  # (1, T, 6144)
@@ -116,20 +116,22 @@ def chain_default(inp, Tlen):
 
 
 def check(name, x, y):
-    x = mx.eval(x)
-    y = mx.eval(y)
-    ok = bool(mx.all(x == y).item())
+    x = np.asarray(mx.eval(x))
+    y = np.asarray(mx.eval(y))
+    ok = bool((x == y).all())
     print(("PASS" if ok else "FAIL"), name, "bit-exact", ok)
     if not ok:
-        n = (x != y).sum().item()
-        print("   mismatches:", n, "/", x.size, " maxdiff:", float(mx.max(abs(x - y)).item()))
+        d = x != y
+        print("   mismatches:", int(d.sum()), "/", x.size)
+        if x.dtype != np.object_:
+            print("   maxdiff:", float(np.abs(x - y).max()))
     return ok
 
 
 def single_row(i, t):
     d = dict(i)
     for key in ("q", "k", "v", "b", "a", "z_raw"):
-        d[key] = i[key][0, t : t + 1, :]
+        d[key] = i[key][:, t : t + 1, :]
     d["conv_state"] = i["conv_state"]
     return d
 
@@ -141,7 +143,7 @@ def advance_cs(d):
         [
             d["conv_state"][1],
             d["conv_state"][2],
-            mx.concatenate([d["q"][0, 0], d["k"][0, 0], d["v"][0, 0]], axis=-1)[None],
+            mx.concatenate([d["q"][0, 0], d["k"][0, 0], d["v"][0, 0]], axis=-1),
         ],
         axis=0,
     )
