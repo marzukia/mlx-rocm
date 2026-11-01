@@ -1940,3 +1940,67 @@ The K=3 arm interleaves a single-token step (emit greedy token + 3 draft forward
 
 - Kernel/patch/model-diff: `patches/gdn_fused_step/{gdn_fused_step.hip,gdn_fused_step.patch}`, `patches/qwen35_fuse_branch/qwen35_fuse_branch.diff` (S<=4); static-source test updated (`tests/test_gdn_fuse.py`); probe extended (`bench/gdn_fused_t2_probe.py`, T=4 checks; as-run copy on `<guest>`).
 - Guest state: `<vendor>` dirty tree = base 75ca881 + PR3-HYBRID + T=4 graft; kernel file md5 `cf646082b3458cc202f6d3b9123689f8`; `fast.cpp` pre-edit md5 `9b8ca9983820d99609e0dab885d65ede`; gate logs `t4_gates/gate_{g3_default,g3_t4on,g3b_count,g4_ar,g5_k3}.log`.
+
+## K=3 verify cost breakdown (kernel-level anatomy of the 94.49 ms/verify step)
+
+### Method and reproduction
+
+- `rocprofv3` is unavailable on the guest (no binary, no apt package in the ROCm 10.1 userland); `rocprof` v2 (7.2) **fatally rejects gfx1201** ("Unsupported hardware. Use rocprofv3 tool for navi4x, mi35x and later"); an LD_PRELOAD kernel-trace shim (interposing `hipLaunchKernel`/`hipModuleLaunchKernel`) was attempted and **abandoned — it breaks the launch path** (pathological 126M+ launch loops even after fixing the ROCm 10 ABI: args-before-smem in `hipLaunchKernel`, no module param in `hipModuleLaunchKernel`). Fallback (documented): **wall-clock class decomposition of an instrumented K=3 bench + standalone per-shape kernel timing** (10 warmup evals, 50-rep graph / 50).
+- Reproduction is exact: instrumented K=3 bench (same run env, sidecars parked to `*.disabled`, `model-mtp.safetensors` sha256 `edef9ec6…df8`), `MTP_MAX_TOKENS=1024` → `GEN=49.34s TOKS=1678 VERIFIES=512 D1ACC=410 D2ACC=244 D3ACC=118 (80.1/59.5/48.4) 1206 re-forwards`, tok/pair = **3.277 = t1225/t1226 identical** (same deterministic stream: FIRST20 matches), **wall/verify = 96.36 ms vs 94.49 (+2.0%)**. Class timers are disjoint checkpoints with `other` as the residual, so the parts sum to the wall exactly (residual 0.18 ms).
+
+### Goal 4 — the 94.49 ms split (per verify pair = 1 single-token step + 1 S=4 verify; measured n=512)
+
+| class | ms | share | notes |
+|---|---|---|---|
+| S=4 verify forward | 57.40 | 59.6% | see inside-verify table below |
+| rejection re-forwards (n=1206, 2.355/pair) | 27.86 | 28.9% | **11.83 ms each S=1 forward** (1206 forwards / 27.86 ms) |
+| single-token step (interleaved) | 10.93 | 11.3% | 3× MTP draft module 5.39 ms (1.80 ms each, **F32** matmul — sidecar is F32, not bf16) + 3× draft `lm_head` (M=1) 5.47 ms (1.82 each) + argmax/embed 0.07 |
+| other (restore/trim/gaps) | 0.18 | 0.2% | |
+| **total** | **96.36** | | = 34.0 tok/s; t1226 94.49 |
+
+Inside the S=4 verify forward (57.40 ms), standalone M=4 wall per shape × dispatch count per forward:
+
+| family | per-shape M=4 | count | ms | path |
+|---|---|---|---|---|
+| MLP gate+up (K=4096 N=12288) | 291 µs × 2 | 32 layers | 18.60 | MR (mr_lds=32768, at the `<=` boundary) |
+| MLP down (K=12288 N=4096) | 302 µs | 32 layers | 9.66 | per-row wide (mr_lds=98304 > 32768 — MR gate FAIL) |
+| GDN linears (in_qkv 233 / in_z 111 / in_b 28 / in_a 28 / out 111 µs) | 511 µs | 24 layers | 12.26 | all MR (K=4096) |
+| lm_head (K=4096 N=248320) | 6342 µs | 1 | 6.34 | MR gate PASSES (K=4096 → mr_lds=32768 ≤ 32768) — but the MR kernel is slow at this N: **6.34 ms ≈ 4× the M=1 1.56 ms** (per-row cost despite the gate) |
+| FA linears (q 201 / k 37 / v 37 / o 209 µs) | 484 µs | 8 layers | 3.87 | q,k,v MR; o per-row wide (K=8192 → 65536 > 32768) |
+| GDN fused ×24 + FA attention ×8 + norms/elementwise | — | — | ≈ 6.6 (residual: 57.40 − 50.76) | `mlx.fast` not importable (C++-only fused op), measured as the residual |
+
+The QMM family sums are standalone estimates (±~40% at M=1; the class-level wall numbers above are the authoritative split). Cross-check: QMM 50.76 + residual 6.6 ≈ 57.4 ✓.
+
+### Goal 1 — static MR-gate audit (vendor `qmm.hip` at 75ca881 = the wheel's base, confirmed)
+
+Exact gate (L4128/L4135/L4142): `mr_lds = min(4, M) * K * 2`; `mr_ok = use_mr_qmv && M >= 2 && M <= 4 && mr_lds <= 32768`; `lxhoist = (K % 1024 == 0)` (K-uniformity only selects the MR template, it does not control dispatch). At M=4:
+
+| shape | K | mr_lds | gate | dispatch |
+|---|---|---|---|---|
+| gdn in_qkv / in_z / in_b / in_a, gdn out, fa q, fa k/v, mlp gate/up, **lm_head** | 4096 | 32768 | **PASS** (boundary) | `qmv_wide_mr` (LX hoist on, 4096%1024=0) |
+| fa o_proj | 8192 | 65536 | FAIL | per-row `qmv_wide` |
+| mlp down_proj | 12288 | 98304 | FAIL | per-row `qmv_wide` |
+
+- **lm_head clarification:** the task's "lm_head K=248320 fails the MR gate" is a K-vs-N mix-up — 248320 is N (vocab); the gate acts on the reduction dim K=4096, which **passes** (boundary 32768 ≤ 32768). N is unconstrained by the gate. The empirical anomaly stands regardless: the MR kernel at N=248320 takes 6.34 ms ≈ 4×M=1 (1.56 ms) — per-row-equivalent cost (wave arithmetic: 15520 blocks / 64 concurrent ≈ 243 waves × ~27 µs ≈ 6.3 ms; ~74 GB/s effective, vs 326 GB/s for the wide path), and the proposed "K-split 248320 = 247808 + 512" does not apply (splitting N is not what the gate constrains; the kernel is simply slow at large N — see fix 1).
+- **M=1:** `mr_ok` requires M ≥ 2 → every S=1 forward (single step, drafts, re-forwards) is per-row `qmv_wide`.
+- **MTP module:** the sidecar (`model-mtp.safetensors`, 15 tensors) is **F32**, not bf16 — it never reaches the QMV path at all (non-quantized matmul); the gate is moot. Draft module measured in-context: 1.80 ms/call.
+- Empirical gate boundary check (M=4, zero weights, per-config processes; `MLX_QMV_NO_MR` is a `static` read — env must be set before the first QMM call of the process): K=4096: 150 µs (def) / 145 (NOMR) / 132 (LX off); K=2048: 84/84/84 (2.0× M=1 — MR active and faster); K=12288: 229/229/230 (2.7× M=1 — sublinear, consistent with mixed compute/bandwidth at N=8192). K=4096 default-vs-NOMR within noise (the 50-rep-graph method cannot separate the two for small shapes); the lm_head N=248320 case separates cleanly (def 6342 ≈ NOMR 6345).
+
+### Top-3 cost lines (M=4 verify forward, wall)
+
+1. **`lm_head` (M=4, MR gate passes, 6.34 ms per verify = 6.6% of the pair wall, 11% of the verify forward)** — the single most expensive shape; the MR kernel is ~4× slower than the per-row path at N=248320.
+2. **MLP gate/up (2 × 291 µs × 32 layers = 18.6 ms per pair, 19.3%)** — MR path, already at the 291 µs ≈ 2×M=1 (87 µs) sweet spot; no MR headroom left.
+3. **MLP down_proj (302 µs × 32 = 9.7 ms per pair, 10%)** — the largest single GEMM per layer and the only big K=4096-class shape the MR gate *cannot* take (mr_lds=98304); fa o_proj (K=8192) is the same story at 3.9 ms/pair.
+
+### Recommended fix (ranked by measured savings, per 96.36 ms pair)
+
+1. **lm_head M=4:** keep the MR gate but **exclude large-N shapes from MR** (e.g. `mr_ok &&= N <= ~8192`, or a cost-model fallback) so N=248320 takes the per-row wide path: 6.34 → ~1.6 ms, **~4.7 ms saved (4.9%)**. Alternative (bigger, harder): fix the `qmv_wide_mr` kernel for large N (27 µs/wave ≈ 74 GB/s is 4.4× below the wide path's 326 GB/s).
+2. **down_proj / o_proj:** a K-split MR path — 4 MR passes at K/4=3072 (mr_lds=4×3072×2=24576 ≤ 32768) + reduce: down 302 → ~190 µs (×32 = 3.6 ms), o 209 → ~120 µs (×8 = 0.7 ms), **≈ 4.3 ms saved (4.5%)**. (mcols=8 split does not fit: 4×8×12288×2/4… = 49152 > 32768.)
+3. **MTP sidecar F32 → 4-bit** (`model-mtp-4bit` exists, 152 MB, parked by the sidecar pin): draft module 5.39 → ~1.1 ms, **~4.3 ms saved (4.5%)** — the draft module is F32 today purely because the sidecar was saved in F32.
+
+Fixes 1+2 together (~9 ms, ~9.5%) bring 96.36 → ~87 ms/pair = 37.7 tok/s; with 100% acceptance (ceiling 3.277 → 4) that is 46 tok/s = 56.7% of AR. Break-even (40.45 ms at measured acceptance) still needs an M=4 attention/GDN path or higher acceptance on top.
+
+### Artifacts
+
+- Guest (t1228): `shape-bench.py` (per-shape M=1/M=4, 4-bit QMM + bf16/f32 matmul), `mtp-bench6-instr.py` (disjoint-checkpoint wall decomposition), `instr-final.log` (the 512-verify reproduction run), `lmh.py`/`gateprobe.py` (lm_head + gate probes); `ktrace.c/.so` (abandoned shim, documented). Sidecars `model-mtp-4bit.safetensors` / `model-mtp-fixed.safetensors` parked as `*.disabled` for the duration, restored after the run.
+- All runs: wheel md5 `d1acf5d1ea992d11995144e992547b5a` (dev20261101+75ca881), `<guest>` RX 9070 XT / gfx1201, 32 CUs, LDS 64 KB.
