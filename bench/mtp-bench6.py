@@ -41,8 +41,7 @@ S=4 = T=4 <= 8 -> recurrent GDN kernel path (no C++ change); QMV M=4 has no fuse
 
 GDN state: save/restore exactly like mtp-bench3.py (functional-new-arrays, zero-copy save valid). For MLX_MTP=4 the save point is BEFORE the batched 4-token forward. The MTP module's own KV cache is NOT rolled back on rejection (same protocol as the K=2 arm; mtp-bench3-side.py is the full-state-restore K=1 variant).
 
-Prints: TOKS, TOKS_S, verifies, D1ACC/D2ACC/D3ACC, D1PCT/D2PCT/D3PCT,
-TOK_PER_STEP, FIRST16, FIRST20, ALLTOKS, TEXT.
+Prints: TOKS, TOKS_S, verifies, D1ACC/D2ACC/D3ACC, D1PCT/D2PCT/D3PCT, TOK_PER_STEP, FIRST16, FIRST20, ALLTOKS, TEXT.
 TOK_PER_STEP = 1 + (D1ACC+D2ACC+D3ACC)/VERIFIES (the K=2 arm's printed formula omitted the D2 term; corrected here).
 """
 import os

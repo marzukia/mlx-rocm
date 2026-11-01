@@ -64,13 +64,9 @@ conv_out_m = np.asarray(nn.silu(lay.conv1d(conv_input)).astype(mx.float32))  # [
 
 
 # kernel source order (lines 225-234 / 245-254 / 266-275), per row t:
-#   w[0] * (t==0 ? cs[0] : cs[1]) + w[1] * (t==0 ? cs[1] : cs[2])
-#   + w[2] * (t==0 ? cs[2] : x[t-1...]) ... need exact; do it from the file:
-# row t: [c_{2-t+?}] -- use the documented window:
-#   row0 = [cs0, cs1, cs2, x0]; row1 = [cs1, cs2, x0, x1]
-# additive order in kernel: w0*e0 + w1*e1 + w2*e2 + w3*e3 (sequential FMAs,
-# but each e_i is a f32 multiply; the kernel does:
-#   (cond) * w0 + (cond) * w1 + ... as a nested sum in source order)
+#   w[0] * (t==0 ? cs[0] : cs[1]) + w[1] * (t==0 ? cs[1] : cs[2]) + w[2] * (t==0 ? cs[2] : x[t-1...]) ... need exact; do it from the file:
+# row t: [c_{2-t+?}] -- use the documented window: row0 = [cs0, cs1, cs2, x0]; row1 = [cs1, cs2, x0, x1]
+# additive order in kernel: w0*e0 + w1*e1 + w2*e2 + w3*e3 (sequential FMAs, but each e_i is a f32 multiply; the kernel does: (cond) * w0 + (cond) * w1 + ... as a nested sum in source order)
 def kernel_conv_row(t):
     e = [
         conv_state[0, 0 + t - 1 if t else 0],
@@ -99,11 +95,7 @@ for t in range(2):
     cm = conv_out_m[0, t]
     cf = kernel_conv_row(t)
     # silu: model nn.silu (f32 compute? on bf16 input) vs kernel:
-    # Multiply(conv_bf, Sigmoid(conv_bf)): conv is cast to bf16 first? in the
-    # kernel the conv sum (f32) is rounded to bf16, THEN sigmoid in f32,
-    # then product cast to bf16? Read from source: s_qconv = Multiply(conv_bf,
-    # Sigmoid(conv_bf)) with conv_bf = T(sum) -- so: bf16 sum -> f32 sigmoid
-    # of bf16 value -> product f32 -> bf16.
+    # Multiply(conv_bf, Sigmoid(conv_bf)): conv is cast to bf16 first? in the kernel the conv sum (f32) is rounded to bf16, THEN sigmoid in f32, then product cast to bf16? Read from source: s_qconv = Multiply(conv_bf, Sigmoid(conv_bf)) with conv_bf = T(sum) -- so: bf16 sum -> f32 sigmoid of bf16 value -> product f32 -> bf16.
     sum_bf = f2bf(cf)
     sig = 1.0 / (1.0 + np.exp(-sum_bf))
     silu_k = f2bf(sig * sum_bf)
@@ -136,11 +128,7 @@ km = mx.array(k_m).astype(mx.bfloat16).reshape(1, 2, lay.num_k_heads, HD)
 qn_m, kn_m = normalize_qk(qm, km, inv_scale=lay.head_k_dim**-0.5, eps=1e-6)
 
 
-# kernel: rms = 256-thread tree over 128 elems (threads 128..255 = 0), then
-# x/rms * scale -- the reduction order: warp tree (shfl_xor 16,8,4,2,1) across
-# 256 threads. Replicate: each thread has 1 element (128) or 0; sum =
-# sequential tree. With 128 active of 256: level1 pairs (t,t+1)... do the
-# tree in numpy per the standard pattern (pairs of adjacent, halving).
+# kernel: rms = 256-thread tree over 128 elems (threads 128..255 = 0), then x/rms * scale -- the reduction order: warp tree (shfl_xor 16,8,4,2,1) across 256 threads. Replicate: each thread has 1 element (128) or 0; sum = sequential tree. With 128 active of 256: level1 pairs (t,t+1)... do the tree in numpy per the standard pattern (pairs of adjacent, halving).
 def tree256(xv):
     n = 256
     x = np.concatenate([xv, np.zeros(n - len(xv))])

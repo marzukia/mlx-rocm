@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Op-level bit-exactness probe for the T<=4 fused GDN step (gate 0).
 
-Reference = the MODEL DEFAULT PATH (not the op's fallback chain, which is
-1-D-only in gdn_prep and thus invalid for T=2/4):
+Reference = the MODEL DEFAULT PATH (not the op's fallback chain, which is 1-D-only in gdn_prep and thus invalid for T=2/4):
   conv:  mx.nn.Conv1d sliding window over [conv_state(3), qkv(T)]
   beta:  mx.sigmoid(b)
   g:     model compute_g  (exp(-exp(A_log) * softplus(a + dt_bias)), f32)
@@ -13,12 +12,9 @@ Reference = the MODEL DEFAULT PATH (not the op's fallback chain, which is
 Checks:
   1. fused T=1 == model-default chain T=1 (regression)
   2. fused T=2 == model-default chain T=2 (regression)
-  3. invariance: model chain T=2 == two sequential model-chain T=1 steps
-     (conv-state updated between), fused T=2 == two sequential fused T=1
+  3. invariance: model chain T=2 == two sequential model-chain T=1 steps (conv-state updated between), fused T=2 == two sequential fused T=1
   4. fused T=4 == model-default chain T=4 (new path, S=4 MTP verify)
-  5. invariance: model chain T=4 == four sequential model-chain T=1 steps,
-     fused T=4 == four sequential fused T=1 steps (conv-state updated
-     between rows)
+  5. invariance: model chain T=4 == four sequential model-chain T=1 steps, fused T=4 == four sequential fused T=1 steps (conv-state updated between rows)
 """
 
 import sys
@@ -137,8 +133,7 @@ def single_row(i, t):
 
 
 def advance_cs(d):
-    """Roll the conv state one row forward (in place on d): after a row-t
-    forward the 3-row window becomes [cs1, cs2, row_t]."""
+    """Roll the conv state one row forward (in place on d): after a row-t forward the 3-row window becomes [cs1, cs2, row_t]."""
     d["conv_state"] = mx.stack(
         [
             d["conv_state"][1],
