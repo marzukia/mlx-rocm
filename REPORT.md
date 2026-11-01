@@ -1,3 +1,118 @@
+# W1a audit — MTP sidecar quantized weight-load path
+
+**Verdict (one line):** The `QuantizedLinear` rebuild is bit-exact — there is **no layout or
+parameter mismatch in the dequant path**; t1195's "4-bit ≈ 8-bit" collapse is a
+**file-identity artifact** (both runs loaded the 8-bit file, because the true 4-bit
+weights sit in `model-mtp-4bit.bak`, which does not match the loader's
+`model*.safetensors` glob), and the orthogonality to the fp32 module is a **norm
+convention mismatch** (the two AddRMSNorms are stored in the vLLM `1+w` form while the
+wheel's RMSNorm kernel applies bare `w`) — not a quantization-layout bug.
+
+## Method
+
+Standalone probes (`w1a-probe1/2/3/4`, `/tmp`, venv untouched), RX 9070 XT, ~20 GPU-min.
+- probe1: rebuild `MTPModule` exactly like the wheel loader (prefix `mtp.*` keys onto a
+  fresh `MTPModule(args, 1, quant=True)`), dequantize, compare to the verified
+  `(out, in)` convention (fp32 dequant reference).
+- probe2: 52-step greedy AR-decode of the target on "Explain step by step.", capture
+  `(prenorm h, embedding e, target logits)` per step, build 4 sidecar variants
+  (A=8-bit file bits=8, B=4-bit `.bak` bits=4, C=fp32 fixed file as-is, D=C with all
+  7 norms −1), fresh `KVCache` per call, draft via `lm.lm_head`, compare.
+- probe3: norm-subset sweep ({2 layernorms}, {5}, {7}) + alignment scan (offsets 0–3).
+- probe4: fc concat order `[e;h]` vs `[h;e]` with/without the 2-layernorm fix.
+
+## Parameter dump
+
+Wheel side: `MTPModule` builds `fc = QuantizedLinear(8192→4096)`, `q_proj (4096→8192)`,
+`k/v_proj (4096→1024)`, `o_proj (1024→4096)`, MLP `gate/up (4096→12288)`,
+`down (12288→4096)`; `group_size=64`, `bits` from `MTP_QBITS` (default 4);
+`quantized_matmul(x, weight, scales, biases, transpose=True, ...)` → file weight is
+`(out, in/pack)` with `scales/biases (out, in/64)`. Norms: `pre_fc_norm_hidden/embedding`
+(4096), `input_layernorm`, `post_attention_layernorm` (4096), `q_norm`/`k_norm` (256,
+head_dim=256, 16 q heads / 4 kv heads), final `norm` (4096).
+
+| file | size | tensors | layout |
+|---|---|---|---|
+| `model-mtp-4bit.safetensors` (**actually 8-bit**) | 274 MB | 31 | fc `(4096, 2048)` u32, scales `(4096, 128)` ⇒ 8192/4, group 64 |
+| `model-mtp-4bit.bak` (**the true 4-bit**) | 152 MB | 31 | fc `(4096, 1024)` u32, scales `(4096, 128)` ⇒ 8192/8, group 64 |
+| `model-mtp-fixed.safetensors` | 973 MB | 15 | fp32, `(out, in)` |
+
+Same 31 key set across both quant files (w/q/s/b per Linear + 7 norms). Both load
+correctly into the wheel at `bits=8` / `bits=4` respectively; **loading the 8-bit file
+with `bits=4` hard-errors** (`quantized_matmul: weight (4096,2048) and scales (4096,128)
+incompatible with bits=4, group=64`) — so t1195's runs must have used `MTP_QBITS=8/4`.
+
+## Dequant comparison (probe1)
+
+| check | 8-bit file (bits=8) | 4-bit `.bak` (bits=4) |
+|---|---|---|
+| wheel dequant vs verified `(out,in)` convention, `max‖Δ‖` | **0.0000** | **0.0000** |
+| fc forward vs `x @ dequantᵀ`, cos | 1.000000 | 1.000000 |
+| 4-bit vs 8-bit weight cross-file | cos 0.9919, relerr 7.58 % (consistent with t1195's 9–13 % 4-bit error) | — |
+
+The quantized weights flow through exactly as the files describe.
+
+## Module-level draft-logit comparison (probe2, 50 pairs, fresh cache)
+
+| pair | cos | argmax match |
+|---|---|---|
+| A 8-bit vs B 4-bit (true) | 0.9967 | **42/50** |
+| A 8-bit vs C fp32-as-is | 0.999988 | **50/50** |
+| C fp32-as-is vs D (all norms −1) | 0.7097 | 0/50 |
+| any variant vs **true target tokens** | ≤ 0.27 (best: C+2-layernorm−1) | **0/50** (2/50 at offset 2) |
+
+Weight-level 8-bit vs 4-bit at the fc layer: cos 0.9661 — the two files are **not**
+near-identical; they would not produce 49/49-identical draft argmaxes.
+
+## Reading of t1195's numbers
+
+1. **"4-bit vs 8-bit cos 0.999996 / 49-49 argmax" → artifact.** The only file the loader
+   sees is `model-mtp-4bit.safetensors` (274 MB, 8-bit content). The 4-bit weights are in
+   `model-mtp-4bit.bak` — invisible to the `model*.safetensors` glob. If t1195's
+   "4-bit run" did not rename `.bak` into place, both runs loaded the 8-bit file →
+   identical logits. With the true files, the measured divergence is 42/50 argmax /
+   cos 0.9967.
+2. **"Orthogonal to fp32 module (0/49, mean |Δ| 1.79)" → norm convention, not layout.**
+   In the wheel, the fp32 sidecar module (raw file values) *agrees* with the 8-bit module
+   50/50 (cos 0.999988). What is orthogonal to the raw modules is a
+   **convention-corrected** fp32 module: subtracting 1 from `input_layernorm` and
+   `post_attention_layernorm` (the vLLM AddRMSNorm `1+w` storage; t1196) moves
+   draft-vs-raw cos from −0.52 to +0.27 and gives 0/50 argmax with mean |Δ| in the
+   1.0–1.8 band — matching t1195's 0/49 / 1.79. `q_norm`/`k_norm`/pre_fc norms/final
+   norm are **not** `1+w` (subtracting 1 from them cancels the fix: cos back to −0.52).
+   Side note: with a fresh single-token cache the wheel's `Qwen3NextAttention` degenerates
+   to `v·σ(gate)` (q/k provably inert, maxdiff 0.0), so `q_norm`/`k_norm` have no effect
+   at all in 1-token draft calls.
+
+## Fix recommendation
+
+1. **Norm correction in the wheel's MTP sidecar ingest (both quant and fp32 paths):**
+   subtract 1.0 from `mtp.layers.0.input_layernorm.weight` and
+   `mtp.layers.0.post_attention_layernorm.weight` (or interpret those two keys as
+   AddRMSNorm `1+w`). Do **not** touch the other 5 norms.
+2. **To actually compare 4-bit vs 8-bit:** activate the true 4-bit file
+   (`model-mtp-4bit.bak` → `model-mtp-4bit.safetensors`, park the 8-bit one as
+   `model-mtp-8bit.safetensors`) and set `MTP_QBITS=4` (vs 8). Expect 42/50 argmax
+   divergence, not 49/49.
+3. **Follow-up before drawing acceptance conclusions:** even the norm-corrected fp32
+   module scores 0/50 argmax vs true next tokens (cos ≈ 0.23), so 0/512 acceptance is
+   *not* fully explained by the norm bug nor by quantization. Spec-diff the wheel MTP
+   against the vLLM export (fc concat order `[e;h]` vs `[h;e]` — measured cos −0.52 /
+   −0.02 / +0.23 / +0.04 across the four combinations, none decisive — RoPE
+   `partial_rotary_factor 0.25`/theta, attention-gate wiring) as a t1196-style check.
+
+## Caveats
+
+- All comparisons use fresh `KVCache` per (h, e) pair (stateless per-pair semantics);
+  a persistent-cache replay of the fp32 module also scored 0/50.
+- Greedy (argmax) target trajectory; 50 pairs, one prompt.
+- probe3's `.disabled` park/restore of the sidecars completed cleanly; all model files
+  are back in place (verified).
+
+---
+
+# Prior report (preserved from base 509c1c3)
+
 # K2 non-GEMM fusion — round-4 fix report (submitter)
 
 Branch: `k2-non-gemm-fusion` (base `33b13dd`). Fixes the round-3 adversarial
