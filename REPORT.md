@@ -1864,3 +1864,35 @@ Extracted by diffing the installed `<venv>/lib/python3.14/site-packages/mlx_lm/m
 ### Result
 
 Fused AR (S==1, `MLX_ROCM_GDN_FUSE=1`): **80.93 tok/s**; no-fuse AR (`MLX_MTP=0`, no env gate): **72.57 tok/s** — **+11.5%**, lossless (byte-identical token streams, per the as-run bench pair `bench/mtp-bench3.py` / `bench/mtp-bench3-side.py`). The exact proven build + install + bench commands are in `BUILD-RECIPE.md`.
+
+## m2-fused-bench — MTP-on on the fused wheel with the ORIGINAL sidecar (t1196/t1211 follow-up, 2026-11-01)
+
+**Verdict: acceptance REPRODUCES on the fused wheel — 388/512 (75.8%) with the original sidecar, hash-pinned; MTP-on 70.89–71.20 tok/s vs MTP-off 81.35–81.39 tok/s (net -12.7%). The PR3 GDN/attention wave does NOT shift the (h, e) target state off the vLLM-exported draft module.**
+
+### Setup
+
+- **Wheel identity**: `mlx 0.32.3.dev20261101+75ca881` — the `build-9` fused output at `/home/<host-user>/wheelout/` (the 9320ee9 PR3-HYBRID lineage; the `+75ca881` ref-string is the 75ca881 base of that lineage, NOT the t1196 1c wheel). `hasattr(m.fast, "gdn_fused_step") = True`; installed `libmlx.so` md5 `10a15a8d2ce9e6bed6a8fd15761802ed` (byte-identical to the wheel file's `mlx/lib/libmlx.so`). NOTE: at probe time the venv had the t1196 1c wheel installed (installed-from `wheelout-1c/`, different size/md5) — the fused wheel was reinstalled via `uv pip install --reinstall` before any run, and the md5 re-verified. Model-side `qwen3_5.py` in the venv carried all three markers (`FUSE_BRANCH_PATCH`/`MTP_INJECT_PATCH`/`PRENORM_PATCH`, 7 marker hits); `mlx-lm 0.32.2` stock. venv python 3.14: unmodified.
+- **Sidecar pinning**: only `model-mtp.safetensors` active (the original, 973,164,115 B); `model-mtp-fixed.safetensors` and `model-mtp-4bit.safetensors` parked as `*.disabled` for every run; the `.bak` is inert to the loader glob. `sha256(model-mtp.safetensors) = edef9ec6f48a31f40659ec7937bae93b4a1c501c4cd23959933c992df31d1df8`, re-verified at the start of each MTP run. The non-quantized `MTPModule` is built from `config.json` (`mtp_num_hidden_layers: 1`) and the loader's `model*.safetensors` glob auto-loads its `mtp.*` keys (per `MTP_INJECT_PATCH`'s `load_weights` keep-keys branch), so the standard `bench/mtp-bench3.py` (no sidecar code) was the run vehicle for all four runs.
+- **Run env**: `MODELS=<model-mount> LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libhsa-runtime64.so.1 HCC_AMDGPU_TARGET=gfx1201` (plus `MLX_ROCM_GDN_FUSE=1` in every run; the fused wheel's graft is env-gated). Lane was clear at dispatch (93 MB VRAM in use); GPU time used across all four runs: well under a minute of generation plus model loads each.
+
+### Results (standard `bench/mtp-bench3.py`, fruits prompt, MAX_TOKENS=1024, greedy, EOS 248044; both A/B pairs back to back, same fused wheel)
+
+| Run | MLX_MTP | tok/s | GEN | acceptance | notes |
+|---|---|---|---|---|---|
+| pair 1 AR | 0 | 81.35 | 12.59 s | 0/0 | fused-AR baseline (expect ~80.93) |
+| pair 1 MTP | 2 | 71.20 | 14.38 s | 388/512 | original sidecar, hash-pinned |
+| pair 2 AR | 0 | 81.39 | 12.58 s | 0/0 | |
+| pair 2 MTP | 2 | 70.89 | 14.45 s | 388/512 | original sidecar, hash-pinned |
+
+- Fused-AR baseline reproduced: 81.35/81.39 vs the proven 80.93 (+0.5% run variance). MTP-on: 71.20/70.89 vs t1196's 69.13 on the 1c wheel (+2.8%).
+- **Net MTP gain/loss on the fused wheel: 71.05 / 81.37 - 1 = -12.7%** (t1196's 1c wheel: 69.13 / 72.57 = -4.7%). Fusing the GDN step made the AR baseline faster (+12.1% vs the 1c AR) while the spec-decode path (S=2 batched verify forwards + the 1-layer draft module forward, neither fused) kept its cost — the MTP penalty therefore widened from -4.7% to -12.7%. MTP-on still clears the old no-fuse AR (72.57) by only ~-2%; it does NOT yet reach 100+ tok/s, and at 388/512 (75.8% acceptance, ~1.76 tokens/verify) the draft's per-step overhead outweighs its accepted-token benefit on this wheel.
+- **Sanity**: first-20 tokens byte-identical between MTP-on and the AR baseline (lossless); no 271-repeat degenerate attractor (271 appears only sporadically, as in the AR stream).
+
+### Open-question resolution (and the spec-diff)
+
+- The t1211 0/50 argmax-vs-true-next-token (cos ~0.23) result was a **venv-state artifact**, consistent with its own explanation: the venv at that probe time held the 1c wheel (from `wheelout-1c`) while the sidecar directory state mixed the 4bit files (true 4-bit in the glob-inert `.bak`). On the fused wheel + hash-pinned original sidecar, acceptance is 388/512 — the draft module agrees with the target 75.8% of the time. **The spec-diff (fc concat order [e;h] vs [h;e]; RoPE `partial_rotary_factor 0.25`/`theta`; attention-gate `v*sigma(gate)` wiring) was NOT run** because the trigger (0/512 or far-below-388/512) did not fire.
+- Sidecars restored to their pre-run layout at the end (fixed + 4bit un-parked; `model-mtp.safetensors` untouched, sha re-verified `edef9ec6…`).
+
+### Deliverable number (the one andy is chasing toward 100+)
+
+On the fused wheel, MTP-on (mode 2, original sidecar) = **70.89–71.20 tok/s**, i.e. **net -12.7% vs the 81.35–81.39 fused-AR baseline**. To reach 100+ tok/s with MTP, the verify/draft path itself needs the fused treatment (S=2 GDN verify + a fused/cheaper draft forward) or a higher K with higher acceptance; at K=1/75.8% the arithmetic caps out at ~71.
