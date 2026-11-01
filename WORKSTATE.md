@@ -319,9 +319,9 @@ Branch `worker/gdn-fused-t4` = main (509c1c3) + t1223 (T=2 fused kernel) +
 t1225 (K=3 bench + report) folded, then the T=4 kernel extension.
 
 ## Timeline
-- base fold committed (d539608): t1223 graft + t1225 mtp-bench6 + report
+- base fold committed (8e65963): t1223 graft + t1225 mtp-bench6 + report
   section onto main; mtp-bench6.py added to the as-run extend-exclude.
-- T=4 source (72c8751): kernel TMAX 1/2 -> 1/2/4, generalized sliding conv
+- T=4 source (6caefa6): kernel TMAX 1/2 -> 1/2/4, generalized sliding conv
   window (T=1/T=2 codegen unchanged by unroll-fold), fast.cpp T in (1,2,4) (round-1 fix),
   F-branch S<=4, probe + test extended. Hermetic green.
 - Guest: ONE rebuild (budget spent). Kernel md5 cf646082..., fast.cpp
