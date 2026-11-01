@@ -322,7 +322,7 @@ t1225 (K=3 bench + report) folded, then the T=4 kernel extension.
 - base fold committed (d539608): t1223 graft + t1225 mtp-bench6 + report
   section onto main; mtp-bench6.py added to the as-run extend-exclude.
 - T=4 source (72c8751): kernel TMAX 1/2 -> 1/2/4, generalized sliding conv
-  window (T=1/T=2 codegen unchanged by unroll-fold), fast.cpp T>4,
+  window (T=1/T=2 codegen unchanged by unroll-fold), fast.cpp T in (1,2,4) (round-1 fix),
   F-branch S<=4, probe + test extended. Hermetic green.
 - Guest: ONE rebuild (budget spent). Kernel md5 cf646082..., fast.cpp
   pre 9b8ca998..., wheel 22,383,626 B, libmlx.so 7fb1717a... ->
