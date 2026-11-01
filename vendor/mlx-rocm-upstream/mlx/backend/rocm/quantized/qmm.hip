@@ -4126,7 +4126,13 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
       static int mr_lx_env = parse_non_negative_int_env("MLX_QMV_MR_LX", 1);
       int mcols = (mr_cols_env >= 8) ? mr_cols_env : 16;
       size_t mr_lds = (size_t)std::min(4, M) * (size_t)K * 2;
-      bool mr_ok = use_mr_qmv && (M <= 4) && (mr_lds <= 32768);
+      // M>=2: the multi-row kernel batches up to 4 rows per block to share one weight pass.
+      // At M=1 (eager decode) three of the four rows are padding: no bandwidth win, plus
+      // LDS staging + sync overhead. Measured on gfx1201 bare metal 2026-11-01: M=1 AR
+      // 77.39 tok/s with MR on vs 80.94 with MLX_QMV_NO_MR=1 (-4.5% eager tax). The
+      // multi-row win is real at M=2..4 (MTP verify / batch decode), where the shared
+      // weight pass is fully utilized, so gate on M instead of defaulting off.
+      bool mr_ok = use_mr_qmv && (M <= 4) && (M >= 2) && (mr_lds <= 32768);
       // run-852: the MR kernel's in-k-loop __syncthreads (LX hoist) requires
       // uniform k-iteration counts across lanes: K % (32 * WPER) == 0
       // (K % 1024 == 0 for 4-bit, K % 512 == 0 for 8-bit). Shapes that do
