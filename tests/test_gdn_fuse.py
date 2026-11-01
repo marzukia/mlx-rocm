@@ -1,12 +1,8 @@
-"""Hermetic Phase 2 gate: the fused GDN decode-step kernel is a verbatim
-replication of the deployed 4-op chain's arithmetic. No GPU needed.
-
-These pin the lossless contract: the exact per-phase op sequence (conv 4-tap
-sequential sum, the 256-thread rms_norm reduction, the r4d per-thread state
-looperational order, the f32-g/low-u16 read, the f2bf rounding, the bf16 pre-rounding
-of the qk scales). If any of these strings move, the bit-exactness argument
-moves with it and the test must be reviewed in the same PR.
-"""
+"""Hermetic Phase 2 gate: the fused GDN decode-step kernel is a verbatim replication of the deployed 4-op chain's
+Arithmetic. No GPU needed. These pin the lossless contract: the exact per-phase op sequence (conv 4-tap sequential sum,
+The 256-thread rms_norm reduction, the r4d per-thread state loop operational order, the f32-g/low-u16 read, the f2bf
+Rounding, the bf16 pre-rounding of the qk scales). If any of these strings move, the bit-exactness argument moves with
+It and the test must be reviewed in the same PR."""
 
 import re
 from pathlib import Path
@@ -34,18 +30,25 @@ def test_env_gate_is_the_only_switch():
     assert "e == nullptr || e[0] != '1'" in t
 
 
+def test_fallback_is_scoped_to_t_gt_1():
+    # The 4-op chain stays as the op fallback at T=1 (safe there); only T>1 throws, and T=0 is rejected.
+    t = PATCH.read_text()
+    assert "if (B != 1 || T == 0 || T > 2)" in t
+    assert "if (T > 1) {" in t
+    assert "if (T == 0) {" in t
+    # The T=1 fallback call is back in the tree after the throw scope.
+    assert "return fallback({q, k, v, bb, aa, al, db, cs, cw, zg, st, nw});" in t
+
+
 def test_conv_phase_reuses_the_4tap_sequential_sum():
     src = _src()
-    # Per-row sliding window (E = [cs0, cs1, cs2, q0, q1]; row t = sum_j
-    # E[t+j]*w[j]) keeps gdn_prep's 4-tap k-order sequential f32 sum; with
-    # TMAX=1 the (t == 0) ternaries fold and this reduces exactly to the
-    # original T=1 window.
+    # Per-row sliding window (E = [cs0, cs1, cs2, q0, q1]; row t = sum_j E[t+j]*w[j]) keeps gdn_prep's 4-tap k-order
+    # Sequential f32 sum; with TMAX=1 the (t == 0) ternaries fold and this reduces exactly to the original T=1 window.
     assert src.count("(t == 0) ? conv_state[0 * conv_dim + ") == 3
     assert src.count("(t == 0) ? conv_state[1 * conv_dim + ") == 3
     assert src.count("(t == 0) ? conv_state[2 * conv_dim + ") == 3
-    # Row 1's window shifts by one: tap2 = raw row 0, tap3 = raw row 1.
-    # Raw inputs are read as packed t-indexed rows (the op force-copies the
-    # model's row-strided q3/k3/v3 slices for T>1).
+    # Row 1's window shifts by one: tap2 = raw row 0, tap3 = raw row 1; raw inputs are read as packed t-indexed rows
+    # (the op force-copies the model's row-strided q3/k3/v3 slices for T>1).
     assert "v_raw[0 * value_dim + vch])" in src
     assert "k_raw[0 * key_dim + kch])" in src
     assert "q_raw[0 * key_dim + qch])" in src
@@ -66,8 +69,7 @@ def test_qk_norm_phase_reuses_the_block_reduction():
     assert "__shfl_xor(val, offset)" in src
     assert "shared_sum[warp_id]" in src
     assert "1.0f / sqrtf(shared_sum[0] / axis_size + eps)" in src
-    # The qk scale is pre-rounded to bf16 (inv_scale is not exact in bf16) --
-    # q uses inv_scale**2, k uses inv_scale.
+    # The qk scale is pre-rounded to bf16 (inv_scale is not exact in bf16) -- q uses inv_scale**2, k uses inv_scale.
     assert "float scale = inv_scale * inv_scale;" in src
     assert "float scale = inv_scale;" in src
     assert src.count("static_cast<float>(static_cast<T>(scale))") == 2
@@ -75,8 +77,8 @@ def test_qk_norm_phase_reuses_the_block_reduction():
 
 def test_state_update_phase_matches_r4d_order():
     src = _src()
-    # r4d per-thread looperational order: decay+dot, shfl(1), u=(v-dot)*beta,
-    # outer-product+on, shfl(1), f2bf store by half==0 only.
+    # r4d per-thread loop operational order: decay+dot, shfl(1), u=(v-dot)*beta, outer-product+on, shfl(1), f2bf store
+    # By half==0 only.
     m = re.search(
         r"for \(int j = 0; j < 64; \+\+j\) \{\s*h\[j\] \*= eg;\s*dot \+= "
         r"h\[j\] \* kk\[j\];\s*\}\s*dot \+= __shfl_xor\(dot, 1, 32\);",
@@ -90,24 +92,23 @@ def test_state_update_phase_matches_r4d_order():
     )
     assert m, "r4d outer-product/on phase order moved"
     assert "if (half == 0)" in src
-    # g is computed f32 but the chain's r4d kernel receives it as BF16
-    # (fast.cpp astypes g at the op boundary to q's dtype); replicate by
-    # rounding s_g to bf16 before the u16 read.
+    # g is computed f32 but the chain's r4d kernel receives it as BF16 (fast.cpp astypes g at the op boundary to q's
+    # Dtype); replicate by rounding s_g to bf16 before the u16 read.
     assert "gdnf_bf2f16(gdnf_f2bf_rne(s_g[t]))" in src
     assert "gdnf_bf2f_low16f32" not in src
     # the s_g->bf16 cast is RNE, matching MLX's astype (u += (u>>16&1)+0x7FFF).
     assert "u >> 16 & 1u) + 0x7FFFu" in src
     assert "__expf(" in src and "fmaxf(" in src and "-80.0f" in src
-    # f2bf round-half-away, not RTNE; the u16->T store is a bit-cast (an
-    # integer-to-float static_cast would re-interpret the bits as a value).
+    # f2bf round-half-away, not RTNE; the u16->T store is a bit-cast (an integer-to-float static_cast would
+    # Re-interpret the bits as a value).
     assert "+ 0x8000u) >> 16" in src
     assert "*reinterpret_cast<T*>(&out_bf)" in src
 
 
 def test_gate_phase_matches_gdn_prep_g_chain():
     src = _src()
-    # compute_g chain: bf16(a+dt_bias) -> logaddexp via max/log1p(exp(min-max))
-    # -> bf16 round of softplus -> expf(A_log) -> g = expf(-e_al*sp) in f32.
+    # compute_g chain: bf16(a+dt_bias) -> logaddexp via max/log1p(exp(min-max)) -> bf16 round of softplus ->
+    # Expf(A_log) -> g = expf(-e_al*sp) in f32.
     for s in (
         "T sum_bf = static_cast<T>(static_cast<float>(a[t * num_v_heads + hv]) +",
         "float mxv = fmaxf(fx, 0.0f);",
@@ -151,3 +152,47 @@ def test_patch_touches_only_the_expected_files():
         "mlx/backend/rocm/gdn_fused_step.hip",
     }
     assert files == expected, f"unexpected patch file set: {files}"
+
+
+def test_patch_hunk_counts_are_wellformed():
+    # A hunk whose claimed line counts do not match its body makes the whole patch unapplicable (git apply: "corrupt
+    # Patch", GNU patch: "malformed patch"); the base patch of record was well-formed, so every hunk in every
+    # .patch/.diff under patches/ must be.
+    for patch in sorted(ROOT.glob("patches/**/*")):
+        if patch.suffix not in (".patch", ".diff"):
+            continue
+        text = patch.read_text().split("\n")
+        i = 0
+        while i < len(text):
+            m = re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", text[i])
+            if not m:
+                i += 1
+                continue
+            old_n = int(m.group(2) or 1)
+            new_n = int(m.group(4) or 1)
+            j = i + 1
+            n_old = n_new = 0
+            while j < len(text):
+                ln = text[j]
+                if (
+                    ln.startswith("@@ ")
+                    or ln.startswith("--- ")
+                    or ln.startswith("+++ ")
+                    or ln.startswith("diff --git")
+                ):
+                    break
+                if ln.startswith("+"):
+                    n_new += 1
+                elif ln.startswith("-"):
+                    n_old += 1
+                elif ln.startswith(" "):
+                    n_old += 1
+                    n_new += 1
+                j += 1
+            assert n_old == old_n, (
+                f"{patch.name}: hunk at line {i + 1} ({m.group(0)}): {n_old} old lines != {old_n} claimed"
+            )
+            assert n_new == new_n, (
+                f"{patch.name}: hunk at line {i + 1} ({m.group(0)}): {n_new} new lines != {new_n} claimed"
+            )
+            i = j

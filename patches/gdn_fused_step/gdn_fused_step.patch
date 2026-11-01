@@ -841,7 +841,8 @@ index 0244f122..488bdd72 100644
 +bool KVAppend::is_equivalent(const Primitive& other) const {
 +  const KVAppend& a_other = static_cast<const KVAppend&>(other);
 +  return offset_ == a_other.offset_;
-@@ -973,0 +1176,229 @@
+@@ -973,0 +1176,238 @@
++
 +namespace {
 +
 +// Non-row-contiguous inputs get a row-contiguous copy (same helper as
@@ -877,7 +878,7 @@ index 0244f122..488bdd72 100644
 +  if (f != nullptr && f[0] == '1') {
 +    return true;
 +  }
-+  if (B != 1 || T > 2) {
++  if (B != 1 || T == 0 || T > 2) {
 +    return true;
 +  }
 +  // NOTE: MLX_ROCM_GDN_FUSE_T2=0 no longer routes T=2 to the 4-op chain
@@ -973,6 +974,7 @@ index 0244f122..488bdd72 100644
 +      {o, zg, w});
 +}
 +
++
 +std::vector<array> gdn_fused_step(
 +    const array& q_raw,
 +    const array& k_raw,
@@ -1059,16 +1061,26 @@ index 0244f122..488bdd72 100644
 +            s, fallback, inv_scale, prep_eps, norm_eps),
 +        inputs);
 +  }
-+  // The 4-op fallback chain is unsafe for T>1: gdn_prep is 1-D-only and
-+  // misinterprets multi-row inputs (out-of-bounds reads, GPU fault). Throw
-+  // instead so A/B gating degrades to a clear error, not a hang.
-+  throw std::invalid_argument(
-+      "gdn_fused_step: fallback disabled for this shape (the 4-op chain is "
-+      "1-D-only in gdn_prep and unsafe for T>1); use the model default "
-+      "path (MLX_ROCM_GDN_FUSE=0) or T<=2 with MLX_ROCM_GDN_FUSE=1");
++  if (T == 0) {
++    throw std::invalid_argument(
++        "gdn_fused_step: T=0 (empty) input is rejected; pass T >= 1");
++  }
++  if (T > 1) {
++    // The 4-op fallback chain is 1-D-only in gdn_prep and unsafe for T>1
++    // (it misinterprets multi-row inputs: out-of-bounds reads, GPU fault);
++    // T=1 is safe, so the chain stays as the op fallback for FUSE=0,
++    // CPU streams, and Dk/Dv != 128.
++    throw std::invalid_argument(
++        "gdn_fused_step: no 4-op fallback for T>1 (T=" + std::to_string(T) +
++        ") with the fused path disabled (MLX_ROCM_GDN_FUSE=0, a CPU "
++        "stream, or Dk/Dv != 128); use MLX_ROCM_GDN_FUSE=1 with T<=2, "
++        "or the model default path");
++  }
++  return fallback({q, k, v, bb, aa, al, db, cs, cw, zg, st, nw});
 +}
 +
-@@ -1162,80 +1594,0 @@
++
+@@ -1162,80 +1603,0 @@
 -std::vector<array> gdn_prep(
 -    const array& q_raw,
 -    const array& k_raw,
