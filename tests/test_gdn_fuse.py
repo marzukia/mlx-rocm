@@ -36,21 +36,27 @@ def test_env_gate_is_the_only_switch():
 
 def test_conv_phase_reuses_the_4tap_sequential_sum():
     src = _src()
-    # gdn_prep's conv body: 4 sequential acc += f32(x)*f32(w), tap 3 = raw input.
-    assert src.count("static_cast<float>(conv_state[0 * conv_dim + ") >= 3
-    assert src.count("static_cast<float>(conv_state[1 * conv_dim + ") >= 3
-    assert src.count("static_cast<float>(conv_state[2 * conv_dim + ") >= 3
-    assert src.count("static_cast<float>(conv_weight[cv * kernel_size + 3])") == 1
-    assert src.count("static_cast<float>(conv_weight[ck * kernel_size + 3])") == 1
-    assert src.count("static_cast<float>(conv_weight[cq * kernel_size + 3])") == 1
-    # tap 3 sources: v_raw / k_raw / q_raw, in the chain's channel order
-    # (raw inputs are flat [value_dim]/[key_dim]; the head offset is part of
-    # the channel index -- a missing offset reads the wrong head's rows).
-    assert "static_cast<float>(v_raw[hv * head_dim + tid])" in src
-    assert "static_cast<float>(k_raw[hk * head_dim + tid])" in src
-    assert "static_cast<float>(q_raw[hk * head_dim + qi])" in src
+    # Per-row sliding window (E = [cs0, cs1, cs2, q0, q1]; row t = sum_j
+    # E[t+j]*w[j]) keeps gdn_prep's 4-tap k-order sequential f32 sum; with
+    # TMAX=1 the (t == 0) ternaries fold and this reduces exactly to the
+    # original T=1 window.
+    assert src.count("(t == 0) ? conv_state[0 * conv_dim + ") == 3
+    assert src.count("(t == 0) ? conv_state[1 * conv_dim + ") == 3
+    assert src.count("(t == 0) ? conv_state[2 * conv_dim + ") == 3
+    # Row 1's window shifts by one: tap2 = raw row 0, tap3 = raw row 1.
+    # Raw inputs are read as packed t-indexed rows (the op force-copies the
+    # model's row-strided q3/k3/v3 slices for T>1).
+    assert "v_raw[0 * value_dim + vch])" in src
+    assert "k_raw[0 * key_dim + kch])" in src
+    assert "q_raw[0 * key_dim + qch])" in src
+    assert "static_cast<float>(v_raw[t * value_dim + vch])" in src
+    assert "static_cast<float>(k_raw[t * key_dim + kch])" in src
+    assert "static_cast<float>(q_raw[t * key_dim + qch])" in src
     # silu via the exact op structs (not a re-derivation)
     assert "Multiply{}(conv_bf, Sigmoid{}(conv_bf))" in src
+    # TMAX is a template constant: T=1 unrolls to the straight-line kernel.
+    assert "template <typename T, int TMAX>" in src
+    assert "for (int t = 0; t < TMAX; ++t)" in src
 
 
 def test_qk_norm_phase_reuses_the_block_reduction():
@@ -87,7 +93,7 @@ def test_state_update_phase_matches_r4d_order():
     # g is computed f32 but the chain's r4d kernel receives it as BF16
     # (fast.cpp astypes g at the op boundary to q's dtype); replicate by
     # rounding s_g to bf16 before the u16 read.
-    assert "gdnf_bf2f16(gdnf_f2bf_rne(s_g))" in src
+    assert "gdnf_bf2f16(gdnf_f2bf_rne(s_g[t]))" in src
     assert "gdnf_bf2f_low16f32" not in src
     # the s_g->bf16 cast is RNE, matching MLX's astype (u += (u>>16&1)+0x7FFF).
     assert "u >> 16 & 1u) + 0x7FFFu" in src
@@ -103,12 +109,12 @@ def test_gate_phase_matches_gdn_prep_g_chain():
     # compute_g chain: bf16(a+dt_bias) -> logaddexp via max/log1p(exp(min-max))
     # -> bf16 round of softplus -> expf(A_log) -> g = expf(-e_al*sp) in f32.
     for s in (
-        "T sum_bf = static_cast<T>(static_cast<float>(a[hv]) +",
+        "T sum_bf = static_cast<T>(static_cast<float>(a[t * num_v_heads + hv]) +",
         "float mxv = fmaxf(fx, 0.0f);",
         "float sp_f = mxv + log1pf(expf(mnv - mxv));",
         "float sp = static_cast<float>(static_cast<T>(sp_f));",
         "float e_al = expf(A_log[hv]);",
-        "s_g = expf(arg);",
+        "s_g[t] = expf(arg);",
     ):
         assert s in src
 
@@ -119,7 +125,7 @@ def test_norm_gated_phase_matches_gdn_norm_gated():
         "float sig = Sigmoid{}(z_f);",
         "float gate = z_f * sig;  // silu in f32",
         "float r = gate * x_f;    // f32 multiply",
-        "result[hv * head_dim + i] = static_cast<T>(r);",
+        "result[(t * num_v_heads + hv) * head_dim + i] = static_cast<T>(r);",
     ):
         assert s in src
 

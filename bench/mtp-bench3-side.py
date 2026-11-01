@@ -78,7 +78,7 @@ def main():
     global _MTP4_GUARD
     mode = os.environ.get("MLX_MTP", "0")
     # only ONE mtp sidecar may be readable by the loader (mlx_lm globs model*.safetensors and merges all keys; quant/fp32 layouts collide)
-    _active = "model-mtp-4bit.safetensors" if os.environ.get("MTP_4BIT", "0") == "1" else "model-mtp-fixed.safetensors"
+    _active = os.environ.get("MTP_SIDECAR") or ("model-mtp-4bit.safetensors" if os.environ.get("MTP_4BIT", "0") == "1" else "model-mtp-fixed.safetensors")
     _MTP4_GUARD = []
     for _f in ("model-mtp-fixed.safetensors", "model-mtp.safetensors", "model-mtp-4bit.safetensors", "model-mtp-8bit.safetensors"):
         if _f == _active:
@@ -103,7 +103,8 @@ def main():
         _use4 = _os.environ.get("MTP_4BIT", "0") == "1"
         _cand4 = _os.path.join(_d, "model-mtp-4bit.safetensors")
         _candf = _os.path.join(_d, "model-mtp-fixed.safetensors")
-        _side = _cand4 if (_use4 and _os.path.exists(_cand4)) else _candf
+        _cands = _os.path.join(_d, _os.environ.get("MTP_SIDECAR") or "model-mtp-fixed.safetensors")
+        _side = _cand4 if (_use4 and _os.path.exists(_cand4)) else (_cands if _os.path.exists(_cands) else _candf)
         _quant = _os.path.basename(_side).endswith("4bit.safetensors")
         if _quant:
             lm0.mtp = MTPModule(lm0.args, 1, quant=True)
@@ -258,6 +259,11 @@ def main():
         for _p in _MTP4_GUARD:
             os.rename(_p + ".disabled", _p)
         _MTP4_GUARD = None
+    try:
+        from mlx_lm.models import qwen3_5 as _q5
+        print("GDN_FUSE_CALLS:", _q5.GDN_FUSE_CALLS, flush=True)
+    except Exception as _e:
+        print("GDN_FUSE_CALLS: n/a", _e, flush=True)
     dt = time.time() - t1
     n = len(out)
     print(
