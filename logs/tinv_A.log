@@ -1,0 +1,9 @@
+Secondary CUID not available: AMDCUID support not enabled.
+[mlx-rocm] bound HIP device 0: gfx1201 (AMD Radeon RX 9070 XT) cus=32 warp=32 lds=64KB
+[mlx-rocm] gfx1201 native_wmma=1 cus=32 (reported=32) warp=32 low_cu=0 host_WARP_SIZE=32
+A row0 ssm=24298c097c756c31 conv=c5b2d85c6a68e788
+A row1 ssm=796d8ea9a6e61861 conv=2e8aff516709141d
+A row2 ssm=e9350d9fb9dc89c8 conv=4f9bb9f9c5d57e9c
+A row3 ssm=05d27b274dcd6509 conv=b6bea5269e63043d
+A TAPE_CALLS=24 FUSE_CALLS=0
+Warning: Resource leak detected by SharedSignalPool, 3360 Signals leaked.

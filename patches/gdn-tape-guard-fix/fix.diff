@@ -1,0 +1,39 @@
+--- patches/gdn-tape-guard-fix/gdn_tape_commit.py.stock	2026-11-02 11:24:32.219103733 +1100
++++ patches/gdn-tape-guard-fix/gdn_tape_commit.py.fixed	2026-11-02 11:24:32.087100833 +1100
+@@ -84,17 +84,20 @@
+     for i, c in gdn:
+         st, cst = tapes[i]
+         t = verify_rows
+-        hv = c[1].shape[0]
++        # t1280 fix: the live SSM state is [1, Hv, 128, 128] (batch-led);
++        # the head axis is shape[1], not shape[0].
++        exp_st = (t,) + c[1].shape[1:]
+         conv_dim = cst.shape[2]
+-        if st.shape != (t, hv) + S_HEAD or st.dtype != mx.float32:
++        if st.shape != exp_st or st.dtype != mx.float32:
+             raise TapeCommitError(
+                 f"layer {i} state_tape {st.shape}/{st.dtype} != "
+-                f"expected ({t}, {hv}) + {S_HEAD} f32")
++                f"expected {exp_st} f32")
+         if cst.shape != (t, 3, conv_dim) or cst.dtype != mx.bfloat16:
+             raise TapeCommitError(
+                 f"layer {i} conv_state_tape {cst.shape}/{cst.dtype} != "
+                 f"expected ({t}, 3, {conv_dim}) bf16")
+-        if c[1].shape[1:] != S_HEAD:
++        # t1280 fix: live state is batch-led [1, Hv, 128, 128].
++        if c[1].shape[2:] != S_HEAD or c[1].ndim != 4:
+             raise TapeCommitError(
+                 f"layer {i} live SSM shape {c[1].shape} tail != {S_HEAD}")
+     for i, c in gdn:
+@@ -114,8 +117,9 @@
+         row = keep - 1
+         for i, c in gdn:
+             st, cst = tapes[i]
+-            c[0] = cst[row]           # conv leaf -> tape row (lazy rebind)
+-            c[1] = st[row]            # SSM leaf  -> tape row (lazy rebind)
++            # t1280 fix: keep the batch axis of the live leaves.
++            c[0] = cst[row:row + 1]   # conv leaf -> tape row (lazy rebind)
++            c[1] = st[row:row + 1]    # SSM leaf  -> tape row (lazy rebind)
+             # c.lengths is unchanged (the GDN state is stateful, not
+             # length-indexed; the bench's save_gdn/restore_gdn restores
+             # lengths for symmetry, they are untouched here by design).
