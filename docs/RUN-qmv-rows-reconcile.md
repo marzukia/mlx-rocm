@@ -17,7 +17,7 @@ verifies the fix on the GPU.
 ## Guest state (already done, host-side)
 
 - Fixed kernel installed in the V2 build tree:
-  `/home/andryo/vendor-v2/mlx/backend/rocm/quantized/qmv_rows_msg_kernel.hip`
+  `vendor-v2/mlx/backend/rocm/quantized/qmv_rows_msg_kernel.hip` (guest path)
   md5 `3dc576ba9733b61415ea58587ae087c7`.
   Pre-fix backup: `qmv_rows_msg_kernel.hip.pre-wsfix` in the same directory.
 - `patches/qmv-rows-msg-kernel-wsfix.diff` = V2-kernel → fixed diff
@@ -50,10 +50,10 @@ verifies the fix on the GPU.
 Same provenance as the t1265 V2 wheel
 (`mlx-0.32.3.dev20261101+75ca881-cp314-cp314-linux_x86_64.whl`), rebuilt
 from the now-fixed tree. Build the wheel from
-`/home/andryo/vendor-v2` exactly as the t1265 V2 wheel was built
+`vendor-v2` (guest path) exactly as the t1265 V2 wheel was built
 (`python -m pip wheel . --no-deps -w <wheelout-v3>/` under the v2 venv;
 `-O3` build flags per `compile_commands.json` in the build tree), output to a
-FRESH directory (e.g. `/home/andryo/wheelout-v3/`) so the t1265 artifact is
+FRESH directory (e.g. `wheelout-v3/` on the guest) so the t1265 artifact is
 not clobbered. Install into a fresh venv (or the t1265 v2 venv after
 recording its current wheel name).
 

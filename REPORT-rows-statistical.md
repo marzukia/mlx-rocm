@@ -102,7 +102,72 @@ context accumulates rejected drafts and poisons subsequent drafts).
   (larger relative gain than greedy because the verify is a bigger share
   of the slower sampled step).
 
-## Bench table + position vs the 100+ tok/s target
+## CORRECTION (11-02 re-bench, canonical t1292 method) — op order: fix the
+benchmarks to match the existing baselines, do not vary the method
+
+The speed table in this report (50.58/50.89 tok/s, pair 62.09/61.57 ms,
+n_refwd 290/321, D3 −10.8 pp) came from `bench/mtp-bench-k3.py` — a new
+script **this task wrote itself** — and is **RETIRED**. Its B0 arm did not
+reproduce the t1292 baseline (50.58 / 62.09 ms / n_refwd 290 vs the
+established 69.48 / 45.20 ms / n_refwd 101) while its same-session verify
+wall matched (~25.5 vs 25.99 ms): the kernels are fine, the re-forward
+accounting differs between script generations. The canonical script
+(`mtp-bench-k3-tape.py`, the instrumented 128-verify A/B: 256-token
+budget, 128 verifies, A3 = tape + S4VA, md5 `2c2d6c90…` pinned source
+== guest) is the only method used for the numbers below; arm differences
+are env vars only.
+
+**B0 in-session reproduction of the t1292 baseline: PASS.** 69.95 tok/s
+(+0.67 % vs 69.48, inside the ~3 % bar), pair wall 44.90 ms (vs 45.20),
+verify 25.71 ms (vs 25.99), n_refwd 100 over 128 verifies (vs 101),
+`TAPE n_ok=128 n_fb=0`. The method is validated before R1 is trusted.
+
+### Canonical-method speed table (this wheel, `venv-rs`, 256-token budget,
+128 verifies per arm, 2 runs each, same session, `TAPE n_ok=128 n_fb=0`
+in all four runs)
+
+| | B0 (rows OFF = A3) | R1 (rows ON) | delta (run 1 / run 2) |
+|---|---|---|---|
+| tok/s | 69.95 / 69.72 | 75.00 / 74.98 | **+5.05 / +5.26 (+7.2 % / +7.5 %)** |
+| verify wall ms | 25.71 / 25.82 | 22.13 / 22.15 | −3.58 / −3.67 (−13.9 % / −14.2 %) |
+| refwd wall ms | 9.22 / 9.22 | 9.31 / 9.31 | +0.09 |
+| n_refwd (of 128) | 100 / 100 | 102 / 102 | +2 |
+| pair wall ms | 44.90 / 45.05 | 41.35 / 41.36 | **−3.55 / −3.69 (−7.9 % / −8.2 %)** |
+| D1 / D2 / D3 % | 70.3 / 62.2 / 50.0 | 68.8 / 60.2 / 49.1 | −1.5 / −2.0 / −0.9 pp |
+| t1292 A3 reference | 69.48 | — | — |
+
+Same-session noise floor (run 1 vs run 2, per arm): 0.03 % tok/s,
+0.11–0.15 ms wall, 0 pp acceptance — the deltas above are all well above
+noise. Vs the t1292 A3 baseline: B0 reproduces it (+0.67 %); R1 =
+**+7.9 % tok/s vs 69.48**, pair 41.35 ms vs 45.20 (−8.5 % vs reference).
+
+**Acceptance parity (canonical): PASS.** D deltas −1.5/−2.0/−0.9 pp with
+n_refwd 100 → 102: a small, direction-consistent ULP-jitter signature —
+materially milder than the retired script's −10.8 pp / +31 refwd
+(read that as a property of the retired script's re-forward accounting,
+not of the rows kernel). No novel degradation mode; FIRST20 bit-identical
+across arms.
+
+**Position vs the 100+ tok/s target: NOT MET, but the gap is ~10 ms, not
+~30.** R1 = 75.00 tok/s, pair 41.35 ms vs target pair ≤ 31.4 ms.
+Decomposition: verify 22.13 ms (rows −13.9 %) + single ≈ 9.68 ms +
+refwd 9.31 ms/verify-cycle (n_refwd 102/128). The remaining gap is the
+single-step + re-forward regime — out of scope for the rows branch.
+
+**Standing as-is (not re-run, unaffected by the method change):** the
+engagement evidence (1.58x at the K=3 verify shape) and the sampling gate
+(`mtp-sample-k3.py`: +5.3–5.8 % tok/s, distribution parity inside the
+plain path's seed-noise band, acceptance parity degenerate-PASS in both
+arms). The greedy first-divergence data point (@32, session-varied) is
+retired with the old script's numbers; under the canonical method FIRST20
+matches and the acceptance deltas above are the parity record.
+
+## Bench table + position vs the 100+ tok/s target (RETIRED — see CORRECTION above)
+
+The table below came from the self-written `bench/mtp-bench-k3.py`
+(re-forward accounting differs from the canonical t1292 method). It is
+retained for the record only; the CORRECTION section's canonical-method
+table replaces it.
 
 | config | tok/s | verify ms | pair ms | notes |
 |---|---|---|---|---|
@@ -110,35 +175,30 @@ context accumulates rejected drafts and poisons subsequent drafts).
 | B0 = A3 this session (rows OFF) | 50.58 / 50.39 | 25.46 / 25.66 | 62.09 / 62.32 | n_refwd 290, D3 50.0 % |
 | R1 = A3 + rows ON | 50.89 / 50.73 | 22.11 / 22.24 | 61.57 / 61.75 | n_refwd 321, D3 39.2 % |
 
-The cross-task delta vs t1292 (69.48 → ~50.6, pair 45.2 → 62.1,
-n_refwd 101 → 290) is a **config/session difference in the bench loop's
-re-forward accounting** (different script generation), not a wheel
-regression: same-session B0 is the valid baseline and it is clean
-(0 pp run-to-run variance).
-
-**Position vs the 100+ tok/s target: NOT MET.** R1 = 50.89 tok/s, pair
-61.57 ms vs target pair ≤ 31.4 ms. Decomposition of the pair wall:
-verify 22.11 ms (rows already −13.2 %) + single-step ≈ 9.7 ms +
-re-forward overhead (2.5 refwd/verify at D3 39.2 %). The verify lever is
-saturated by rows in this config; closing the remaining ~30 ms gap is the
-re-forward/single-step regime — out of scope for the rows branch.
-
-## Verdict
+## Verdict (re-derived on the canonical-method numbers)
 
 **PASS under the statistical bar; ship the gate (default off).**
 
+- B0 (this wheel, canonical method) **reproduces the t1292 A3 baseline**
+  (69.95 vs 69.48 tok/s, pair 44.90 vs 45.20 ms, n_refwd 100 vs 101,
+  `TAPE n_ok=128 n_fb=0`) — the method is validated in-session before R1
+  is trusted.
+- Rows ON (canonical, both runs above noise): verify **−13.9/−14.2 %**,
+  pair **−7.9/−8.2 %**, tok/s **+7.2/7.5 %** vs B0, **+7.9 %** vs the
+  69.48 baseline; n_refwd 100 → 102, D deltas −1.5/−2.0/−0.9 pp —
+  acceptance parity holds with a small ULP-jitter signature, FIRST20
+  bit-identical across arms. (The retired script's −13.2 % verify /
+  −0.8 % pair / D3 −10.8 pp numbers are superseded: the method, not the
+  kernel, was the difference.)
 - Engagement proven (1.58x at the K=3 verify shape, SASS-verified on the
-  installed .so).
-- Distribution parity: cross-arm token overlap inside the plain path's own
-  seed-noise band (PASS).
-- Acceptance parity: both arms, both greedy and sampled, differ only by the
-  documented ULP-jitter signature (PASS; the D3 −10.8 pp greedy cost is the
-  known 1–2 ULP argmax-flip effect, same class as t1297).
-- Greedy first-divergence @32 (data: session-varied, consistent with ULP
-  jitter; t1297: @172).
-- Rows ON: verify −13.2 %, pair −0.8/0.9 %, tok/s +0.6/+0.7 (greedy),
-  +5.3–5.8 % (sampled). 100+ tok/s target not met in this config (pair
-  wall gap is the refwd/single-step regime).
+  installed .so) — stands as-is.
+- Distribution parity (sampling gate): cross-arm token overlap inside the
+  plain path's own seed-noise band (PASS) — stands as-is; sampling
+  +5.3–5.8 % tok/s stands as-is.
+- 100+ tok/s target **not met** in this config: R1 = 75.00 tok/s,
+  pair 41.35 ms vs target pair ≤ 31.4 ms (gap ≈ 10 ms; the remainder is
+  the single-step + re-forward regime, out of scope for the rows
+  branch).
 - Gate `MLX_ROCM_QMV_ROWS` defaults OFF in the wheel; ON is opt-in.
 
 ## Operational notes
@@ -149,3 +209,9 @@ re-forward/single-step regime — out of scope for the rows branch.
 - Scripts uploaded to guest: `mtp-sample-k3.py`, `qmv_rows_engage.py`
   (bench `mtp-bench-k3.py` = t1292 script, unmodified). Logs
   `rs-B0b/rs-R1b/rs-samp-*/rs-s64-*.log` on guest.
+- 11-02 re-bench: canonical `mtp-bench-k3-tape.py` (md5 `2c2d6c90…`,
+  source == guest copy) + `gdn_tape_commit.py` (md5 `4a262a0d…`) in a
+  fresh guest dir; wheel `2442e063…` re-verified on the guest before
+  running; sidecar hash-pin (only `model-mtp.safetensors` active)
+  confirmed. Ran after t1305 reached terminal (02:54Z). Logs
+  `B0/R1/B0b/R1b.log` on guest; flock held per arm, released after each.
