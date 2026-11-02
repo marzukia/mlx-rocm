@@ -15,9 +15,22 @@
 // independent f32 accumulators (ILP = 2); the NEXT iteration's global data
 // is prefetched into registers while the current iteration's
 // LDS/fragment/mma work runs; both x and the packed 4-bit tile are 16B
-// vector loads). What changes: WAVES waves (1/2/4, template) are grouped
-// in ONE block tiling 16*WAVES consecutive n-columns, so the workgroup
+// vector loads). WAVES waves (1/2/4, template) are grouped in ONE block
+// tiling 16*WAVES consecutive n-columns, so the workgroup
 // interleave/granularity matches the rows kernel's multi-wave blocks.
+//
+// v3 (the in-stream fix): the per-tile math is identical, but the two
+// __syncthreads per 32-k-chunk are removed (they were the in-stream
+// penalty: t1347 fwd4 showed a monotonic +13/+16/+23ms scaling with 1/2/4
+// waves per block — block-wide barrier serialization under the GDN+SDPA
+// co-schedule) and the Cs LDS round-trip is replaced by a direct
+// accumulator->global store (the acc fragment layout lane L, element e ->
+// row 8*(L>>4)+e, col L&15 puts all M<=4 output rows on lanes 0..15
+// elements 0..M-1, an independent per-thread store). The A/B LDS is
+// per-wave (indexed by the wave id g) and a wave is a SIMD lockstep
+// unit, so no inter-thread ordering is needed: the next k-chunk's
+// staging writes A[g]/B[g] only after this wave's own fragment loads
+// complete (program order).
 // Wave g (threadIdx.x / 32) owns n-tile
 // blockIdx.x * 16*WAVES + g*16; the per-tile math, fp16 dequant rounding,
 // and f32-accumulate wmma are identical to v1.
@@ -81,7 +94,6 @@ qmv_wmma_m4_kernel(
 
   __shared__ __half A[WAVES][2][16][16];  // x tiles (g, t, m, k)
   __shared__ __half B[WAVES][2][16][16];  // w dequant tiles (g, t, n, k)
-  __shared__ float Cs[WAVES][16][16];
 
   rocwmma::fragment<
       rocwmma::matrix_a, 16, 16, 16, __half, rocwmma::row_major>
@@ -199,7 +211,6 @@ qmv_wmma_m4_kernel(
         B[g][1][n][8 + j] = bval(wv.y, j, s1, b1);
       }
     }
-    __syncthreads();
 
     // 2. Fragment loads (LDS -> registers).
     rocwmma::load_matrix_sync(fA[0], &A[g][0][0][0], 16);
@@ -227,7 +238,6 @@ qmv_wmma_m4_kernel(
     // 4. Two independent mma chains (ILP = 2).
     rocwmma::mma_sync(fC[0], fA[0], fB[0], fC[0]);
     rocwmma::mma_sync(fC[1], fA[1], fB[1], fC[1]);
-    __syncthreads();
   }
 
   // Tail: K % 32 != 0 -> one final 16-wide tile (K % 16 == 0 at dispatch).
@@ -248,27 +258,25 @@ qmv_wmma_m4_kernel(
     xv(xvt.y, 0, 2);
     xv(xvt.z, 0, 4);
     xv(xvt.w, 0, 6);
-    __syncthreads();
     rocwmma::load_matrix_sync(fA[0], &A[g][0][0][0], 16);
     rocwmma::load_matrix_sync(fB[0], &B[g][0][0][0], 16);
     rocwmma::mma_sync(fC[0], fA[0], fB[0], fC[0]);
-    __syncthreads();
   }
 
-  // Merge the two accumulators, f32 -> LDS -> T-convert -> global.
+  // Merge the two accumulators, direct f32 -> T-convert -> global.
+  // True 16x16x16 f32 acc fragment layout (probe-verified on gfx1201):
+  // lane L, element e -> row 8*(L>>4)+e, col L&15 (a lane owns 8
+  // consecutive rows of one column). For M <= 4 only rows 0..3 (lanes
+  // 0..15, elements 0..M-1) are valid — direct store, no LDS, no barrier:
+  // the A/B LDS is per-wave (indexed by g) and the wave is a SIMD
+  // lockstep unit, so no inter-thread ordering is needed.
   for (int e = 0; e < fC[0].num_elements; ++e)
     fC[0].x[e] += fC[1].x[e];
-  rocwmma::store_matrix_sync(&Cs[g][0][0], fC[0], 16, rocwmma::mem_row_major);
-  __syncthreads();
+  if (lane < 16) {
 #pragma unroll
-  for (int e = 0; e < 8; ++e) {
-    // True 16x16x16 f32 acc fragment layout (probe-verified on gfx1201):
-    // lane L, element e -> row 8*(L>>4)+e, col L&15 (a lane owns 8
-    // consecutive rows of one column).
-    const int m = 8 * (lane >> 4) + e;
-    const int c = lane & 15;
-    if (m < M)
-      out[static_cast<size_t>(m) * N + n0 + c] = static_cast<T>(Cs[g][m][c]);
+    for (int e = 0; e < 8; ++e)
+      if (e < M)
+        out[static_cast<size_t>(e) * N + n0 + lane] = static_cast<T>(fC[0].x[e]);
   }
 #endif
 }
