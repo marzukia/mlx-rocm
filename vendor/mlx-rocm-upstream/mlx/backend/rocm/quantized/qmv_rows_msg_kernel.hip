@@ -54,6 +54,31 @@
 // MLX_ROCM_QMV_ROWS=1 (DEFAULT OFF — zero behavior change when unset);
 // band floor: MLX_ROCM_QMV_ROWS_MIN_N (default 16384). M = 1 (eager
 // decode) and M = 5..8 keep the per-row qmv_wide path.
+//
+// t1354 tuning knobs (CPU-side dev round; all DEFAULT OFF, all
+// bit-identical to the base kernel — the unit gate is maxdiff 0.0, not the
+// 1e-2 WMMA statistical bar): the M=4 verify GEMM excess is
+// scalar-FMA-throughput / load-latency bound (t1334 diagnosis; the
+// decode-hoist ALU cut regressed, proving the decode ALU is not the wall).
+//   * MLX_QMV_ROWS_WS=32: the ws32 variant — the 4-column weight tiles are
+//     pre-decoded ONCE per (k-tile) into a wdec[BN][WPER] array (128
+//     floats at 4-bit) before the row loop; the row loop shares ONE x-tile
+//     load across all columns (the x-re-read per column that made the t1334
+//     hoist a regression is NOT present here). Cuts the weight-decode ALU
+//     per (lane, k-tile) from 512 to 128 at the cost of ~128 VGPRs of
+//     wdec (register/occupancy A/B is the point of the knob).
+//   * MLX_QMV_ROWS_KBLOCK=2: the kb2 variant — each lane step processes TWO
+//     k-tiles (unrolled), so both tiles' 128-bit weight loads are visible
+//     to the scheduler before the FMA of the first — 2x the independent
+//     FMA chains per iteration to hide weight/x load latency. The k
+//     sequence and the per-output accumulation order are UNCHANGED.
+//   * MLX_QMV_ROWS_WARPS=4: 4-wave (128-thread) blocks instead of 6 (192):
+//     2 blocks = 8 waves fills the 8 wave slots per CU exactly instead of
+//     6 + 2 loose. Per-wave math is unchanged. `warps` is a RUNTIME kernel
+//     argument (default 6): the col0 math (blockIdx.x * (warps*BN) + wid*BN)
+//     costs one IADD outside the k-loop; no extra instantiations.
+// The three knobs are orthogonal; the dispatch applies WS, else KBLOCK
+// (WS wins if both are set), WARPS on all variants.
 namespace mlx::core::rocm {
 
 template <typename T, typename ScaleT, int GROUP_SIZE, int BITS>
@@ -67,7 +92,8 @@ qmv_rows_msg_kernel(
     int M,
     int N,
     int K,
-    bool has_bias) {
+    bool has_bias,
+    int warps = 6) {
   constexpr int MAXM = 4;
   constexpr int BN = 4;
   constexpr int WARPS = 6;
@@ -80,7 +106,7 @@ qmv_rows_msg_kernel(
 
   const int lane = threadIdx.x & 31;
   const int wid = threadIdx.x >> 5;
-  const int col0 = blockIdx.x * (WARPS * BN) + wid * BN;
+  const int col0 = blockIdx.x * (warps * BN) + wid * BN;
 
   const int ng = (K + GROUP_SIZE - 1) / GROUP_SIZE;
   const int row_bytes = (K * BITS) / 8;
@@ -176,6 +202,271 @@ qmv_rows_msg_kernel(
     }
   }
   // Same 5-stage shfl_down reduction + T cast as the per-row kernel.
+  for (int m = 0; m < MAXM; ++m) {
+    if (m >= M)
+      break;
+    for (int c = 0; c < BN; ++c) {
+      const int col = col0 + c;
+      if (col >= N)
+        continue;
+      float a = acc[m][c];
+#pragma unroll
+      for (int o = 16; o > 0; o >>= 1)
+        a += __shfl_down(a, o);
+      if (lane == 0)
+        out[static_cast<size_t>(m) * N + col] = static_cast<T>(a);
+    }
+  }
+}
+
+// t1354: MLX_QMV_ROWS_WS=32 — pre-decode the 4-column weight tiles ONCE per
+// (k-tile) into wdec[BN][WPER], then run the same per-row math (shared
+// x-tile, identical q-major/j-minor FMA order, identical s*la + b*lx
+// update) against the pre-decoded values. The decode chain is bit-identical
+// to the base kernel's inline ws[4] decode (same shift+mask+cvt per value),
+// so each output row is bit-identical to the base kernel. Weight-decode ALU
+// per (lane, k-tile) at M=4: 512 -> 128. Register cost: wdec = BN*WPER
+// floats (128 at 4-bit, 64 at 8-bit) — the occupancy A/B is the point.
+// x is loaded once per (row, k-tile) and shared across all columns (NOT the
+// t1334 hoist shape, which re-read x per column and regressed).
+template <typename T, typename ScaleT, int GROUP_SIZE, int BITS>
+__global__ void __launch_bounds__(192)
+qmv_rows_msg_ws32_kernel(
+    const T* __restrict__ x,
+    const uint8_t* __restrict__ w,
+    const ScaleT* __restrict__ scales,
+    const ScaleT* __restrict__ biases,
+    T* __restrict__ out,
+    int M,
+    int N,
+    int K,
+    bool has_bias,
+    int warps = 6) {
+  constexpr int MAXM = 4;
+  constexpr int BN = 4;
+  constexpr int WPER = 128 / BITS;
+  constexpr int ES = (int)sizeof(T);
+  constexpr int EPU = 16 / ES;
+  constexpr int NLOAD = WPER * ES / 16;
+
+  const int lane = threadIdx.x & 31;
+  const int wid = threadIdx.x >> 5;
+  const int col0 = blockIdx.x * (warps * BN) + wid * BN;
+
+  const int ng = (K + GROUP_SIZE - 1) / GROUP_SIZE;
+  const int row_bytes = (K * BITS) / 8;
+
+  float acc[MAXM][BN];
+#pragma unroll
+  for (int m = 0; m < MAXM; ++m)
+#pragma unroll
+    for (int c = 0; c < BN; ++c)
+      acc[m][c] = 0.0f;
+
+  for (int k = lane * WPER; k < K; k += 32 * WPER) {
+    const int g = k / GROUP_SIZE;
+    // Pre-decode all BN columns for this k-tile: 128 (4-bit) / 64 (8-bit)
+    // shift+mask+cvt ops per (lane, k-tile) regardless of M.
+    float wdec[BN][WPER];
+    float sc[BN];
+    float bc[BN];
+#pragma unroll
+    for (int c = 0; c < BN; ++c) {
+      const int col = col0 + c;
+      sc[c] = 0.0f;
+      bc[c] = 0.0f;
+      if (col >= N)
+        continue;
+      sc[c] = load_scale_value<ScaleT, GROUP_SIZE, true>(
+          scales[static_cast<size_t>(col) * ng + g]);
+      bc[c] = has_bias
+          ? static_cast<float>(biases[static_cast<size_t>(col) * ng + g])
+          : 0.0f;
+      const uint4 wv = *reinterpret_cast<const uint4*>(
+          &w[static_cast<size_t>(col) * row_bytes + (k * BITS) / 8]);
+      const uint32_t* wp = reinterpret_cast<const uint32_t*>(&wv);
+      if constexpr (BITS == 4) {
+#pragma unroll
+        for (int q = 0; q < 4; ++q)
+#pragma unroll
+          for (int j = 0; j < 8; ++j)
+            wdec[c][q * 8 + j] =
+                static_cast<float>((wp[q] >> (4 * j)) & 0xF);
+      } else {
+#pragma unroll
+        for (int q = 0; q < 4; ++q)
+#pragma unroll
+          for (int j = 0; j < 4; ++j)
+            wdec[c][q * 4 + j] =
+                static_cast<float>((wp[q] >> (8 * j)) & 0xFF);
+      }
+    }
+    // Row loop: the base kernel's per-row math verbatim (x-tile loaded once
+    // per row, shared across all columns; lx chain and FMA order unchanged).
+    for (int m = 0; m < MAXM; ++m) {
+      if (m >= M)
+        break;
+      float xn[WPER];
+      {
+        const T* xp = &x[static_cast<size_t>(m) * K + k];
+        uint4 v4[8];
+#pragma unroll
+        for (int q = 0; q < NLOAD; ++q)
+          v4[q] = *reinterpret_cast<const uint4*>(xp + q * EPU);
+        const T* px = reinterpret_cast<const T*>(v4);
+#pragma unroll
+        for (int j = 0; j < WPER; ++j)
+          xn[j] = static_cast<float>(px[j]);
+      }
+      float lx = 0.0f;
+#pragma unroll
+      for (int j = 0; j < WPER; ++j)
+        lx += xn[j];
+      for (int c = 0; c < BN; ++c) {
+        const int col = col0 + c;
+        if (col >= N)
+          continue;
+        float la = 0.0f;
+        if constexpr (BITS == 4) {
+#pragma unroll
+          for (int q = 0; q < 4; ++q)
+#pragma unroll
+            for (int j = 0; j < 8; ++j)
+              la += xn[q * 8 + j] * wdec[c][q * 8 + j];
+        } else {
+#pragma unroll
+          for (int q = 0; q < 4; ++q)
+#pragma unroll
+            for (int j = 0; j < 4; ++j)
+              la += xn[q * 4 + j] * wdec[c][q * 4 + j];
+        }
+        acc[m][c] += sc[c] * la + bc[c] * lx;
+      }
+    }
+  }
+  for (int m = 0; m < MAXM; ++m) {
+    if (m >= M)
+      break;
+    for (int c = 0; c < BN; ++c) {
+      const int col = col0 + c;
+      if (col >= N)
+        continue;
+      float a = acc[m][c];
+#pragma unroll
+      for (int o = 16; o > 0; o >>= 1)
+        a += __shfl_down(a, o);
+      if (lane == 0)
+        out[static_cast<size_t>(m) * N + col] = static_cast<T>(a);
+    }
+  }
+}
+
+// t1354: MLX_QMV_ROWS_KBLOCK=2 — each lane step processes TWO k-tiles
+// (unrolled) — the lane's tiles 2i and 2i+1 of the base k sequence — so
+// both tiles' 128-bit weight loads (and x loads) are visible to the
+// scheduler before the FMA of the first tile: 2x the independent FMA
+// chains per iteration to hide weight/x load latency behind the FMA pipe.
+// The per-tile arithmetic, the k sequence (k, k+32*WPER, k+64*WPER, ...)
+// and the per-output accumulation order are IDENTICAL to the base kernel,
+// so the output is bit-identical. The per-tile boundary guard (k >= K) makes
+// no new shape constraint (K % 32 == 0 suffices, as in the base).
+template <typename T, typename ScaleT, int GROUP_SIZE, int BITS>
+__global__ void __launch_bounds__(192)
+qmv_rows_msg_kb2_kernel(
+    const T* __restrict__ x,
+    const uint8_t* __restrict__ w,
+    const ScaleT* __restrict__ scales,
+    const ScaleT* __restrict__ biases,
+    T* __restrict__ out,
+    int M,
+    int N,
+    int K,
+    bool has_bias,
+    int warps = 6) {
+  constexpr int MAXM = 4;
+  constexpr int BN = 4;
+  constexpr int WPER = 128 / BITS;
+  constexpr int ES = (int)sizeof(T);
+  constexpr int EPU = 16 / ES;
+  constexpr int NLOAD = WPER * ES / 16;
+
+  const int lane = threadIdx.x & 31;
+  const int wid = threadIdx.x >> 5;
+  const int col0 = blockIdx.x * (warps * BN) + wid * BN;
+
+  const int ng = (K + GROUP_SIZE - 1) / GROUP_SIZE;
+  const int row_bytes = (K * BITS) / 8;
+
+  float acc[MAXM][BN];
+#pragma unroll
+  for (int m = 0; m < MAXM; ++m)
+#pragma unroll
+    for (int c = 0; c < BN; ++c)
+      acc[m][c] = 0.0f;
+
+  for (int k0 = lane * WPER; k0 < K; k0 += 2 * 32 * WPER) {
+#pragma unroll
+    for (int t = 0; t < 2; ++t) {
+      const int k = k0 + t * 32 * WPER;
+      if (k >= K)
+        continue;
+      const int g = k / GROUP_SIZE;
+      for (int m = 0; m < MAXM; ++m) {
+        if (m >= M)
+          break;
+        float xn[WPER];
+        {
+          const T* xp = &x[static_cast<size_t>(m) * K + k];
+          uint4 v4[8];
+#pragma unroll
+          for (int q = 0; q < NLOAD; ++q)
+            v4[q] = *reinterpret_cast<const uint4*>(xp + q * EPU);
+          const T* px = reinterpret_cast<const T*>(v4);
+#pragma unroll
+          for (int j = 0; j < WPER; ++j)
+            xn[j] = static_cast<float>(px[j]);
+        }
+        float lx = 0.0f;
+#pragma unroll
+        for (int j = 0; j < WPER; ++j)
+          lx += xn[j];
+        for (int c = 0; c < BN; ++c) {
+          const int col = col0 + c;
+          if (col >= N)
+            continue;
+          const float s = load_scale_value<ScaleT, GROUP_SIZE, true>(
+              scales[static_cast<size_t>(col) * ng + g]);
+          const float b = has_bias
+              ? static_cast<float>(biases[static_cast<size_t>(col) * ng + g])
+              : 0.0f;
+          const uint4 wv = *reinterpret_cast<const uint4*>(
+              &w[static_cast<size_t>(col) * row_bytes + (k * BITS) / 8]);
+          const uint32_t* wp = reinterpret_cast<const uint32_t*>(&wv);
+          uint32_t ws[4];
+#pragma unroll
+          for (int q = 0; q < 4; ++q)
+            ws[q] = wp[q];
+          float la = 0.0f;
+          if constexpr (BITS == 4) {
+#pragma unroll
+            for (int q = 0; q < 4; ++q)
+#pragma unroll
+              for (int j = 0; j < 8; ++j)
+                la += xn[q * 8 + j] *
+                    static_cast<float>((ws[q] >> (4 * j)) & 0xF);
+          } else {
+#pragma unroll
+            for (int q = 0; q < 4; ++q)
+#pragma unroll
+              for (int j = 0; j < 4; ++j)
+                la += xn[q * 4 + j] *
+                    static_cast<float>((ws[q] >> (8 * j)) & 0xFF);
+          }
+          acc[m][c] += s * la + b * lx;
+        }
+      }
+    }
+  }
   for (int m = 0; m < MAXM; ++m) {
     if (m >= M)
       break;
