@@ -79,6 +79,12 @@ extend-exclude = [
     "scripts/diag-s62-m5.py",
     "scripts/diag-s62-m7.py",
     "scripts/diag-s62-sdpa.py",
+    # QMV-rows bit-exact gate harness (t1305): cmp.py = the disassembly-gate
+    # comparator (dataflow-tracked FMA-order check), probe2.py = the guest
+    # bit-exact A/B probe (probe 2, both shape configs); kept byte-identical to
+    # as-run evidence; excluded from lint + format.
+    "bench/qmv_rows_bitexact_cmp.py",
+    "bench/qmv_rows_bitexact_probe2.py",
 ]
 
 [tool.ruff.lint]
