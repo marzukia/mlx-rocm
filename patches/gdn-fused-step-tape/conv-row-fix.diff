@@ -1,0 +1,55 @@
+--- a/mlx/backend/rocm/gdn_fused_step_tape.hip
++++ b/mlx/backend/rocm/gdn_fused_step_tape.hip
+@@ -140,18 +140,21 @@
+ // Conv-window tap selection (NO arithmetic — a pure index select over the
+ // input conv_state rows and the raw rows, mirroring the phase-1 window
+ // taps): tap `idx` (0-based into E = [cs0, cs1, cs2, raw0..raw3]) of the
+-// channel at `ch` (the raw-side channel offset is the caller's base).
++// channels: `raw_ch` into the raw array, `cs_ch` into the conv_state
++// (they differ for the k/v channel blocks: conv channel = raw channel +
++// the block's conv offset, e.g. 2*key_dim for v).
+ template <typename T>
+ __device__ __forceinline__ T gdnt_cs_tap(
+     const T* cs,
+     const T* raw,
+     int raw_dim,
+-    int ch,
++    int raw_ch,
++    int cs_ch,
+     int idx,
+     int conv_dim) {
+   return (idx <= 2)
+-      ? cs[idx * conv_dim + ch]
+-      : raw[(idx - 3) * raw_dim + ch];
++      ? cs[idx * conv_dim + cs_ch]
++      : raw[(idx - 3) * raw_dim + raw_ch];
+ }
+ 
+ // ---- The fused decode/verify step + per-row state tapes: one block per
+@@ -259,7 +262,7 @@
+       for (int j = 0; j < 3; ++j) {
+         int idx = t + 1 + j;
+         conv_state_tape[((size_t)t * 3 + j) * conv_dim + cv] =
+-            gdnt_cs_tap(conv_state, v_raw, value_dim, vch, idx, conv_dim);
++            gdnt_cs_tap(conv_state, v_raw, value_dim, vch, cv, idx, conv_dim);
+       }
+ 
+       int ck = key_dim + hk * head_dim + tid;
+@@ -285,7 +288,7 @@
+       for (int j = 0; j < 3; ++j) {
+         int idx = t + 1 + j;
+         conv_state_tape[((size_t)t * 3 + j) * conv_dim + ck] =
+-            gdnt_cs_tap(conv_state, k_raw, key_dim, kch, idx, conv_dim);
++            gdnt_cs_tap(conv_state, k_raw, key_dim, kch, ck, idx, conv_dim);
+       }
+     } else {
+       int qi = tid - head_dim;
+@@ -312,7 +315,7 @@
+       for (int j = 0; j < 3; ++j) {
+         int idx = t + 1 + j;
+         conv_state_tape[((size_t)t * 3 + j) * conv_dim + cq] =
+-            gdnt_cs_tap(conv_state, q_raw, key_dim, qch, idx, conv_dim);
++            gdnt_cs_tap(conv_state, q_raw, key_dim, qch, cq, idx, conv_dim);
+       }
+     }
+     __syncthreads();

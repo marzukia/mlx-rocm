@@ -1,0 +1,29 @@
+PRE-FILE RECONSTRUCTED
+--- a/mlx_lm/models/qwen3_5.py
++++ b/mlx_lm/models/qwen3_5.py
+@@ -236,9 +236,14 @@
+         # TAPE_BRANCH_PATCH: gdn_fused_step_tape for S<=4 (emits per-row state
+         # tapes; MLX_ROCM_GDN_TAPE=1, DEFAULT OFF -> zero behavior change). Runs
+         # before the F-branch so the tape op (a superset) is used when selected.
++        # STATE_NONE_GUARD: the fused/tape op pybinds take a non-optional
++        # state; on the first S<=4 forward of a fresh cache (state is
++        # None) fall through to the default chain (which handles a None
++        # state) instead of crashing on the pybind conversion.
++        _state = cache[1] if cache is not None else None
+         if (os.environ.get("MLX_ROCM_GDN_TAPE", "0") == "1"
+                 and os.environ.get("MLX_ROCM_GDN_FUSE", "0") == "1"
+-                and S <= 4 and B == 1):
++                and S <= 4 and B == 1 and _state is not None):
+             global GDN_TAPE_CALLS
+             GDN_TAPE_CALLS += 1
+             q3 = qkv[:, :, : self.key_dim]
+@@ -265,7 +270,8 @@
+                 out = mx.distributed.all_sum(out, group=self.sharding_group)
+             return out
+         # FUSE_BRANCH_PATCH: single gdn_fused_step for S<=4 decode/verify (81-build F-branch port, T=1..4 kernel)
+-        if os.environ.get("MLX_ROCM_GDN_FUSE", "0") == "1" and S <= 4 and B == 1:
++        if (os.environ.get("MLX_ROCM_GDN_FUSE", "0") == "1" and S <= 4
++                and B == 1 and _state is not None):
+             global GDN_FUSE_CALLS
+             GDN_FUSE_CALLS += 1
+             q3 = qkv[:, :, : self.key_dim]

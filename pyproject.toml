@@ -41,6 +41,11 @@ target-version = "py311"
 # K=3 arm, t1224/t1225); kept byte-identical to as-run evidence; excluded.
 extend-exclude = [
     "np-rca-*.py",
+    # gpu-verify2 as-run gate/bench scripts (this round's G2 kernel gate + the
+    # instrumented K=3 tape bench, run on guest-a): kept byte-identical to
+    # as-run evidence; excluded from lint + format.
+    "test_s4va.py",
+    "mtp-bench-k3-tape.py",
     "bench/mtp-bench3.py",
     "bench/mtp-bench3-side.py",
     "bench/mtp-bench5.py",
