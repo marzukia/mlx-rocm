@@ -35,7 +35,10 @@ line-length = 120
 target-version = "py311"
 # np-rca-*.py = one-off RCA diagnostic probes (run-605/run-606, MTP norms fix).
 # Kept byte-identical to as-run evidence; excluded from lint + format.
-# bench/mtp-bench{3,5,6}.py, bench/mtp-bench3-side.py + bench/g1-t3-parts.py = as-run guest bench harness (run-612/run-631, audit run-638; mtp-bench3-side.py = the as-run fused-arm bench of the PR3-HYBRID 80.93 tok/s wheel; mtp-bench6.py = the K=3 arm, t1224/t1225); kept byte-identical to as-run evidence; excluded.
+# bench/mtp-bench{3,5,6}.py, bench/mtp-bench3-side.py + bench/g1-t3-parts.py = as-run
+# guest bench harness (run-612/run-631, audit run-638; mtp-bench3-side.py = the
+# as-run fused-arm bench of the PR3-HYBRID 80.93 tok/s wheel; mtp-bench6.py = the
+# K=3 arm, t1224/t1225); kept byte-identical to as-run evidence; excluded.
 extend-exclude = [
     "np-rca-*.py",
     "bench/mtp-bench3.py",
@@ -43,7 +46,8 @@ extend-exclude = [
     "bench/mtp-bench5.py",
     "bench/mtp-bench6.py",
     "bench/g1-t3-parts.py",
-    # T=2 fused-kernel development diagnostics (guest bisect/probe runs): kept as as-run evidence; excluded from lint + format.
+    # T=2 fused-kernel development diagnostics (guest bisect/probe runs): kept as
+    # as-run evidence; excluded from lint + format.
     "bench/component_check.py",
     "bench/conv_fma_check.py",
     "bench/dbg_cmp.py",

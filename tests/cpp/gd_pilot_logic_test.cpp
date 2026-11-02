@@ -1,4 +1,8 @@
-// Hermetic unit tests for the graph decode pilot state machine (vendor/mlx-rocm-upstream/mlx/backend/rocm/graph_decode_pilot_logic.h). No GPU, no HIP: plain C++ main with checks. Driven by tests/test_gd_pilot_logic.py (compile with the system C++ compiler, run, expect exit 0).
+// Hermetic unit tests for the graph decode pilot state machine
+// (vendor/mlx-rocm-upstream/mlx/backend/rocm/graph_decode_pilot_logic.h).
+// No GPU, no HIP: plain C++ main with checks. Driven by
+// tests/test_gd_pilot_logic.py (compile with the system C++ compiler,
+// run, expect exit 0).
 #include "graph_decode_pilot_logic.h"
 #include <cstdio>
 #include <string>
@@ -94,14 +98,16 @@ static void test_kind_gating() {
   r.ref_names = {"Gather", "Squeeze"};
   CHECK(r.first_op("Gather", false, true) == GdPilotLogic::Kind::Replay);
   CHECK(!r.replay_armed);  // consumed by this step
-  // The micro-step trap: a matching op NAME without the 2-D first input (the lm-head weights gather) must NOT replay.
+  // The micro-step trap: a matching op NAME without the 2-D first input
+  // (the lm-head weights gather) must NOT replay.
   GdPilotLogic r2 = armed_capture();
   r2.arm_replay(1);
   r2.ref_names = {"Gather", "Squeeze"};
   CHECK(r2.first_op("Gather", false, /*embedding_lookup=*/false) ==
         GdPilotLogic::Kind::Eager);
   CHECK(r2.replay_armed);  // the arm is NOT consumed
-  // A non-matching first op name runs eager and keeps the flags (the candidate step still captures next).
+  // A non-matching first op name runs eager and keeps the flags
+  // (the candidate step still captures next).
   GdPilotLogic r3 = armed_capture();
   CHECK(r3.first_op("Add", false, true) == GdPilotLogic::Kind::Eager);
   CHECK(r3.next_capture);
@@ -109,7 +115,8 @@ static void test_kind_gating() {
   // A capture-armed session captures the matching candidate step.
   GdPilotLogic c = armed_capture();
   CHECK(c.first_op("Gather", false, false) == GdPilotLogic::Kind::Capture);
-  // A replay arm without an active arena stays eager (the capture path is the one that activates the arena).
+  // A replay arm without an active arena stays eager (the capture path
+  // is the one that activates the arena).
   GdPilotLogic i;
   i.active = false;
   i.replay_armed = true;
@@ -171,7 +178,10 @@ static void test_step_end() {
   g.ref_names = {"Gather"};
   g.first_op("Gather", false, true);
   CHECK(g.replay_end(1740, true) == GdPilotLogic::ReplayEnd::GrowArena);
-  // F5: a DIVERGED step discards (no launch) — the graph's node sequence is stale, and launching it would re-write the persistent state buffers after the eager suffix ran on the suppressed prefix's stale intermediates.
+  // F5: a DIVERGED step discards (no launch) — the graph's node
+  // sequence is stale, and launching it would re-write the persistent
+  // state buffers after the eager suffix ran on the suppressed
+  // prefix's stale intermediates.
   GdPilotLogic d = armed_capture();
   d.arm_replay(0);
   d.ref_names = {"Gather", "MatMul"};
@@ -179,7 +189,9 @@ static void test_step_end() {
   d.op("Concatenate");  // diverge
   CHECK(d.step_diverged);
   CHECK(d.replay_end(1740, false) == GdPilotLogic::ReplayEnd::Discard);
-  // F6: a BIG step discards (no launch) — its per-op launches were suppressed for the whole step, and the smaller cached graph would never compute this step's real outputs.
+  // F6: a BIG step discards (no launch) — its per-op launches were
+  // suppressed for the whole step, and the smaller cached graph would
+  // never compute this step's real outputs.
   GdPilotLogic b = armed_capture();
   b.arm_replay(0);
   b.ref_names = {"Gather"};

@@ -76,7 +76,8 @@ struct GraphDecodePilot : public GdPilotLogic {
   long floor_incarnation{-1};  // incarnation in which the floor was frozen
   long log_n{0};
 
-  // --- Exec-cache replay: capture once per shape, then replay the cached graph (hipGraphLaunch) instead of re-capturing every step.
+  // --- Exec-cache replay: capture once per shape, then replay the
+  // cached graph (hipGraphLaunch) instead of re-capturing every step.
   std::vector<std::string> capture_names;  // names recorded during a capture
   void* capture_slot_data[5]{nullptr};  // slot VAs baked into the exec
   // Per-step CPU cost of the replay path (first op -> graph launch).
@@ -143,7 +144,9 @@ void gd_tear_down(GraphDecodePilot& p) {
   p.arena_realloc = true;  // also ends an idle arena from a prior capture
 }
 
-// Shared arena setup for capture AND replay steps: deferred arena teardown, arena begin/reset, floor (re)freeze, decode mode on. Returns false when the step must run eager (arena setup failed).
+// Shared arena setup for capture AND replay steps: deferred arena
+// teardown, arena begin/reset, floor (re)freeze, decode mode on.
+// Returns false when the step must run eager (arena setup failed).
 bool gd_step_prepare(GraphDecodePilot& p, Stream s) {
   auto& enc = rocm::get_command_encoder(s);
   auto stream = static_cast<hipStream_t>(enc.stream());
@@ -205,7 +208,8 @@ bool gd_step_prepare(GraphDecodePilot& p, Stream s) {
     // reuse.
     rocm::allocator().decode_arena_freeze_floor();
   }
-  // Reserve the slot region (5 wrappers: value slots 0-3 + zero slot) so capture and replay steps advance the offset identically: a capture step allocates the slots (bumping the offset), a replay step reuses them (no bump) — reserving in both keeps the step's re-allocations at identical relative addresses.
+  // Reserve the slot region (5 wrappers: value slots 0-3 + zero slot)
+  // so capture and replay steps advance the offset identically: a capture step allocates the slots (bumping the offset), a replay step reuses them (no bump) — reserving in both keeps the step's re-allocations at identical relative addresses.
   rocm::allocator().decode_arena_reserve_wrappers(5);
   // Pre-allocate the value-slot device buffers (arena bump, no hip calls) and their pinned host buffers BEFORE the capture window: hipHostMalloc during a capture invalidates it on ROCm 10.1 (observed: first capture step died at the first slot use, the next launch failing with hipErrorStreamCaptureInvalidated).
   for (int i = 0; i < 4; ++i) {
@@ -291,7 +295,8 @@ bool gd_step_is_big(const array& arr) {
   return false;
 }
 
-// Last op of a step (the "Synchronize" primitive of every eval burst). Ends the capture (if this step was captured), validates the shape, and advances the arming state machine for the next step.
+// Last op of a step (the "Synchronize" primitive of every eval burst).
+// Ends the capture (if this step was captured), validates the shape, and advances the arming state machine for the next step.
 void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
   auto& enc = rocm::get_command_encoder(s);
   const bool big = ops >= p.big_ops;
@@ -493,7 +498,9 @@ bool gd_step_is_embedding_lookup(const array& arr) {
   return ins.size() > 0 && ins[0].ndim() == 2;
 }
 
-// Each op of a step (non-Synchronize evals on the default stream). The first op of a step starts the capture (or the replay, where the step's per-op launches are suppressed and the cached exec is launched at step end); every op of a replay step is validated against the captured op-name sequence (a KVCache resize inserts extra ops). next_capture stays true for the whole step (it is only cleared at step end / on a begin failure), so guard on step_ops: re-beginning per op would discard the partial capture on every op (decode_capture_begin's defensive end+discard) and the recorded step would end up 0 nodes.
+// Each op of a step (non-Synchronize evals on the default stream). The
+// first op of a step starts the capture (or the replay, where the step's
+// per-op launches are suppressed and the cached exec is launched at step end); every op of a replay step is validated against the captured op-name sequence (a KVCache resize inserts extra ops). next_capture stays true for the whole step (it is only cleared at step end / on a begin failure), so guard on step_ops: re-beginning per op would discard the partial capture on every op (decode_capture_begin's defensive end+discard) and the recorded step would end up 0 nodes.
 void gd_on_op(GraphDecodePilot& p, const array& arr, Stream s) {
   const std::string name = arr.primitive().name();
   if (p.step_ops == 0) {

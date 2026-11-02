@@ -616,7 +616,9 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& s = stream();
   auto& encoder = rocm::get_command_encoder(s);
 
-  // K3 (t1082): in graph decode mode, a small gather out goes to the persistent 4 KB value slot 3, each row at a distinct 256 B offset (a per-step cursor, reset with the arena): rows do not clobber each other in-graph (a decode step has several fast_rows gathers), and no row overflows into an adjacent wrapper. Out > 4 KB keeps the stable-address arena buffer (the row fits its own block there). MLX_GD_K3OFF=1 disables this (and the idx redirect below) for the t1099 on/off A/B.
+  // K3 (t1082): in graph decode mode, a small gather out goes to the
+  // persistent 4 KB value slot 3, each row at a distinct 256 B offset (a per-step cursor, reset with the arena): rows do not clobber each other in-graph (a decode step has several fast_rows gathers), and no row overflows into an adjacent wrapper. Out > 4 KB keeps the stable-address arena buffer (the row fits its own block there).
+  // MLX_GD_K3OFF=1 disables this (and the idx redirect below) for the t1099 on/off A/B.
   if (rocm::graph_decode_mode() && !rocm::gd_k3_off() && out.nbytes() <= 4096) {
     auto sl3 = rocm::allocator().decode_value_slot(3);
     size_t off = rocm::allocator().decode_value_slot3_cursor(out.nbytes());
@@ -705,7 +707,8 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
     if (fast_rows) {
       // K3 (graph decode): read the index from the zero slot — zero-cleared before every launch (g1_prelaunch_slot_h2d), so the graph reads the cleared buffer. Pairs with the small-out routing above: only there is the idx chunk clobbered by a >256B row. >4KB rows keep the stable-address arena out (row fits its own block), so the per-step idx buffer is left untouched. MLX_GD_K3OFF=1 or MLX_GD_K3IDXOFF=1 disables this redirect (t1099 A/B: the original idx buffer is read instead).
       int64_t n_rows = total / (int64_t)slice_size;
-      // Only idx[0] is zero-cleared (the per-launch memset clears one element); an n_rows>1 fast_rows gather (an eager T>1 step in a session with an active arena) would read idx[1..] from the never-cleared part of the 4 KB zero-slot wrapper (garbage index -> off-range src row read). Keep the original idx buffer then.
+      // Only idx[0] is zero-cleared (the per-launch memset clears one
+      // element); an n_rows>1 fast_rows gather (an eager T>1 step in a session with an active arena) would read idx[1..] from the never-cleared part of the 4 KB zero-slot wrapper (garbage index -> off-range src row read). Keep the original idx buffer then.
       if (rocm::graph_decode_mode() && !rocm::gd_k3_off() && !rocm::gd_k3_idxoff() &&
           out.nbytes() <= 4096 && n_rows == 1) {
         h_indices[0] = rocm::allocator().decode_zero_slot().data;
@@ -1299,7 +1302,8 @@ void SliceUpdate::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   // Do copy for None reduce type
   if (reduce_type_ == SliceUpdate::None) {
-    // Decode exec-cache replay: the write offset (the KV row) changes every step, so in decode mode it rides a persistent value slot (H2D memcpy recorded at capture; host rewritten each replay step before the graph launch). The copy grid covers the whole output, so the slice is written redundantly — idempotent.
+    // Decode exec-cache replay: the write offset (the KV row) changes
+    // every step, so in decode mode it rides a persistent value slot (H2D memcpy recorded at capture; host rewritten each replay step before the graph launch). The copy grid covers the whole output, so the slice is written redundantly — idempotent.
     rocm::RocmAllocator::DecodeValueSlot sl;
     if (rocm::graph_decode_mode() && stream().device == Device::gpu) {
       sl = rocm::allocator().decode_value_slot(1);

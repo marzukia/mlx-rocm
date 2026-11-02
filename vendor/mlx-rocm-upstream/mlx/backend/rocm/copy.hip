@@ -260,7 +260,8 @@ __global__ void kv_append_kernel(
   int64_t row = j / (d / VEC);
   int64_t col = (j % (d / VEC)) * VEC;
   const T* src = is_v ? (v + row * v_row_stride + col) : (k + row * k_row_stride + col);
-  // off_slot: decode exec-cache replay — the per-step write offset (T rows) is read from a persistent device slot; legacy callers pass nullptr (the base was pre-advanced, strides are 0).
+  // off_slot: decode exec-cache replay — the per-step write offset
+  // (T rows) is read from a persistent device slot; legacy callers pass nullptr (the base was pre-advanced, strides are 0).
   const int64_t off = off_slot ? *off_slot : 0;
   T* dst = is_v
       ? (dv + off * dv_t_stride + row * dv_row_stride + col)
@@ -336,7 +337,8 @@ void KVAppend::eval_gpu(
   int64_t v_row_stride = v.strides()[1];
   int64_t dk_row_stride = ck.strides()[1];
   int64_t dv_row_stride = cv.strides()[1];
-  // Advance the dst base to the write offset (T stride * offset) — or, in decode mode, pass the base and let the kernel read the per-step offset from the persistent value slot (rewritten from the host each replay step before the graph launch).
+  // Advance the dst base to the write offset (T stride * offset) —
+  // or, in decode mode, pass the base and let the kernel read the per-step offset from the persistent value slot (rewritten from the host each replay step before the graph launch).
   rocm::RocmAllocator::DecodeValueSlot sl;
   if (rocm::graph_decode_mode()) {
     sl = rocm::allocator().decode_value_slot(2);
