@@ -1,0 +1,21 @@
+--- a/patches/rows-aware/qmm.pre-rowsaware.hip
++++ b/patches/rows-aware/qmm.post-rowsaware.hip
+@@ -4058,7 +4058,17 @@
+   // original gate — i.e. zero behavior change.
+   static const bool refwd_m1 =
+       (std::getenv("MLX_ROCM_REFWD_M1") != nullptr);
+-  const bool lx_engage = (lx_env != nullptr) || (refwd_m1 && M == 1);
++  // t1391 fix (rows-aware gate): the rows dispatch (below) engages on the
++  // predicate use_rows_qmv = (getenv("MLX_ROCM_QMV_ROWS") != nullptr);
++  // the M=1 32-col lx re-route engages ONLY when rows is OFF. With rows ON,
++  // the M=1 QMMs stay on the wide default (where the rows win lives) and the
++  // M=2..4 verify QMMs take the rows kernel. With MLX_ROCM_QMV_ROWS unset,
++  // !rows_active is true and lx_engage reduces exactly to the candidate
++  // wheel's (lx_env != nullptr) || (refwd_m1 && M == 1) - default-inert.
++  static const bool rows_active =
++      (std::getenv("MLX_ROCM_QMV_ROWS") != nullptr);
++  const bool lx_engage = (lx_env != nullptr) ||
++      (refwd_m1 && M == 1 && !rows_active);
+   if (lx_engage && (bits_ == 4 || bits_ == 8) &&
+       mode_ == QuantizationMode::Affine && has_bias && transpose_ &&
+       batch_count == 1 && non_batched && M >= 1 && M <= 8 &&
