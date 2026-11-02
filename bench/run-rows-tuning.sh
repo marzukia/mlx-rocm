@@ -75,11 +75,14 @@ run_arm() { # name rows knobs...
   local rows=$1; shift
   [ -n "$rows" ] && envs+=("$rows")
   for k in "$@"; do envs+=("$k"); done
+  # NOTE (t1355): the tape dispatch branch requires BOTH MLX_ROCM_GDN_TAPE
+  # and MLX_ROCM_GDN_FUSE (the tape op is selected inside the FUSE branch);
+  # TAPE alone silently runs all-fallback (n_refwd = TOKS, ~32 tok/s).
   if [ ${#envs[@]} -gt 0 ]; then
-    env "${envs[@]}" MTP_MODEL=$MODEL MLX_ROCM_GDN_TAPE=1 \
+    env "${envs[@]}" MTP_MODEL=$MODEL MLX_ROCM_GDN_TAPE=1 MLX_ROCM_GDN_FUSE=1 \
       $PY "$TAPE" > $T/$name.log 2>&1 &
   else
-    MTP_MODEL=$MODEL MLX_ROCM_GDN_TAPE=1 $PY "$TAPE" > $T/$name.log 2>&1 &
+    MTP_MODEL=$MODEL MLX_ROCM_GDN_TAPE=1 MLX_ROCM_GDN_FUSE=1 $PY "$TAPE" > $T/$name.log 2>&1 &
   fi
   CHILDREN="$CHILDREN $!"
   wait $! 2>/dev/null
