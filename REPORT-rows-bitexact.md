@@ -101,12 +101,66 @@ Interpretation: on 9B decode (N ≤ 12288) the rows kernel is **neutral-to-sligh
 A3+rows+fold arm is blocked: `mtp-bench7.py` / `MLX_MTP_FOLD` exist neither on the guest
 nor in the repo.
 
-## 6. Serve decision
+**RETIRED-FRAME (11-02):** this battery ran `mtp-bench6.py`, a self-carried script
+frame — its 31.14/30.81 tok/s is *not* on the 69.48-tok/s canonical frame, so no
+absolute speed claim may be read off it. The relative −1.05% stands as same-session
+A/B data (method-consistent within the frame); the canonical-frame re-bench below
+supersedes it for any speed verdict.
+
+## 6. Canonical battery (11-02 re-bench, op order: no method variation)
+
+Same-session B0 vs R1 on the **canonical script** `mtp-bench-k3-tape.py` (md5
+`2c2d6c90c2349ae087e53e5d6c60018e`, verbatim, arm differences env-only) with the
+`gdn_tape_commit.py` helper (md5 `4a262a0d…`), in a fresh guest dir, 2 runs per arm,
+flock per arm released after each. Wheel: the bit-exact wheel — `libmlx.so` md5
+`e2445f1e…` verified in the guest venv-v2 before running (the `b5a2708…` wheel file
+was no longer on the guest; the .so pin is the load-bearing verification and matches).
+Sidecar hash-pin: only `model-mtp.safetensors` active. Arm B0 = A3 config
+(`MLX_MTP=4 DRAFT=3 MLX_ROCM_GDN_TAPE=1 MLX_ROCM_GDN_FUSE=1 MLX_ROCM_SDPA_S4VA=1`);
+R1 = B0 + `MLX_ROCM_QMV_ROWS=1 MLX_ROCM_QMV_ROWS_MIN_N=1`.
+
+**Baseline gate (run before trusting R1): PASS.** B0 reproduces the 69.48 baseline
+in-session: 70.20 tok/s (+1.04%), pair 44.74 ms vs 45.20, n_refwd 100 vs 101,
+TAPE n_ok=128 n_fb=0, ALLTOKS bit-identical to the t1292/t1307 reference streams
+(md5 `f3b09680…`).
+
+| | B0 run 1 | B0 run 2 | R1 run 1 | R1 run 2 |
+|---|---|---|---|---|
+| TOKS | 402 | 402 | 402 | 402 |
+| VERIFIES | 128 | 128 | 128 | 128 |
+| TOKS_S | 70.20 | 70.20 | 68.98 | 68.95 |
+| D1/D2/D3 PCT | 70.3/62.2/50.0 | 70.3/62.2/50.0 | 70.3/62.2/50.0 | 70.3/62.2/50.0 |
+| WALL_MS single | 9.73 | 9.71 | 9.74 | 9.75 |
+| WALL_MS verify | 25.60 | 25.63 | 26.43 | 26.46 |
+| WALL_MS refwd | 9.17 | 9.16 | 9.14 | 9.11 |
+| n_refwd (of 128) | 100 | 100 | 100 | 100 |
+| PER_PAIR_MS wall | 44.74 | 44.74 | 45.53 | 45.55 |
+| TAPE | 128 ok / 0 fb | 128 ok / 0 fb | 128 ok / 0 fb | 128 ok / 0 fb |
+
+Deltas (R1 vs B0, run 1 / run 2): tok/s **−1.7% / −1.8%**; verify +0.83 ms / +0.83 ms
+(+3.2%); pair +0.79 ms / +0.81 ms (+1.8%); single +0.01 / +0.04 ms; refwd −0.03 / −0.05 ms.
+Noise floor (run 1 vs run 2, per arm): 0.00% tok/s, 0.01–0.04 ms wall, 0 pp D — the R1
+deltas are above noise. Acceptance identical (bit-exact wheel: the tape-committed stream
+cannot change; ALLTOKS md5 `f3b09680…` on all four runs).
+
+**Serve decision re-derived from the canonical frame.** Bit-exact rows lands at
+**68.95–68.98 tok/s**: −0.3%/−0.8% vs the 69.48 baseline, and at **92% of the sibling
+branch's 75.00-tok/s statistical bar** (gap ~6.0 tok/s) — the statistical branch's +7.2%
+win does not carry over to the bit-exact restructure: on the canonical frame the bit-exact
+rows kernel is −1.8% (same-sign as the retired-frame −1.05%), with the regression entirely
+in the verify step (+0.83 ms, +3.2%); single-step and re-forward walls are unchanged. The
+kernel-level bit-exactness verdicts (probe 2/3) stand; the rows kernel's speed win remains
+restricted to the N ≥ 16384 band (probe 2: 1.26–1.30x at N=248320), and no speed-based
+serve argument exists for the 9B-decode shape on this wheel.
+
+## 7. Serve decision
 
 The restructured wheel is **serve-eligible on correctness**: bit-exact at the kernel level
 and lossless at the model level. The rows kernel should be gated to the large-N band
 (N ≥ 16384, e.g. lm_head / prefill-class shapes) where it wins; on 9B decode shapes it
-buys nothing and costs ~1%.
+buys nothing and costs ~1–2% (canonical-frame: −1.8%).
+
+## 8. Artifacts
 
 ## 7. Artifacts
 
@@ -117,3 +171,5 @@ buys nothing and costs ~1%.
   header 02:05 → qmm.o 02:10 → wheel 02:11 → install 02:30)
 - logs: `/tmp/be2-ref/`, `/tmp/k3A-restructure.log`, `/tmp/k3B-restructure.log`,
   `/tmp/beat-A3-*.log`, `/tmp/beat-AROWS-*.log` (guest)
+- canonical battery (11-02): `B0.log`, `B0b.log`, `R1.log`, `R1b.log` in the guest
+  `t1325-canon` dir (fresh), env-only arm differences, flock per arm
