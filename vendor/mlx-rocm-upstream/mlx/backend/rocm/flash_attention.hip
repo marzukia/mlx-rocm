@@ -444,8 +444,7 @@ void sdpa_flash(
 
   o.set_data(mlx::core::rocm::malloc_async(o.nbytes(), encoder));
 
-  // Decode exec-cache replay: kL changes every decode step, so in
-  // decode mode it rides a persistent value slot (H2D memcpy recorded at capture; the host value is rewritten each replay step).
+  // Decode exec-cache replay: kL changes every decode step, so in decode mode it rides a persistent value slot (H2D memcpy recorded at capture; the host value is rewritten each replay step).
   rocm::RocmAllocator::DecodeValueSlot sl;
   if (rocm::graph_decode_mode() && s.device == Device::gpu) {
     sl = rocm::allocator().decode_value_slot(0);

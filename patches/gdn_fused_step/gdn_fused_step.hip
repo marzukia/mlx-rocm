@@ -1,24 +1,4 @@
-// Copyright © 2025 Apple Inc.
-//
-// Fused GDN T=1..4 decode/verify-step kernel (Phase 2, MLX_ROCM_GDN_FUSE=1).
-//
-// One launch per GDN layer per step, replacing the 4-kernel default tail chain (gdn_prep conv+silu+beta+g -> gdn_prep qk_norm -> r4d recurrent state update -> gdn_norm_gated) at B=1, T=1..4, Dk=Dv=128.
-//
-// T=2/T=4 (the S=2/S=4 spec-decode verify rows) extension: the recurrent state update loads h0 ONCE and updates the two rows sequentially in registers — exactly the r4d recurrent kernel's T loop (r4d_gdn_recurrent_update, `for (t = 0; t < T; ++t)` with h resident), so T=2 is bit-identical to two T=1 steps and to the default T=2 recurrent path (the ROCm gated_delta_update op routes T <= 8 to this same recurrent kernel). The conv1d window slides per row, mirroring the default `nn.silu(self.conv1d(conv_input))` (conv_input = [conv_state(3 rows), v0, v1]; row t = sum_j E[t+j]*w[j], E = [cs0, cs1, cs2, v0, v1]):
-//   row 0 = cs0*w0 + cs1*w1 + cs2*w2 + v0*w3   (== the T=1 row, unchanged)
-//   row 1 = cs1*w0 + cs2*w1 + v0*w2  + v1*w3
-// (row 1 uses the PREVIOUS row's v, not the conv state — the causal-conv semantics of the default path; the T=1 path must NOT be changed).
-//
-// T=4 (K=3 MTP verify, rows 2,3) extends the same sliding window to the full 4-row context: E = [cs0, cs1, cs2, v0..v3], row t = sum_j E[t+j]*w[j]:
-//   row 2 = cs2*w0 + v0*w1 + v1*w2 + v2*w3
-//   row 3 = v0*w0 + v1*w1 + v2*w2 + v3*w3
-// The window tap expressions are written in the generalized form (tap j = conv_state[j-t] while j-t in [0,2), else raw row t+1-j); with TMAX=2 (or 1) the loop unrolls to constants and every ternary folds EXACTLY to the T=2/T=1 straight-line windows, so the T=1/T=2 codegen is unchanged. h stays register-resident across all TMAX rows (r4d's T loop).
-//
-// Losslessness: every phase below is a verbatim replication of the deployed 4-kernel chain's arithmetic, same FMA order, same per-op bf16 roundings, same 256-thread rms_norm block reduction. Fusion removes only the memory round-trips (intermediates live in shared) and the 3 extra launches; no math changes. The conv1d state update stays a separate COPY op in the model (not part of this op), so cache semantics are untouched.
-//
-// Geometry (fixed by the compiled path, mirrored from r4d VS=1): one workgroup per v head (32 blocks x 256 threads at Hv=32). The state update replicates the r4d_gdn_recurrent_update_kernel VS=1 layout (NR=128 rows, two threads per v row, lane<->lane^1 shfl close, 64 contiguous-k floats per thread in float4 x 16). Two v heads share one k/q head (Hv/Hk=2); the conv + qk_norm for the shared head is computed by both v-head blocks redundantly but identically (pure function of the same inputs, same order -> bit-equal).
-//
-// g is computed f32 (as the chain's gdn_prep outputs it) but the chain's r4d kernel receives it as BF16: fast.cpp's gated_delta_update does g = astype(gates, out_dtype) at the op boundary (out_dtype = q's dtype = bf16). The kernel's u16 read is therefore the full bf16 pattern; we replicate exactly by rounding s_g to bf16 (round-to-nearest, as the astype) before the read.
+// Copyright © 2025 Apple Inc.  Fused GDN T=1..4 decode/verify-step kernel (Phase 2, MLX_ROCM_GDN_FUSE=1).  One launch per GDN layer per step, replacing the 4-kernel default tail chain (gdn_prep conv+silu+beta+g -> gdn_prep qk_norm -> r4d recurrent state update -> gdn_norm_gated) at B=1, T=1..4, Dk=Dv=128.  T=2/T=4 (the S=2/S=4 spec-decode verify rows) extension: the recurrent state update loads h0 ONCE and updates the two rows sequentially in registers — exactly the r4d recurrent kernel's T loop (r4d_gdn_recurrent_update, `for (t = 0; t < T; ++t)` with h resident), so T=2 is bit-identical to two T=1 steps and to the default T=2 recurrent path (the ROCm gated_delta_update op routes T <= 8 to this same recurrent kernel). The conv1d window slides per row, mirroring the default `nn.silu(self.conv1d(conv_input))` (conv_input = [conv_state(3 rows), v0, v1]; row t = sum_j E[t+j]*w[j], E = [cs0, cs1, cs2, v0, v1]): row 0 = cs0*w0 + cs1*w1 + cs2*w2 + v0*w3   (== the T=1 row, unchanged) row 1 = cs1*w0 + cs2*w1 + v0*w2  + v1*w3 (row 1 uses the PREVIOUS row's v, not the conv state — the causal-conv semantics of the default path; the T=1 path must NOT be changed).  T=4 (K=3 MTP verify, rows 2,3) extends the same sliding window to the full 4-row context: E = [cs0, cs1, cs2, v0..v3], row t = sum_j E[t+j]*w[j]: row 2 = cs2*w0 + v0*w1 + v1*w2 + v2*w3 row 3 = v0*w0 + v1*w1 + v2*w2 + v3*w3 The window tap expressions are written in the generalized form (tap j = conv_state[j-t] while j-t in [0,2), else raw row t+1-j); with TMAX=2 (or 1) the loop unrolls to constants and every ternary folds EXACTLY to the T=2/T=1 straight-line windows, so the T=1/T=2 codegen is unchanged. h stays register-resident across all TMAX rows (r4d's T loop).  Losslessness: every phase below is a verbatim replication of the deployed 4-kernel chain's arithmetic, same FMA order, same per-op bf16 roundings, same 256-thread rms_norm block reduction. Fusion removes only the memory round-trips (intermediates live in shared) and the 3 extra launches; no math changes. The conv1d state update stays a separate COPY op in the model (not part of this op), so cache semantics are untouched.  Geometry (fixed by the compiled path, mirrored from r4d VS=1): one workgroup per v head (32 blocks x 256 threads at Hv=32). The state update replicates the r4d_gdn_recurrent_update_kernel VS=1 layout (NR=128 rows, two threads per v row, lane<->lane^1 shfl close, 64 contiguous-k floats per thread in float4 x 16). Two v heads share one k/q head (Hv/Hk=2); the conv + qk_norm for the shared head is computed by both v-head blocks redundantly but identically (pure function of the same inputs, same order -> bit-equal).  g is computed f32 (as the chain's gdn_prep outputs it) but the chain's r4d kernel receives it as BF16: fast.cpp's gated_delta_update does g = astype(gates, out_dtype) at the op boundary (out_dtype = q's dtype = bf16). The kernel's u16 read is therefore the full bf16 pattern; we replicate exactly by rounding s_g to bf16 (round-to-nearest, as the astype) before the read.
 
 #include "mlx/backend/rocm/allocator.h"
 #include "mlx/backend/rocm/device.h"
@@ -44,8 +24,7 @@ __device__ float gdnf_warp_reduce_sum_rms(float val) {
   return val;
 }
 
-// ---- rms_norm row body (copied verbatim from gdn_prep.hip, which copied it verbatim from rms_norm.hip): the exact 256-thread block reduction. ----
-// `out` must be block-wide visible (shared or global); the caller is responsible for a __syncthreads() before reading it if it is shared.
+// ---- rms_norm row body (copied verbatim from gdn_prep.hip, which copied it verbatim from rms_norm.hip): the exact 256-thread block reduction. ---- `out` must be block-wide visible (shared or global); the caller is responsible for a __syncthreads() before reading it if it is shared.
 template <typename T, int BLOCK_DIM, int N_READS = 4>
 __device__ void gdnf_rms_norm_row(
     const T* x,
@@ -111,8 +90,7 @@ __device__ __forceinline__ unsigned short gdnf_f2bf_rne(float f) {
   return (unsigned short)(u >> 16);
 }
 
-// ---- The fused decode/verify step: one block per v head, 256 threads. ----
-// T=1 is the original fused decode step (row-0 conv window: cs0, cs1, cs2, v0 — bit-identical to the original T=1 kernel). T=2/T=4 run the verify rows sequentially in ONE t-loop: phases 1..5 per row, with the phase-4 recurrent update's h resident in registers across rows (exactly r4d's T loop, so T=2/T=4 are bit-identical to the sequential T=1 steps).
+// ---- The fused decode/verify step: one block per v head, 256 threads. ---- T=1 is the original fused decode step (row-0 conv window: cs0, cs1, cs2, v0 — bit-identical to the original T=1 kernel). T=2/T=4 run the verify rows sequentially in ONE t-loop: phases 1..5 per row, with the phase-4 recurrent update's h resident in registers across rows (exactly r4d's T loop, so T=2/T=4 are bit-identical to the sequential T=1 steps).
 template <typename T, int TMAX>
 __global__ __launch_bounds__(256) void gdn_fused_step_kernel(
     const T* __restrict__ q_raw,
@@ -175,10 +153,7 @@ __global__ __launch_bounds__(256) void gdn_fused_step_kernel(
   }
 
   for (int t = 0; t < TMAX; ++t) {
-    // ---------------- Phase 1: conv1d + silu ----------------
-    // Verbatim gdn_prep_kernel conv body: 4-value sequential k-order sum in f32, cast to T, silu = Multiply(conv_bf, Sigmoid(conv_bf)) in T. The conv window slides per row (E = [cs0, cs1, cs2, v0..v3]; row t = sum_j E[t+j]*w[j]); written generalized over t in [0, TMAX): with TMAX=2/1 the loop unrolls and every ternary folds to the original T=2/T=1 windows (bit-identical codegen).
-    // Channels: q c = hk*128+i ; k c = key_dim + hk*128+i ;
-    //          v c = 2*key_dim + hv*128+i (value_dim/128 = Hv).
+    // ---------------- Phase 1: conv1d + silu ---------------- Verbatim gdn_prep_kernel conv body: 4-value sequential k-order sum in f32, cast to T, silu = Multiply(conv_bf, Sigmoid(conv_bf)) in T. The conv window slides per row (E = [cs0, cs1, cs2, v0..v3]; row t = sum_j E[t+j]*w[j]); written generalized over t in [0, TMAX): with TMAX=2/1 the loop unrolls and every ternary folds to the original T=2/T=1 windows (bit-identical codegen). Channels: q c = hk*128+i ; k c = key_dim + hk*128+i ; v c = 2*key_dim + hv*128+i (value_dim/128 = Hv).
     if (tid < head_dim) {
       int cv = 2 * key_dim + hv * head_dim + tid;
       const int vch = hv * head_dim + tid;
@@ -243,8 +218,7 @@ __global__ __launch_bounds__(256) void gdn_fused_step_kernel(
     }
     __syncthreads();
 
-    // ---------------- Phase 2: beta + g ----------------
-    // Verbatim gdn_prep_kernel gate body (thread 0 there == thread 0 here), per row. g stays f32 (the state update reads its low u16, as the chain does). s_beta/s_g are sized [4] (the TMAX=4 row count); the TMAX=1/2 instantiations use only [0](+[1]) exactly as before.
+    // ---------------- Phase 2: beta + g ---------------- Verbatim gdn_prep_kernel gate body (thread 0 there == thread 0 here), per row. g stays f32 (the state update reads its low u16, as the chain does). s_beta/s_g are sized [4] (the TMAX=4 row count); the TMAX=1/2 instantiations use only [0](+[1]) exactly as before.
     if (tid == 0) {
       s_beta[t] = Sigmoid{}(b[t * num_v_heads + hv]);
       T sum_bf = static_cast<T>(static_cast<float>(a[t * num_v_heads + hv]) +
@@ -260,8 +234,7 @@ __global__ __launch_bounds__(256) void gdn_fused_step_kernel(
     }
     __syncthreads();
 
-    // ---------------- Phase 3: q/k rms_norm + scale ----------------
-    // Verbatim gdn_qk_norm_kernel body (one head per call; the chain runs 32 heads in 32 blocks, this runs q then k sequentially in one block -- the per-head reduction is the identical 256-thread computation).
+    // ---------------- Phase 3: q/k rms_norm + scale ---------------- Verbatim gdn_qk_norm_kernel body (one head per call; the chain runs 32 heads in 32 blocks, this runs q then k sequentially in one block -- the per-head reduction is the identical 256-thread computation).
     {
       float scale = inv_scale * inv_scale;
       float scale_f =
@@ -288,8 +261,7 @@ __global__ __launch_bounds__(256) void gdn_fused_step_kernel(
     }
     __syncthreads();
 
-    // ---------------- Phase 4: recurrent state update (one row) ----------
-    // Verbatim r4d_gdn_recurrent_update_kernel VS=1 per-row body (B=1, row = tid>>1, half = tid&1, k0 = half*64), with h resident across rows. q/k are the phase-3 normalized rows (bf16, read as u16 exactly as the chain reads q_normed/k_normed); v is the phase-1 silu'd conv (bf16); g is the phase-2 value rounded to bf16 (the chain's r4d kernel receives g as bf16 -- fast.cpp astype's it at the op boundary) and read as that u16; beta is bf16.
+    // ---------------- Phase 4: recurrent state update (one row) ---------- Verbatim r4d_gdn_recurrent_update_kernel VS=1 per-row body (B=1, row = tid>>1, half = tid&1, k0 = half*64), with h resident across rows. q/k are the phase-3 normalized rows (bf16, read as u16 exactly as the chain reads q_normed/k_normed); v is the phase-1 silu'd conv (bf16); g is the phase-2 value rounded to bf16 (the chain's r4d kernel receives g as bf16 -- fast.cpp astype's it at the op boundary) and read as that u16; beta is bf16.
     float qq[64], kk[64];
 #pragma unroll
     for (int j = 0; j < 64; j += 8) {
@@ -339,8 +311,7 @@ __global__ __launch_bounds__(256) void gdn_fused_step_kernel(
     }
     __syncthreads();
 
-    // ---------------- Phase 5: norm_gated = rms_norm + precise_swiglu ----
-    // Verbatim gdn_norm_gated_kernel body (weight = RMSNorm weight, w_stride=1; silu in f32; (gate * x) cast to T), per row.
+    // ---------------- Phase 5: norm_gated = rms_norm + precise_swiglu ---- Verbatim gdn_norm_gated_kernel body (weight = RMSNorm weight, w_stride=1; silu in f32; (gate * x) cast to T), per row.
     gdnf_rms_norm_row<T, 256, 4>(
         s_out, norm_weight, s_xn, s_ss_n, norm_eps, head_dim, 1);
     __syncthreads();
@@ -392,8 +363,7 @@ __global__ __launch_bounds__(256) void gdn_fused_step_kernel(
 }
 }  // namespace rocm
 
-// ---- host launcher ----
-// Instantiates TMAX in {1, 2, 4}, selected at launch from T (T=1 decode, T=2 S=2 verify, T=4 S=4 verify).
+// ---- host launcher ---- Instantiates TMAX in {1, 2, 4}, selected at launch from T (T=1 decode, T=2 S=2 verify, T=4 S=4 verify).
 template <int TMAX>
 int launch_gdn_fused_step(
     const void* q_raw,
@@ -496,9 +466,7 @@ void GdnFusedStep::eval_gpu(
         mlx::core::rocm::malloc_async(dbg_arr.nbytes(), encoder));
   }
 
-  // Shape-based dims (B=1 guaranteed by use_fallback; T is 1, 2 or 4):
-  //   q [1, T, key_dim]  k [1, T, key_dim]  v [1, T, value_dim]
-  //   z [1, T, Hv, 128]  nw [128]  cs [3, conv_dim]  cw [conv_dim, 4]
+  // Shape-based dims (B=1 guaranteed by use_fallback; T is 1, 2 or 4): q [1, T, key_dim]  k [1, T, key_dim]  v [1, T, value_dim] z [1, T, Hv, 128]  nw [128]  cs [3, conv_dim]  cw [conv_dim, 4]
   int Tlen = (int)q.shape(1);
   int key_dim = (int)q.shape(2);
   int value_dim = (int)v.shape(2);

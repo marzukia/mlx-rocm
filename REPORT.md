@@ -217,3 +217,39 @@ The K=3 arm interleaves a single-token step (emit greedy token + 3 draft forward
 
 - Kernel/patch/model-diff: `patches/gdn_fused_step/{gdn_fused_step.hip,gdn_fused_step.patch}`, `patches/qwen35_fuse_branch/qwen35_fuse_branch.diff` (S<=4); static-source test updated (`tests/test_gdn_fuse.py`); probe extended (`bench/gdn_fused_t2_probe.py`, T=4 checks; as-run copy on `<guest>`).
 - Guest state: `<vendor>` dirty tree = base 75ca881 + PR3-HYBRID + T=4 graft; kernel file md5 `cf646082b3458cc202f6d3b9123689f8`; `fast.cpp` pre-edit md5 `9b8ca9983820d99609e0dab885d65ede`; gate logs `t4_gates/gate_{g3_default,g3_t4on,g3b_count,g4_ar,g5_k3}.log`.
+
+
+---
+
+# Fix round — PR #3 re-review (VERDICT: FAIL) findings 1-4
+
+Branch `t1082-exec-replay-fix`, parent 4db875d2900d352732a48ed633522a0936fbd337 (merge of 585d231 + main 49dc4dc).
+Head SHA: the SHA of the commit that appends this section (branch tip after push; parent 4db875d).
+
+## Defects addressed
+
+**D1 (CRITICAL, x2) — reflow merged a comment line into a code line (syntax-invalid C++).**
+Both hunks restored to the exact pre-reflow (7f5d20c) state, then the restored comment blocks were re-joined as single `//` lines per the no-exemption join rule:
+- `vendor/mlx-rocm-upstream/mlx/backend/rocm/device.cpp` (~:1815): `decode_capture_record_neutralize_h2d(slot, g);` restored as a code line alone; the 5-line "Refresh the slot's exec in place (hipGraphExecUpdate)..." block restored then joined to one line.
+- `vendor/mlx-rocm-upstream/mlx/backend/rocm/eval.cpp` (~:212): `rocm::allocator().decode_arena_reserve_wrappers(5);` restored as a code line alone; the "Pre-allocate the value-slot device buffers..." comment (already a single long line at 7f5d20c) restored on its own line.
+
+**D2 — 16 of 19 claimed reflow blocks never touched; the 3 touched left as 2-line blocks.**
+The 3 residual 2-line blocks (allocator.cpp, eval.cpp, indexing.hip) are now joined, and all remaining wrapped blocks were processed (see D3).
+
+**D3 — hard-wrapped prose comment blocks in added lines.**
+Joined every multi-line `//` comment block in the PR's added lines (base da9eeca) to exactly one line, comment prose only, `//` prefix at the front, nothing merged into a code line. A strict own detector (consecutive added `//` runs, plus a second pass for a single added continuation appended to a pre-existing comment) found and joined **39 runs** (including blocks the re-review's list did not cover: 10 runs in `patches/gdn_fused_step/gdn_fused_step.hip`, extra runs in `device.cpp`, `device.h`, `allocator.cpp`, `eval.cpp`) plus **5 context-continuation blocks** where this PR added the second line of a pre-existing 2-line comment (gdn_fused_step.hip host-launcher, device.cpp op/MB-caps + drained-exec, device.h residual-ops, eval.cpp step-end). Detector now reports 0.
+
+**D4 — PR body.**
+- "guest-a" → "guest VM" in the Verification header (the scrub token reintroduced by the body rewrite).
+- CI-parity numbers updated: 81 files / 21 passed → 84 files / 25 passed (actual at this head, see check line 3).
+- Body stays 0 hard-wrapped lines after the edit.
+- Additional scrub found by this round's own scan: `bench/gdn_fused_t2_gates.sh:2` (PR-added line) "guest-a" → "the guest VM".
+
+## Check lines
+
+1. **line-wrap, no-exemption** (PR diff added lines: code comments + .md, vs base da9eeca; + all commit messages in the PR; + PR body): **0** wrap continuations. Strict detector over added-line comment runs: 0; strict single-continuation pass: 0; .md prose runs: 0 (BUILD-RECIPE.md line runs are fenced-block command continuations — code-argument continuations, exempt and cited; the (a)-(e) labeled block in NOTES-research-stale-replay-input-20261031.md left untouched per the r4/re-review adjudication).
+2. **persona-leak** (PR diff added lines + commit messages + PR body; patterns marzuki-* hostnames, 100.64.0.0/10, andryo/andryo@*/home/andryo, neonvm@, 192.168.122.*, /mnt/models, *.junkyard.sh, guest-a): **0** (git author / Co-authored-by lines exempt).
+3. **style/format as CI** (on this head, and identical on a clean 4db875d checkout): `uv run ruff format --check .` = **84 files already formatted**; `uv run ruff check .` = **all checks passed**; `uv run pytest -m 'not gpu'` = **25 passed / 1 skipped**. (The 83/24 figures in the fix brief were measured on the pre-merge 585d231 tree, which lacks the 14 bench/*.py files brought in by the main merge; 84/25 is the actual state of 4db875d and of this head.)
+4. **restore integrity**: `git diff 7f5d20c <this-head>` restricted to the 2 restored hunks (device.cpp, eval.cpp): every CODE line byte-identical to 7f5d20c — **0** code-line changes, only comment-line joins.
+
+Exemptions cited (code-argument continuations, not wrapped prose): BUILD-RECIPE.md fenced command blocks; the (a)-(e) NOTES block (adjudicated clean); git author / Co-authored-by lines.

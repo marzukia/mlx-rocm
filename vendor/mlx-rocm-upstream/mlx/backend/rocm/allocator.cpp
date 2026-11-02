@@ -729,8 +729,7 @@ void RocmAllocator::free(Buffer buffer, bool force) {
     return;
   }
   if (buf->data && decode_arena_.contains(buf->data)) {
-    // Arena window check: the HBM is arena-owned (never freed here).
-    // The deque-owned wrappers (arena_alloc returns &wrappers[i]; the Buffer wrapping it is non-owning) need a no-op free - a delete there frees a pointer into the deque storage (glibc "free(): invalid pointer", t1095 p1). Heap RocmBuffers whose data merely falls inside the 2 GB arena window (unified-pool buffers; t1097: two distinct heap structs for the same 2 B gather out, both deleted -> UAF, SEGV in CopyableHipEvent::record with this in a reused HIP error string) must NOT be deleted either: contains() cannot tell true arena data from pool addresses in the window. The 1cf60ec plain return is the safe behavior; the per-free 56 B struct leak for false-positive pool buffers is accepted (the a8fd141 item-1 delete is reverted by this round).
+    // Arena window check: the HBM is arena-owned (never freed here). The deque-owned wrappers (arena_alloc returns &wrappers[i]; the Buffer wrapping it is non-owning) need a no-op free - a delete there frees a pointer into the deque storage (glibc "free(): invalid pointer", t1095 p1). Heap RocmBuffers whose data merely falls inside the 2 GB arena window (unified-pool buffers; t1097: two distinct heap structs for the same 2 B gather out, both deleted -> UAF, SEGV in CopyableHipEvent::record with this in a reused HIP error string) must NOT be deleted either: contains() cannot tell true arena data from pool addresses in the window. The 1cf60ec plain return is the safe behavior; the per-free 56 B struct leak for false-positive pool buffers is accepted (the a8fd141 item-1 delete is reverted by this round).
     return;
   }
   if (getenv("MLX_WORKER_DEBUG")) {
@@ -938,8 +937,7 @@ RocmAllocator::decode_value_slot(int index) {
     st.base = nullptr;
   }
   if (!st.host) {
-    // Buffer is non-owning; the arena's wrappers own the RocmBuffer (and free() is a no-op for arena-allocated memory).
-    // 4 KB wrapper: a decode gather writes its whole row into the slot (observed row sizes up to 2 KB, e.g. the 512xint32 lm-head gather). A 256 B wrapper let that row spill into the adjacent wrapper (the idx/zero slot), which a later kernel then read as an index / dyn offset -> off-arena (aperture) fault.
+    // Buffer is non-owning; the arena's wrappers own the RocmBuffer (and free() is a no-op for arena-allocated memory). 4 KB wrapper: a decode gather writes its whole row into the slot (observed row sizes up to 2 KB, e.g. the 512xint32 lm-head gather). A 256 B wrapper let that row spill into the adjacent wrapper (the idx/zero slot), which a later kernel then read as an index / dyn offset -> off-arena (aperture) fault.
     RocmBuffer* b = arena_alloc(4096);
     if (!b) {
       return {Buffer{nullptr}, nullptr};
@@ -1032,8 +1030,7 @@ static size_t host_shadow_chunk_bytes() {
   return chunk;
 }
 
-// run-515 (k3): chunked host-shadow staging copy. Each chunk is issued on its own freshly created stream (hipMemcpyAsync + hipStreamSynchronize) so no chunk inherits a queue with a pending un-retired KFD completion event — the per-chunk queue reset is the hang-avoidance property (run-460).
-// run-461-class segfault fix: the run-460 design also DESTROYED the per-chunk stream (hipStreamDestroy). On gfx1201 the KFD completion event of an async copy is not retired promptly; destroying the per-chunk stream while that event is still pending races the runtime stream/event bookkeeping and segfaults in this function (run-506: core x4 in the GDN bf16 D2H, backtrace at the chunked-copy region). The stream is therefore intentionally NOT destroyed: one small bounded leak per chunk per shadow copy (a 1.2 GB copy leaks 12 streams; negligible for a server process) in exchange for no stream-lifecycle race.
+// run-515 (k3): chunked host-shadow staging copy. Each chunk is issued on its own freshly created stream (hipMemcpyAsync + hipStreamSynchronize) so no chunk inherits a queue with a pending un-retired KFD completion event — the per-chunk queue reset is the hang-avoidance property (run-460). run-461-class segfault fix: the run-460 design also DESTROYED the per-chunk stream (hipStreamDestroy). On gfx1201 the KFD completion event of an async copy is not retired promptly; destroying the per-chunk stream while that event is still pending races the runtime stream/event bookkeeping and segfaults in this function (run-506: core x4 in the GDN bf16 D2H, backtrace at the chunked-copy region). The stream is therefore intentionally NOT destroyed: one small bounded leak per chunk per shadow copy (a 1.2 GB copy leaks 12 streams; negligible for a server process) in exchange for no stream-lifecycle race.
 static hipError_t shadow_chunked_copy(void* dst, const void* src, size_t size,
                                      hipMemcpyKind kind) {
   const size_t chunk = host_shadow_chunk_bytes();

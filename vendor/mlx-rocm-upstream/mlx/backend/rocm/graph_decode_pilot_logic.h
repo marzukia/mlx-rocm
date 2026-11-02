@@ -10,8 +10,7 @@ namespace mlx::core::rocm {
 struct GdPilotLogic {
   enum class Arming { Cold, PrefillSeen, Cooldown };
   enum class Kind { Eager, Capture, Replay };
-  // Step-end resolution for a replay step. Launch: the normal replay — launch the cached exec. GrowArena: the arena overflowed — double the capacity and re-capture; this step's launch is best-effort.
-  // Discard: diverged or big — do NOT launch the exec. Its node sequence is the capture step's, not this step's: on a divergence, launching it would re-run the stale sequence (its suffix nodes re-write the persistent state buffers after the eager suffix, which itself ran on the suppressed prefix's stale arena intermediates, and it lacks the inserted ops — a mixed, inconsistent post-step state); on a big step the step's real outputs would never be computed by the smaller cached graph. The token is lost; re-arm so the next small step is a fresh capture that overwrites the exec.
+  // Step-end resolution for a replay step. Launch: the normal replay — launch the cached exec. GrowArena: the arena overflowed — double the capacity and re-capture; this step's launch is best-effort. Discard: diverged or big — do NOT launch the exec. Its node sequence is the capture step's, not this step's: on a divergence, launching it would re-run the stale sequence (its suffix nodes re-write the persistent state buffers after the eager suffix, which itself ran on the suppressed prefix's stale arena intermediates, and it lacks the inserted ops — a mixed, inconsistent post-step state); on a big step the step's real outputs would never be computed by the smaller cached graph. The token is lost; re-arm so the next small step is a fresh capture that overwrites the exec.
   enum class ReplayEnd { Launch, GrowArena, Discard };
   // Step-end shape resolution for a capture step. Launch: the shape matched the arming reference. MicroLaunch: a micro step started as a capture candidate — launch its recorded (1-op) graph, which is exactly this step, and keep the capture armed. Cooldown: shape mismatch.
   enum class CaptureEnd { Launch, MicroLaunch, Cooldown };
@@ -114,8 +113,7 @@ struct GdPilotLogic {
     replay_armed = false;
   }
 
-  // An eager step end: advance the arming state machine. Returns true when a capture was armed (the next small step is the capture step).
-  // Arm after two consecutive small steps with matching op counts, with or without a big step seen first (a step's OP COUNT does not scale with sequence length — prefill and decode steps of the same model have near-identical op counts, both far below the big threshold — so the original big-step-before-arming requirement can never be satisfied). A big step still resets the streak.
+  // An eager step end: advance the arming state machine. Returns true when a capture was armed (the next small step is the capture step). Arm after two consecutive small steps with matching op counts, with or without a big step seen first (a step's OP COUNT does not scale with sequence length — prefill and decode steps of the same model have near-identical op counts, both far below the big threshold — so the original big-step-before-arming requirement can never be satisfied). A big step still resets the streak.
   bool eager_end(long ops) {
     const bool big = ops >= big_ops;
     if (ops >= micro_max)

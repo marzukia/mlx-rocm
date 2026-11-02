@@ -86,8 +86,7 @@ class CommandEncoder {
       dim3 block_dim,
       uint32_t smem_bytes,
       Params&&... params) {
-    // Replay mode: the recorded graph node is the only execution;
-    // launching again on the stream would double-run the kernel.
+    // Replay mode: the recorded graph node is the only execution; launching again on the stream would double-run the kernel.
     if (!use_hip_graphs() && decode_replay_suppress() &&
         !g_decode_capturing.load(std::memory_order_relaxed)) {
       return;
@@ -329,8 +328,7 @@ class CommandEncoder {
   // which is dead by replay; end_record re-points every kernel node (and
   // H2D memcpy source) at these slot-owned copies.
   std::vector<std::shared_ptr<void>> decode_cap_keepalive_[2];
-  // G1H2D: the in-graph H2D memcpy nodes (per-step host staging value
-  // uploads, e.g. the dynamic-offset slot) are not reliably delivered on this vGPU. At capture we record each node's (host_src, dev_dst, bytes), neutralize the node (0-byte copy) so it cannot overwrite the freshly delivered value mid-graph with a stale one, and re-deliver the value pre-launch on the launch stream (g1_prelaunch_recorded_h2d).
+  // G1H2D: the in-graph H2D memcpy nodes (per-step host staging value uploads, e.g. the dynamic-offset slot) are not reliably delivered on this vGPU. At capture we record each node's (host_src, dev_dst, bytes), neutralize the node (0-byte copy) so it cannot overwrite the freshly delivered value mid-graph with a stale one, and re-deliver the value pre-launch on the launch stream (g1_prelaunch_recorded_h2d).
   struct G1H2DRec {
     void* host_src;
     void* dev_dst;
@@ -506,15 +504,12 @@ inline auto thrust_policy(hipStream_t stream) {
 template <typename F>
 void CommandEncoder::launch_kernel(F&& func) {
   device_.make_current();
-  // Replay mode: the recorded graph node (hipMemcpy/hipMemset/
-  // hipLaunchKernel) is the only execution.
+  // Replay mode: the recorded graph node (hipMemcpy/hipMemset/ hipLaunchKernel) is the only execution.
   if (!use_hip_graphs() && decode_replay_suppress() &&
       !g_decode_capturing.load(std::memory_order_relaxed)) {
     return;
   }
-  // Residual ops not migrated to add_kernel_node (library GEMM, JIT module
-  // kernels, memsets) can't be HIP graph kernel nodes. Graph-split:
-  // flush+launch the accumulated graph, run this op immediately on the same stream (ordered after the graph), and start the next graph fresh.
+  // Residual ops not migrated to add_kernel_node (library GEMM, JIT module kernels, memsets) can't be HIP graph kernel nodes. Graph-split: flush+launch the accumulated graph, run this op immediately on the same stream (ordered after the graph), and start the next graph fresh.
   if (use_hip_graphs()) {
     static const bool capture_lib = [] {
       const char* e = std::getenv("MLX_GRAPH_PREFILL_REPLAY");
