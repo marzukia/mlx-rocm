@@ -175,7 +175,7 @@ decisive lever).
 guest-a, one fresh process per env, the canonical tape bench
 (`mtp-bench-k3-tape.py`, md5 `2c2d6c90c2349ae087e53e5d6c60018e`,
 md5-verified at start) with `MLX_ROCM_GDN_TAPE=1`, the model
-`/mnt/models/qwen3-9b-mlx` (sidecar `model-mtp.safetensors` md5-pinned
+`qwen3-9b-mlx` on the guest model mount (env MODELS; sidecar `model-mtp.safetensors` md5-pinned
 at start and re-checked after the battery), the `gpu-bench.lock` as the
 run gate (FLOCK-FAIL if the GPU is held). Arms: **B0** (rows OFF —
 regression gate: must reproduce the m4 B0 reference 70.02 tok/s /
