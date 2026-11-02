@@ -1,0 +1,33 @@
+--- a/mlx/backend/rocm/quantized/qmm.hip
++++ b/mlx/backend/rocm/quantized/qmm.hip
+@@ -4050,14 +4049,28 @@
+   // 4/8-bit affine decode (M<=8); replaces the f32-FMA wide loop with
+   // in-block int8 quant + __builtin_amdgcn_sudot4 + LDS x.
+   static const char* lx_env = std::getenv("MLX_QMV_LX");
+-  if (lx_env != nullptr && (bits_ == 4 || bits_ == 8) &&
++  // REFWD-M1 (default off): re-route ONLY the M=1 (decode / correction
++  // re-forward) QMMs to the existing int8-dot4 LX path so the next GPU round
++  // can A/B the M=1 scalar-FMA wide default vs the integer-dot path. The gate
++  // is restricted to M == 1 so the M=4 verify (rows) path is untouched. With
++  // MLX_ROCM_REFWD_M1 unset, lx_engage reduces to (lx_env != nullptr) — the
++  // original gate — i.e. zero behavior change.
++  static const bool refwd_m1 =
++      (std::getenv("MLX_ROCM_REFWD_M1") != nullptr);
++  const bool lx_engage = (lx_env != nullptr) || (refwd_m1 && M == 1);
++  if (lx_engage && (bits_ == 4 || bits_ == 8) &&
+       mode_ == QuantizationMode::Affine && has_bias && transpose_ &&
+       batch_count == 1 && non_batched && M >= 1 && M <= 8 &&
+       (K % 32 == 0) && (K % group_size_ == 0) &&
+       (group_size_ == 32 || group_size_ == 64 || group_size_ == 128) &&
+       (x.dtype() == bfloat16 || x.dtype() == float16 || x.dtype() == float32) &&
+       host_warp == 32) {
+-    int lx_cols = (lx_env[0] == '1' && lx_env[1] == '6') ? 16 : 32;
++    // Guard the cols read: when engaged via MLX_ROCM_REFWD_M1 (lx_env may be
++    // null) default to the standard 32 cols; MLX_QMV_LX=16 still selects 16.
++    int lx_cols = 32;
++    if (lx_env != nullptr && lx_env[0] == '1' && lx_env[1] == '6') {
++      lx_cols = 16;
++    }
+ #define LAUNCH_LX(TT, ST, GS, BV, C)                                          \
+   do {                                                                       \
+     dim3 lblock(32, C);                                                      \
