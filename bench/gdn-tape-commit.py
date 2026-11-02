@@ -1,20 +1,9 @@
 #!/usr/bin/env python3
 """Reference commit logic for the GDN state-tape protocol (MLX_ROCM_GDN_TAPE=1).
 
-Drop-in replacement for the save/restore + re-forward cascade in
-mtp-bench6.py (mode 4). The commit lives in the BENCH LOOP, not the model
-call: the model (with the tape dispatch, mirroring the FUSE_BRANCH_PATCH)
-only EMITs the per-row state tapes as extra outputs of the fused GDN op;
-selecting a row and rebind/retrimming the caches is bench protocol.
+Drop-in replacement for the save/restore + re-forward cascade in mtp-bench6.py (mode 4). The commit lives in the BENCH LOOP, not the model call: the model (with the tape dispatch, mirroring the FUSE_BRANCH_PATCH) only EMITs the per-row state tapes as extra outputs of the fused GDN op; selecting a row and rebind/retrimming the caches is bench protocol.
 
-The all-layers-checked-before-mutating guard (oMLX
-batch_generator.py:2095-2109, adopted verbatim as discipline): a partial
-commit leaves per-layer KV lengths desynchronised by one position and
-corrupts every subsequent forward — so (1) CHECK every layer first
-(24 GDN tape shapes/dtypes + 8 FA trimmability), (2) THEN mutate
-(rebind every GDN leaf + trim every KV), all-or-nothing; on any check
-failure the caller falls back to the t1250 restore+re-forward for that
-round.
+The all-layers-checked-before-mutating guard (oMLX batch_generator.py:2095-2109, adopted verbatim as discipline): a partial commit leaves per-layer KV lengths desynchronised by one position and corrupts every subsequent forward — so (1) CHECK every layer first (24 GDN tape shapes/dtypes + 8 FA trimmability), (2) THEN mutate (rebind every GDN leaf + trim every KV), all-or-nothing; on any check failure the caller falls back to the t1250 restore+re-forward for that round.
 
 Tape layout (per GDN layer, T=4 verify):
     state_tape      [4, Hv, 128, 128] f32  — SSM state after each row
@@ -22,20 +11,14 @@ Tape layout (per GDN layer, T=4 verify):
 Commit row for `keep` accepted rows (keep in 0..4):
     keep == 4: row 3  (== the op's state_new; rebind is content-wise a no-op)
     keep in 1..3: row keep-1
-    keep == 0: NO rebind (the leaves already hold the pre-verify state;
-               the tape never holds the pre-verify state)
-then KV `trim(4 - keep)` on every full-attention cache. The rebind is
-LAZY (re-point the cache leaves at the tape rows — no copy, no sync;
-a state replace/copy would add a per-cycle sync+copy to the hot path).
+    keep == 0: NO rebind (the leaves already hold the pre-verify state; the tape never holds the pre-verify state)
+then KV `trim(4 - keep)` on every full-attention cache. The rebind is LAZY (re-point the cache leaves at the tape rows — no copy, no sync; a state replace/copy would add a per-cycle sync+copy to the hot path).
 
-Usage (mtp-bench6.py mode 4, replace the `saved = save_gdn(cache)` block
-and the three rejection branches):
+Usage (mtp-bench6.py mode 4, replace the `saved = save_gdn(cache)` block and the three rejection branches):
 
     from gdn_tape_commit import tape_commit
 
-    # ... S=4 verify forward (the model's tape dispatch returns the tapes
-    # as `tapes[layer_idx] = (state_tape, conv_state_tape)` for the 24
-    # GDN layers; see the model-side dispatch note in the RUN card) ...
+    # ... S=4 verify forward (the model's tape dispatch returns the tapes as `tapes[layer_idx] = (state_tape, conv_state_tape)` for the 24 GDN layers; see the model-side dispatch note in the RUN card) ...
     keep = <0..4 from the greedy argmax cascade>
     try:
         tape_commit(cache, tapes, keep, verify_rows=4)
@@ -44,10 +27,7 @@ and the three rejection branches):
         for c in cache:
             if isinstance(c, KVCache):
                 c.trim(4)
-    # then EXACTLY ONE S=1 forward of the correction token (if keep < 4):
-    #     logits, hidden = lm(mx.array([[correction]]), cache=cache, ...)
-    # (replaces the 2-4 S=1 re-forwards; the 0-accepted case's
-    # correction = argmax(l0), its 1-accepted case's = argmax(l1), etc.)
+    # then EXACTLY ONE S=1 forward of the correction token (if keep < 4): `logits, hidden = lm(mx.array([[correction]]), cache=cache, ...)` — replaces the 2-4 S=1 re-forwards (the 0-accepted case's correction = argmax(l0), its 1-accepted case's = argmax(l1), etc.)
 """
 
 import mlx.core as mx
@@ -57,8 +37,7 @@ S_HEAD = (128, 128)  # Dk x Dv
 
 
 class TapeCommitError(RuntimeError):
-    """A tape check failed BEFORE any mutation; fall back to the t1250
-    restore+re-forward for this round (the leaves are untouched)."""
+    """A tape check failed BEFORE any mutation; fall back to the t1250 restore+re-forward for this round (the leaves are untouched)."""
 
 
 def _gdn_entries(cache):
@@ -69,9 +48,7 @@ def tape_commit(cache, tapes, keep, verify_rows=4):
     """Index-selected commit of the GDN state tapes (all-or-nothing).
 
     cache:  the model cache (24 GDN layers with .cache leaves + 8 KV layers)
-    tapes:  {gdn_layer_idx: (state_tape [4, Hv, 128, 128] f32,
-                              conv_state_tape [4, 3, conv_dim] bf16)}
-            — one entry per GDN layer, aligned with _gdn_entries(cache)
+    tapes:  {gdn_layer_idx: (state_tape [4, Hv, 128, 128] f32, conv_state_tape [4, 3, conv_dim] bf16)} — one entry per GDN layer, aligned with _gdn_entries(cache)
     keep:   rows accepted in this verify round (0..verify_rows)
     """
     if not 0 <= keep <= verify_rows:
@@ -85,23 +62,20 @@ def tape_commit(cache, tapes, keep, verify_rows=4):
         st, cst = tapes[i]
         t = verify_rows
         hv = c[1].shape[0]
-        conv_dim = cst.shape[2]
         if st.shape != (t, hv) + S_HEAD or st.dtype != mx.float32:
             raise TapeCommitError(f"layer {i} state_tape {st.shape}/{st.dtype} != expected ({t}, {hv}) + {S_HEAD} f32")
-        if cst.shape != (t, 3, conv_dim) or cst.dtype != mx.bfloat16:
+        # conv dim cross-checked against the live conv leaf (c[0] [3, conv_dim]): a tape row with a different conv_dim than the live leaf would rebind the conv state to the wrong width (review PR8 A1: the old `conv_dim = cst.shape[2]` check was tautological).
+        if cst.shape != (t, 3, c[0].shape[2]) or cst.dtype != mx.bfloat16:
             raise TapeCommitError(
-                f"layer {i} conv_state_tape {cst.shape}/{cst.dtype} != expected ({t}, 3, {conv_dim}) bf16"
+                f"layer {i} conv_state_tape {cst.shape}/{cst.dtype} != expected ({t}, 3, {c[0].shape[2]}) bf16"
             )
         if c[1].shape[1:] != S_HEAD:
             raise TapeCommitError(f"layer {i} live SSM shape {c[1].shape} tail != {S_HEAD}")
-    # KV trimmability (FA layers): the verify appended verify_rows
-    # entries; trimming back must not underflow the cache start.
+    # KV trimmability (FA layers): the verify appended verify_rows entries; trimming back must not underflow the cache start.
     for c in cache:
         if isinstance(c, KVCache) and c.offset - verify_rows < 0:
             raise TapeCommitError("KV cache underflow on trim")
-    # keep == 0: no rebind — but the checks above still run (the tapes
-    # must be sound even when unused; a corrupt tape at keep=0 means the
-    # verify's GDN path misbehaved and the round must fall back).
+    # keep == 0: no rebind — but the checks above still run (the tapes must be sound even when unused; a corrupt tape at keep=0 means the verify's GDN path misbehaved and the round must fall back).
 
     # ---------- PHASE 2: MUTATE (only now, all-or-nothing) ----------
     if keep > 0:
@@ -110,9 +84,7 @@ def tape_commit(cache, tapes, keep, verify_rows=4):
             st, cst = tapes[i]
             c[0] = cst[row]  # conv leaf -> tape row (lazy rebind)
             c[1] = st[row]  # SSM leaf  -> tape row (lazy rebind)
-            # c.lengths is unchanged (the GDN state is stateful, not
-            # length-indexed; the bench's save_gdn/restore_gdn restores
-            # lengths for symmetry, they are untouched here by design).
+            # c.lengths is unchanged (the GDN state is stateful, not length-indexed; the bench's save_gdn/restore_gdn restores lengths for symmetry, they are untouched here by design).
     for c in cache:
         if isinstance(c, KVCache):
             c.trim(verify_rows - keep)
@@ -120,11 +92,7 @@ def tape_commit(cache, tapes, keep, verify_rows=4):
 
 
 def single_correction_forward(lm, correction, cache, return_hidden=True, return_prenorm=True):
-    """The ONE S=1 forward the tape protocol keeps on rejection (the
-    correction token, from the committed state). Replaces the 2-4 S=1
-    re-forwards of the t1250 cascade (the accepted-prefix rows were
-    already computed by the S=4 verify — their states are the tape rows,
-    not recomputed)."""
+    """The ONE S=1 forward the tape protocol keeps on rejection (the correction token, from the committed state). Replaces the 2-4 S=1 re-forwards of the t1250 cascade (the accepted-prefix rows were already computed by the S=4 verify — their states are the tape rows, not recomputed)."""
     return lm(
         mx.array([[correction]]),
         cache=cache,

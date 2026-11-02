@@ -14,6 +14,7 @@ src/python/mlx_rocm.egg-info/PKG-INFO
 src/python/mlx_rocm.egg-info/SOURCES.txt
 src/python/mlx_rocm.egg-info/dependency_links.txt
 src/python/mlx_rocm.egg-info/top_level.txt
+tests/test_bench_syntax.py
 tests/test_gates.py
 tests/test_gdn_fuse.py
 tests/test_gpu.py
@@ -755,3 +756,4 @@ vendor/mlx-rocm-upstream/mlx/types/complex.h
 vendor/mlx-rocm-upstream/mlx/types/fp16.h
 vendor/mlx-rocm-upstream/mlx/types/half_types.h
 vendor/mlx-rocm-upstream/mlx/types/limits.h
+vendor/mlx-rocm-upstream/python/src/fast.cpp

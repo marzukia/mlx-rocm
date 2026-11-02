@@ -92,6 +92,14 @@ MLX_API std::vector<array> gated_delta_update(
     const std::optional<array>& mask = std::nullopt,
     StreamOrDevice s = {});
 
+// (reconstructed graft-base region — see README.md "Graft-base reconstruction": the 75ca881 single-commit snapshot is not in the public fork refs; this declaration is the base content the gdn_fused_step graft's fast.h hunk context references.)
+MLX_API std::vector<array> gdn_norm_gated(
+    const array& out,
+    const array& z,
+    const array& weight,
+    float eps,
+    StreamOrDevice s = {});
+
 using TemplateArg = std::variant<int, bool, Dtype>;
 using ScalarArg = std::variant<bool, int, float>;
 

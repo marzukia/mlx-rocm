@@ -4,7 +4,7 @@
     "fork": "https://github.com/marzukia/mlx-rocm",
     "ref": "main",
     "sha": "75ca881",
-    "comment": "The committed vendor/mlx-rocm-upstream/ tree is the authoritative source (byte-verified vs the sha). GDN tail fusion + graph-decode diagnostics on the decode path; launcher pointer fix (host Data* -> gpu_ptr<T>) for the deterministic HSA memory fault. Gates G1/G2 pass (maxdiff 0.0). See docs/quickstart.md."
+    "comment": "The committed vendor/mlx-rocm-upstream/ tree is the authoritative graft-chain source: the 2026-09-28 pin plus the reconstructed graft-base regions both grafts reference (marked in-file; see the README's Graft-base reconstruction section). The 75ca881 single-commit snapshot is not present in the public fork refs; the guest wheel build uses the guest's 75ca881 clone. GDN tail fusion + graph-decode diagnostics on the decode path; launcher pointer fix (host Data* -> gpu_ptr<T>) for the deterministic HSA memory fault. Gates G1/G2 pass (maxdiff 0.0). See docs/quickstart.md."
   },
   "build": {
     "hip_architectures": "gfx1201",

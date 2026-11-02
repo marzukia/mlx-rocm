@@ -88,6 +88,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.ruff.lint.per-file-ignores]
 "tests/test_gdn_fuse.py" = ["E501"]
 "tests/test_bench_syntax.py" = ["E501"]
+"bench/gdn-tape-commit.py" = ["E501"]  # one-line-per-paragraph reflow (op 2026-11-01 NO-EXEMPTION rule); long prose lines by design, code-argument wrapping left to ruff format
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

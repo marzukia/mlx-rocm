@@ -5,15 +5,13 @@
  # Copyright © 2026 Apple Inc.
  
  from dataclasses import dataclass, field
-@@ -16,6 +17,68 @@
+@@ -16,6 +17,66 @@
  )
  from .cache import ArraysCache, KVCache
  from .gated_delta import gated_delta_update, normalize_qk
 +
 +
-+# MTP_INJECT_PATCH: MTP drafter module (mlx-lm PR #990 MTPModule, vendored via
-+# vllm_mlx/spec_decode/mtp/head.py, verbatim upstream). Predicts token t+2 from
-+# (prenorm hidden at t, embedding of token t+1); shared lm_head applies after.
++# MTP_INJECT_PATCH: MTP drafter module (mlx-lm PR #990 MTPModule, vendored via vllm_mlx/spec_decode/mtp/head.py, verbatim upstream). Predicts token t+2 from (prenorm hidden at t, embedding of token t+1); shared lm_head applies after.
 +class MTPDecoderLayer(nn.Module):
 +    def __init__(self, args: TextModelArgs, quant: bool = False):
 +        super().__init__()
@@ -74,7 +72,7 @@
  from .pipeline import PipelineMixin
  from .qwen3_next import Qwen3NextAttention as Attention
  from .qwen3_next import Qwen3NextMLP as MLP
-@@ -52,6 +115,10 @@
+@@ -52,6 +113,10 @@
      moe_intermediate_size: int = 0
      norm_topk_prob: bool = True
  
@@ -85,16 +83,14 @@
      # Rope parameters
      rope_parameters: Optional[Dict[str, Union[float, str, bool, List[int]]]] = field(
          default_factory=lambda: {
-@@ -166,6 +233,61 @@
+@@ -166,6 +229,59 @@
                  cache[0] = mx.take_along_axis(conv_input, positions, axis=1)
              else:
                  cache[0] = mx.contiguous(conv_input[:, -n_keep:, :])
-+        # TAPE_BRANCH_PATCH: gdn_fused_step_tape for S<=4 (emits per-row state
-+        # tapes; MLX_ROCM_GDN_TAPE=1, DEFAULT OFF -> zero behavior change). Runs
-+        # before the F-branch so the tape op (a superset) is used when selected.
++        # TAPE_BRANCH_PATCH: gdn_fused_step_tape for S in {1, 2, 4} (emits per-row state tapes; MLX_ROCM_GDN_TAPE=1, DEFAULT OFF -> zero behavior change). Runs before the F-branch so the tape op (a superset) is used when selected; S=3 falls through to the F-branch (gdn_fused_step's use_fallback routes T=3 to the 4-op chain), so T=3 never reaches the tape kernel.
 +        if (os.environ.get("MLX_ROCM_GDN_TAPE", "0") == "1"
 +                and os.environ.get("MLX_ROCM_GDN_FUSE", "0") == "1"
-+                and S <= 4 and B == 1):
++                and S in (1, 2, 4) and B == 1):
 +            global GDN_TAPE_CALLS
 +            GDN_TAPE_CALLS += 1
 +            q3 = qkv[:, :, : self.key_dim]
@@ -147,7 +143,7 @@
          conv_out = nn.silu(self.conv1d(conv_input))
  
          q, k, v = [
-@@ -268,6 +390,7 @@
+@@ -268,6 +386,7 @@
          inputs: mx.array,
          cache: Optional[Any] = None,
          input_embeddings: Optional[mx.array] = None,
@@ -155,7 +151,7 @@
      ) -> mx.array:
          if input_embeddings is not None:
              hidden_states = input_embeddings
-@@ -312,7 +435,11 @@
+@@ -312,7 +431,11 @@
                  : hidden_states.shape[0]
              ]
  
@@ -168,7 +164,7 @@
  
  
  class TextModel(nn.Module):
-@@ -321,6 +448,11 @@
+@@ -321,6 +444,11 @@
          self.args = args
          self.model_type = args.model_type
          self.model = Qwen3_5TextModel(args)
@@ -180,7 +176,7 @@
          if not args.tie_word_embeddings:
              self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
          self.sharding_group = None
-@@ -330,14 +462,24 @@
+@@ -330,14 +458,24 @@
          inputs: mx.array,
          cache: Optional[Any] = None,
          input_embeddings: Optional[mx.array] = None,
@@ -206,7 +202,7 @@
          return out
  
      @property
-@@ -351,7 +493,9 @@
+@@ -351,7 +489,9 @@
          has_unsanitized_conv1d = any(
              "conv1d.weight" in k and v.shape[-1] != 1 for k, v in weights.items()
          )

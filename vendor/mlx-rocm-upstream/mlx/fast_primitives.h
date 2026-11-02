@@ -492,6 +492,64 @@ class GatedDeltaUpdate : public Custom {
  private:
 };
 
+// (reconstructed graft-base region — see README.md "Graft-base reconstruction": the 75ca881 single-commit snapshot is not in the public fork refs; the GdnNormGated stub below is carried verbatim from the gdn_fused_step graft patch's fast_primitives.h hunk context, the GdnPrep class is reconstructed from the base gdn_prep function's make_shared usage (see the same graft patch's deletion hunk) so the reconstructed base region is self-contained.)
+class GdnPrep : public Custom {
+ public:
+  GdnPrep(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback,
+      int key_dim,
+      int value_dim,
+      int conv_dim,
+      int kernel_size,
+      float inv_scale,
+      float eps)
+      : Custom(stream, std::move(fallback)),
+        key_dim_(key_dim),
+        value_dim_(value_dim),
+        conv_dim_(conv_dim),
+        kernel_size_(kernel_size),
+        inv_scale_(inv_scale),
+        eps_(eps) {}
+
+  bool is_equivalent(const Primitive& other) const {
+    const GdnPrep& a_other = static_cast<const GdnPrep&>(other);
+    return eps_ == a_other.eps_;
+  }
+
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs)
+      override {
+    return {
+        {key_dim_},
+        {(int)inputs[1].size()},
+        {value_dim_},
+        {(int)inputs[3].size()},
+        {(int)inputs[4].size()}};
+  }
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(GdnPrep);
+
+ private:
+  int key_dim_;
+  int value_dim_;
+  int conv_dim_;
+  int kernel_size_;
+  float inv_scale_;
+  float eps_;
+};
+
+class GdnNormGated : public Custom {
+ };
+
+
 class Quantize : public Custom {
  public:
   explicit Quantize(

@@ -87,7 +87,7 @@ print('model patch live')"
 
 ## Step 5b — model-side tape patch (optional; the t1265 tape-verify state)
 
-The GDN state-tape verify state (RUN card `docs/RUN-gdn-state-tape.md`) additionally requires the `qwen35_tape_branch` model patch: a superset of Step 5's patch, diffed against the same stock mlx-lm 0.32.2 `qwen3_5.py` (it round-trips to a byte-identical copy of the t1265 installed tape model, 27,593 bytes). It adds, on top of `FUSE_BRANCH_PATCH`/`MTP_INJECT_PATCH`/`PRENORM_PATCH`, the `TAPE_BRANCH_PATCH` dispatch (`mx.fast.gdn_fused_step_tape` for S<=4, gated on `MLX_ROCM_GDN_TAPE=1` + `MLX_ROCM_GDN_FUSE=1`, per-layer `last_tape` capture, `GDN_TAPE_CALLS` counter) and `import os`.
+The GDN state-tape verify state (RUN card `docs/RUN-gdn-state-tape.md`) additionally requires the `qwen35_tape_branch` model patch: a superset of Step 5's patch, diffed against the same stock mlx-lm 0.32.2 `qwen3_5.py` (round-trips byte-clean on a fresh stock install: 20,559 -> 27,721 bytes; the t1265 installed tape model, 27,593 bytes, is the pre-gate-fix variant and is regenerated from this patch for the tape run — the gate changed S<=4 to S in {1, 2, 4}). It adds, on top of `FUSE_BRANCH_PATCH`/`MTP_INJECT_PATCH`/`PRENORM_PATCH`, the `TAPE_BRANCH_PATCH` dispatch (`mx.fast.gdn_fused_step_tape` for S in {1, 2, 4} — S=3 falls through to the F-branch — gated on `MLX_ROCM_GDN_TAPE=1` + `MLX_ROCM_GDN_FUSE=1`, per-layer `last_tape` capture, `GDN_TAPE_CALLS` counter) and `import os`. The wheel it targets is built from the repo's self-contained graft chain (the `vendor/mlx-rocm-upstream/` tree + `patches/gdn_fused_step/` + `patches/gdn_fused_step_tape/`; see the RUN card's chain-verification note).
 
 ```
 SITEPKG=<venv>/lib/python3.14/site-packages

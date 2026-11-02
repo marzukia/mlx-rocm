@@ -38,6 +38,17 @@ module), `tests/`, `benchmarks/`, `.github` (except the ROCm workflow).
 They are in the upstream repo at the pinned commit; pull them in when the
 full-wheel build phase starts.
 
+## Graft-base reconstruction (2026-11-02, PR #8 fix round)
+
+The `75ca881` single-commit snapshot is NOT present in the public fork's refs (checked 2026-11-02: 9 refs, no `tail-fusion-gdn`). The committed tree therefore carries reconstructed graft-base regions so that `patches/gdn_fused_step/` + `patches/gdn_fused_step_tape/` form a self-contained, checkable chain (the wheel build itself still uses the guest's `75ca881` clone, which carries the same regions):
+
+- `mlx/fast.cpp` — the `gdn_prep` + `gdn_norm_gated` function region (verbatim from the gfs patch's deletion hunk) is present in this tree (the gfs patch removes it; the tape patch then adds the `use_fallback` gate on top). Marked `// [GRAFT-BASE RECONSTRUCTION...]`.
+- `mlx/fast_primitives.h` — the `GdnPrep` class stub (the gfs patch deletes it; the tape patch adds `GdnFusedStepTape` after the `GdnFusedStep` class it leaves). Marked `// [GRAFT-BASE RECONSTRUCTION...]`; the `GdnPrep` declaration is synthesized from its usage (definition lives in `gdn_prep.hip`) — it is NOT a compile target of this repo, it is a chain reference.
+- `mlx/fast.h` — the `gdn_norm_gated` declaration (verbatim from the gfs patch context).
+- `python/src/fast.cpp` — a reconstructed slice carrying the `init_fast` region the grafts reference (marked; the full upstream file is not vendored).
+
+Chain verification (RUN card, `docs/RUN-gdn-state-tape.md`, "Graft chain verification"): fresh worktree of this directory → `patch -p1` for the gfs graft (host git 2.53 cannot `git apply --check` the gfs patch; see the git-version note) → `git apply --check` for the tape graft passes. The tape patch's `.hip` section is byte-identical to `../gdn_fused_step_tape/gdn_fused_step_tape.hip`.
+
 ## Build (upstream layout, for the full wheel)
 
 ```

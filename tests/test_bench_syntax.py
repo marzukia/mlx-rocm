@@ -1,4 +1,4 @@
-"""Hermetic syntax gate: every bench/*.py must ast.parse and every bench/*.sh must pass bash -n; added by the round-6 fix (639e141's reflow joined code lines as prose and left six bench evidence files unparseable, invisible because they are extend-excluded from ruff and unimported) so this class of breakage cannot re-enter silently (REVIEW-PR6-R5 /srv/fleetwork/work/1247/REVIEW-PR6-R5.md, PR #6)."""
+"""Hermetic syntax gate: every bench/*.py must ast.parse and every bench/*.sh must pass bash -n; added by the round-6 fix (639e141's reflow joined code lines as prose and left six bench evidence files unparseable, invisible because they are extend-excluded from ruff and unimported) so this class of breakage cannot re-enter silently (REVIEW-PR6-R5, PR #6)."""
 
 import ast
 import subprocess
