@@ -264,3 +264,144 @@ __global__ void __launch_bounds__(1024) qmv_wide_mr_kernel(
 }
 
 } // namespace mlx::core::rocm
+
+// ---------------------------------------------------------------------------
+namespace mlx::core::rocm {
+// t1251: mr2 — vectorized-LDS, chunked-staging MR variant (4-bit, M = 2..4).
+//
+// Same structure as qmv_wide_mr_kernel (run-852) with two changes:
+//  (1) the per-k-tile x reads of sx are 16B uint4 vector loads (4 x 8 bf16)
+//      in BOTH the lx-hoist and the per-row la MAC loops, instead of 32/8
+//      scalar 2B LDS reads; the FMA order is unchanged (q-major, j-minor,
+//      same values), so outputs stay bit-identical to the per-row kernel.
+//  (2) x staging is chunked: KCHUNKS sequential k-chunks, each staged,
+//      synchronized, and consumed, instead of one full-K staging pass.
+//      The chunked order keeps k ascending (chunk c = k in [c*Kc, (c+1)*Kc)),
+//      so the k-summation order is unchanged and outputs stay bit-identical.
+//      LDS = min(4, M) * (K / KCHUNKS) * sizeof(T) bytes: K = 8192 needs
+//      16 KB and K = 12288 needs 24 KB (M = 4), both + 1 KB s_lx inside the
+//      64 KB per-block limit, where the full-staging MR (64 KB + 1 KB) does
+//      not fit.
+// KCHUNKS must divide K, K / KCHUNKS must be a multiple of 256 (4-bit
+// hoist barrier uniformity: K % 1024 == 0 at KCHUNKS = 4) and a multiple of
+// 16 / sizeof(T) (vector staging). 4-bit only (the weight tile decode is
+// the 4-bit path); 8-bit keeps qmv_wide_mr_kernel.
+template <typename T, typename ScaleT, int GROUP_SIZE, int KCHUNKS>
+__global__ void __launch_bounds__(1024) qmv_wide_mr2_kernel(
+    const T* __restrict__ x,
+    const uint8_t* __restrict__ w,
+    const ScaleT* __restrict__ scales,
+    const ScaleT* __restrict__ biases,
+    T* __restrict__ out,
+    int M,
+    int N,
+    int K,
+    bool has_bias) {
+  constexpr int MAXM = 4;
+  constexpr int WPER = 32;  // 4-bit only
+  extern __shared__ uint8_t sx_bytes[];
+  T* sx = reinterpret_cast<T*>(sx_bytes);  // [nrows][Kc] (chunk-local)
+  __shared__ float s_lx[2][MAXM][32];
+  int lane = threadIdx.x;
+  int col = blockIdx.x * blockDim.y + threadIdx.y;
+  int m0 = blockIdx.y * MAXM;
+  int nrows = M - m0;
+  if (nrows > MAXM)
+    nrows = MAXM;
+  if (nrows < 0)
+    nrows = 0;
+  bool valid_col = (col < N);
+  int ng = (K + GROUP_SIZE - 1) / GROUP_SIZE;
+  int Kc = K / KCHUNKS;
+  int row_bytes = K / 2;  // 4-bit
+  const uint8_t* wr = w + static_cast<size_t>(col) * row_bytes;
+  const ScaleT* scr = scales + static_cast<size_t>(col) * ng;
+  const ScaleT* bcr = has_bias ? (biases + static_cast<size_t>(col) * ng) : nullptr;
+  float acc[MAXM];
+#pragma unroll
+  for (int m = 0; m < MAXM; ++m)
+    acc[m] = 0.0f;
+  for (int c = 0; c < KCHUNKS; ++c) {
+    int koff = c * Kc;
+    {
+      constexpr int VEC = 16 / sizeof(T);
+      int tid = threadIdx.y * 32 + lane;
+      int nthreads = blockDim.y * 32;
+      int nvec = Kc / VEC;
+      for (int idx = tid; idx < nrows * nvec; idx += nthreads) {
+        int r = idx / nvec, v = idx % nvec;
+        *reinterpret_cast<uint4*>(&sx[r * Kc + v * VEC]) =
+            *reinterpret_cast<const uint4*>(
+                &x[static_cast<size_t>(m0 + r) * K + koff + v * VEC]);
+      }
+    }
+    __syncthreads();
+    for (int k = koff + lane * WPER; k < koff + Kc; k += 32 * WPER) {
+      int p = ((k - koff) / (32 * WPER)) & 1;
+      int g = k / GROUP_SIZE;
+      float s = load_scale_value<ScaleT, GROUP_SIZE, true>(scr[g]);
+      float b = has_bias ? static_cast<float>(bcr[g]) : 0.0f;
+      uint4 wv = *reinterpret_cast<const uint4*>(&wr[(k * 4) / 8]);
+      const uint32_t* wp = reinterpret_cast<const uint32_t*>(&wv);
+      float wn[32];
+#pragma unroll
+      for (int q = 0; q < 4; ++q)
+#pragma unroll
+        for (int j = 0; j < 8; ++j)
+          wn[q * 8 + j] = static_cast<float>((wp[q] >> (4 * j)) & 0xF);
+      int kl = k - koff;  // chunk-local k
+      {
+        int ly = threadIdx.y;
+        if (ly < nrows) {
+          float lx = 0.0f;
+          constexpr int VEC = 16 / (int)sizeof(T);
+          constexpr int NU4 = 32 / VEC;
+          uint4 xv4[8] = {};
+#pragma unroll
+          for (int q = 0; q < 8; ++q)
+            if (q < NU4)
+              xv4[q] = *reinterpret_cast<const uint4*>(&sx[ly * Kc + kl + q * VEC]);
+          const T* px = reinterpret_cast<const T*>(xv4);
+#pragma unroll
+          for (int j = 0; j < 32; ++j)
+            lx += static_cast<float>(px[j]);
+          s_lx[p][ly][lane] = lx;
+        }
+        __syncthreads();
+      }
+#pragma unroll
+      for (int m = 0; m < MAXM; ++m) {
+        if (m >= nrows)
+          break;
+        float la = 0.0f;
+        constexpr int VEC = 16 / (int)sizeof(T);
+        constexpr int NU4 = 32 / VEC;
+        uint4 xv4[8] = {};
+#pragma unroll
+        for (int q = 0; q < 8; ++q)
+          if (q < NU4)
+            xv4[q] = *reinterpret_cast<const uint4*>(&sx[m * Kc + kl + q * VEC]);
+        const T* px = reinterpret_cast<const T*>(xv4);
+#pragma unroll
+        for (int q = 0; q < 4; ++q)
+#pragma unroll
+          for (int j = 0; j < 8; ++j)
+            la += static_cast<float>(px[q * 8 + j]) * wn[q * 8 + j];
+        acc[m] += s * la + b * s_lx[p][m][lane];
+      }
+    }
+    __syncthreads();
+  }
+  for (int m = 0; m < MAXM; ++m) {
+    if (m >= nrows)
+      break;
+    float a = acc[m];
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1)
+      a += __shfl_down(a, o);
+    if (lane == 0 && valid_col)
+      out[static_cast<size_t>(m0 + m) * N + col] = static_cast<T>(a);
+  }
+}
+
+} // namespace mlx::core::rocm
