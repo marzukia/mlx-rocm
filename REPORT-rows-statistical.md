@@ -44,28 +44,43 @@ first three with rows OFF = the t1292 69.48 tok/s reference config.
 Rows gate engages at M=4 with `MLX_ROCM_QMV_ROWS=1
 MLX_ROCM_QMV_ROWS_MIN_N=1`; default-off wheel unaffected (OFF arm = A3).
 
-## K=3 greedy A/B (same session, 402/401 tokens, 128 verifies per arm)
+## K=3 greedy A/B (non-canonical t1228-v2 run — RETIRED; raw data below)
 
-| | B0 (rows OFF, A3) | R1 (rows ON) | delta |
-|---|---|---|---|
-| tok/s (2 runs) | 50.58 / 50.39 | 50.89 / 50.73 | +0.31 / +0.34 |
-| verify wall ms | 25.46 / 25.66 | 22.11 / 22.24 | **−3.35 / −3.42 (−13.2 %)** |
-| pair wall ms | 62.09 / 62.32 | 61.57 / 61.75 | −0.52 / −0.57 (−0.8/0.9 %) |
-| D1/D2/D3 % | 70.3 / 62.2 / 50.0 | 73.4 / 54.3 / 39.2 | +3.1 / −7.9 / −10.8 pp |
-| n_refwd | 290 | 321 | +31 |
+The t1228-v2 per-token re-forward variant (`bench/mtp-bench-k3.py`,
+guest copy `rs-mtp-bench-k3.py`), same session, 128 verifies per arm.
+Restated from the script's raw printed lines (guest logs `rs-B0b.log` /
+`rs-R1b.log`) — no re-derivation. The raw `TOKS` count is the total
+generated (decoded) tokens emitted over the run — one per single-token
+step plus the 1–3 tokens per verify (accepted drafts included, prompt
+excluded); `TOKS_S` = TOKS ÷ total generation wall; the loop budget is
+256 *iterations*, not 256 tokens, so 402/401 tokens over 128 verifies
+is what the run actually produced. The original table's run-1 values
+(50.58/50.89 tok/s, verify 25.46/22.11 ms, pair 62.09/61.57 ms) have
+no surviving raw log on the guest (a guest-wide search found none) and
+are struck as unverifiable; the original "402/401 tokens @ 128
+verifies" header was attached to both runs and is not reproducible from
+the surviving data.
 
-Same-session noise floor: B0 run-to-run 0 pp (acceptance), 0.2 ms
-(verify) — i.e. the D3 −10.8 pp drop on rows ON is real, not session
-noise. It is the t1297 ULP-jitter signature at work: the 1–2 ULP verify
-logit jitter flips argmaxes → more draft mismatches → +31 re-forwards,
-which eats most of the −3.35 ms verify gain at the pair level
-(−0.8/0.9 % net). D1 +3.1 pp / D2 −7.9 pp are noise-band in magnitude and
-direction-inconsistent vs t1297.
+| raw printed line | B0b (rows OFF, A3) | R1b (rows ON) |
+|---|---|---|
+| TOKS | 402 | 401 |
+| VERIFIES | 128 | 128 |
+| TOKS_S | 50.39 | 50.73 |
+| D1PCT / D2PCT / D3PCT | 70.3 / 62.2 / 50.0 | 73.4 / 54.3 / 39.2 |
+| WALL_MS | single 9.68 / verify 25.66 / refwd 26.80 (n_refwd 290) | single 9.68 / verify 22.24 / refwd 29.65 (n_refwd 321) |
+| PER_PAIR_MS | wall 62.32 / fwd_only 62.15 | wall 61.75 / fwd_only 61.57 |
 
-**Acceptance parity gate: PASS** — D1/D2/D3 of rows-ON vs rows-OFF differ
-only by the documented ULP-jitter signature (same direction and class as
-t1297's −5.0 pp D3 on the plain-path comparison), no novel degradation
-mode.
+Raw-acceptance observation (b-run only): D3 50.0 → 39.2 (−10.8 pp) with
+n_refwd 290 → 321 (+31) — the t1297 ULP-jitter signature at work (1–2
+ULP verify logit jitter flips argmaxes → more draft mismatches → more
+re-forwards); superseded as the speed/parity record by the canonical
+table in CORRECTION. The original "same-session noise floor" claim is
+not reproducible (run-1 raw log not preserved).
+
+**Acceptance parity (b-run only):** D1/D2/D3 of rows-ON vs rows-OFF
+differ only by the documented ULP-jitter signature (same direction and
+class as t1297's −5.0 pp D3 on the plain-path comparison), no novel
+degradation mode.
 
 ## First-divergence (data, not a gate)
 
@@ -89,11 +104,18 @@ context accumulates rejected drafts and poisons subsequent drafts).
   0.4 % positional (256 tok); 0.8 % set / 1.6 % positional (64 tok).
 - **Plain path's own noise band (within-arm, cross-seed):** 0.0–0.8 % set,
   ~0 % positional.
-- **Distribution parity gate: PASS** — cross-arm overlap is inside (not
-  above) the plain path's own seed-to-seed noise band. At temp 1.0 the
-  streams are chaotic (fully diverged by token 2–32 in every pairing), so
-  the gate resolves to: ON is not distinguishable from OFF beyond seed
-  noise.
+- **Distribution parity gate: not PASS on overlap evidence — the
+  token-id-overlap gate is unresolvable in this chaotic regime.** All 8
+  same-seed pairs diverge at token 2, so the overlap cannot
+  discriminate: ON is not distinguishable from OFF beyond seed noise
+  (the 0.2–0.8 % overlap sits inside the plain path's 0.0–0.8 %
+  seed-noise band — parity at face value, not a gate). The
+  distributional argument instead rests on (i) the direct 1–2 ULP kernel
+  measurement (t1297 probe: maxdiff 9.54e-07 at N=248320 and
+  7.15–9.54e-07 at N=12288, both shapes) and (ii) the acceptance-parity
+  tables (this section's degenerate-sampling result; the greedy b-run D
+  deltas above; the canonical D −1.5/−2.0/−0.9 pp with FIRST20
+  bit-identical).
 - **Acceptance parity (sampling): PASS (degenerate).** D1 0.0 % in both
   arms across 8 runs × 128 verifies. The MTP drafter (a small head on the
   target prenorm hidden) cannot track an off-manifold sampled stream; both
@@ -106,8 +128,10 @@ context accumulates rejected drafts and poisons subsequent drafts).
 benchmarks to match the existing baselines, do not vary the method
 
 The speed table in this report (50.58/50.89 tok/s, pair 62.09/61.57 ms,
-n_refwd 290/321, D3 −10.8 pp) came from `bench/mtp-bench-k3.py` — a new
-script **this task wrote itself** — and is **RETIRED**. Its B0 arm did not
+n_refwd 290/321, D3 −10.8 pp) came from `bench/mtp-bench-k3.py` — the
+t1228-v2 per-token re-forward variant (byte-identical to the guest copy
+`rs-mtp-bench-k3.py`), **not** the 11-01 canonical script — and is
+**RETIRED**. Its B0 arm did not
 reproduce the t1292 baseline (50.58 / 62.09 ms / n_refwd 290 vs the
 established 69.48 / 45.20 ms / n_refwd 101) while its same-session verify
 wall matched (~25.5 vs 25.99 ms): the kernels are fine, the re-forward
@@ -156,24 +180,38 @@ single-step + re-forward regime — out of scope for the rows branch.
 
 **Standing as-is (not re-run, unaffected by the method change):** the
 engagement evidence (1.58x at the K=3 verify shape) and the sampling gate
-(`mtp-sample-k3.py`: +5.3–5.8 % tok/s, distribution parity inside the
-plain path's seed-noise band, acceptance parity degenerate-PASS in both
-arms). The greedy first-divergence data point (@32, session-varied) is
-retired with the old script's numbers; under the canonical method FIRST20
-matches and the acceptance deltas above are the parity record.
+(`mtp-sample-k3.py`: +5.3–5.8 % tok/s; overlap gate unresolvable — all
+8 same-seed pairs diverge at token 2, distributional argument = direct
+1–2 ULP kernel measurement + acceptance parity; acceptance parity
+degenerate-PASS in both arms). The greedy first-divergence data point
+(@32, session-varied) is retired with the old script's numbers; under the
+canonical method FIRST20 matches and the acceptance deltas above are the
+parity record.
 
-## Bench table + position vs the 100+ tok/s target (RETIRED — see CORRECTION above)
+## Bench table (RETIRED — raw restatement; see CORRECTION above)
 
-The table below came from the self-written `bench/mtp-bench-k3.py`
-(re-forward accounting differs from the canonical t1292 method). It is
-retained for the record only; the CORRECTION section's canonical-method
-table replaces it.
+The table below came from the t1228-v2 per-token re-forward variant
+(`bench/mtp-bench-k3.py`; re-forward accounting differs from the
+canonical t1292 method). Retained for the record only; the CORRECTION
+section's canonical-method table replaces it. Restated from the raw
+printed lines of the surviving logs (guest `rs-B0b.log`, `rs-R1b.log`,
+and the t1292 `inst_A3.log`) — no re-derivation. The run-1 values
+(50.58/50.89 tok/s, verify 25.46/22.11 ms, pair 62.09/61.57 ms) have
+no surviving raw log on the guest and are struck.
 
-| config | tok/s | verify ms | pair ms | notes |
-|---|---|---|---|---|
-| t1292 A3 (reference, prior build) | 69.48 | 25.99 | 45.20 | n_refwd 101, D3 48.2 % |
-| B0 = A3 this session (rows OFF) | 50.58 / 50.39 | 25.46 / 25.66 | 62.09 / 62.32 | n_refwd 290, D3 50.0 % |
-| R1 = A3 + rows ON | 50.89 / 50.73 | 22.11 / 22.24 | 61.57 / 61.75 | n_refwd 321, D3 39.2 % |
+| config | TOKS | VERIFIES | TOKS_S | D1/D2/D3 % | verify ms | pair ms | n_refwd |
+|---|---|---|---|---|---|---|---|
+| t1292 A3 (reference, prior build, `inst_A3.log`) | 402 | 128 | 69.48 | 70.3 / 62.2 / 50.0 | 25.99 | 45.20 | 100 |
+| B0b = A3 this session (rows OFF) | 402 | 128 | 50.39 | 70.3 / 62.2 / 50.0 | 25.66 | 62.32 | 290 |
+| R1b = A3 + rows ON | 401 | 128 | 50.73 | 73.4 / 54.3 / 39.2 | 22.24 | 61.75 | 321 |
+
+Raw `TOKS` count: total generated (decoded) tokens emitted over the run
+— one per single-token step plus the 1–3 tokens per verify (accepted
+drafts included, prompt excluded); `TOKS_S` = TOKS ÷ total generation
+wall; the loop budget is 256 *iterations*, not 256 tokens. (The original
+table's reference row read "n_refwd 101, D3 48.2 %"; the raw t1292
+`inst_A3.log` prints n_refwd=100 and D3PCT=50.0 — those cells are struck
+as inconsistent with the raw log.)
 
 ## Verdict (re-derived on the canonical-method numbers)
 
@@ -192,9 +230,13 @@ table replaces it.
   kernel, was the difference.)
 - Engagement proven (1.58x at the K=3 verify shape, SASS-verified on the
   installed .so) — stands as-is.
-- Distribution parity (sampling gate): cross-arm token overlap inside the
-  plain path's own seed-noise band (PASS) — stands as-is; sampling
-  +5.3–5.8 % tok/s stands as-is.
+- Distribution parity (sampling gate): the token-id-overlap gate is
+  unresolvable (all 8 same-seed pairs diverge at token 2; ON not
+  distinguishable from OFF beyond seed noise) — not a PASS on overlap
+  evidence; the distributional argument rests on the direct 1–2 ULP
+  kernel measurement (t1297: maxdiff 9.54e-07, both shapes) + the
+  acceptance-parity tables — stands as-is; sampling +5.3–5.8 % tok/s
+  stands as-is.
 - 100+ tok/s target **not met** in this config: R1 = 75.00 tok/s,
   pair 41.35 ms vs target pair ≤ 31.4 ms (gap ≈ 10 ms; the remainder is
   the single-step + re-forward regime, out of scope for the rows
@@ -206,12 +248,75 @@ table replaces it.
 - GPU lock window 02:08–02:30Z (this task). t1305's 02:13 pip-install
   phase was lock-blocked by this task's flock and released at 02:30:06Z —
   flagged to warden; t1305 unblocked, its run continues.
-- Scripts uploaded to guest: `mtp-sample-k3.py`, `qmv_rows_engage.py`
-  (bench `mtp-bench-k3.py` = t1292 script, unmodified). Logs
-  `rs-B0b/rs-R1b/rs-samp-*/rs-s64-*.log` on guest.
+- Scripts uploaded to guest: `mtp-sample-k3.py`, `qmv_rows_engage.py`;
+  the non-canonical bench run used the guest copy of `bench/mtp-bench-k3.py`
+  (the t1228-v2 per-token re-forward variant, `rs-mtp-bench-k3.py` —
+  **not** the 11-01 canonical script `mtp-bench-k3-tape.py`). Logs
+  `rs-B0b/rs-R1b/rs-samp-*/rs-s64-*.log` on guest (only the b-run logs
+  survive; the run-1 logs are not preserved).
 - 11-02 re-bench: canonical `mtp-bench-k3-tape.py` (md5 `2c2d6c90…`,
   source == guest copy) + `gdn_tape_commit.py` (md5 `4a262a0d…`) in a
   fresh guest dir; wheel `2442e063…` re-verified on the guest before
   running; sidecar hash-pin (only `model-mtp.safetensors` active)
   confirmed. Ran after t1305 reached terminal (02:54Z). Logs
   `B0/R1/B0b/R1b.log` on guest; flock held per arm, released after each.
+
+## FIX ROUND (read run finished 02:56Z @ 3615777: findings 1–5 → done)
+
+1. **TABLE ARITHMETIC (major)** — the retired t1228-v2 table was
+   internally inconsistent: "402/401 tokens @ 128 verifies" was attached
+   to both runs of each arm, but only the b-run raw logs survive on the
+   guest (`rs-B0b.log`, `rs-R1b.log`; a guest-wide search found no
+   surviving log for the run-1 values 50.58/50.89 / 25.46/22.11 /
+   62.09/61.57). Both retired-table sections were restated from the
+   script's raw printed lines only (TOKS, VERIFIES, TOKS_S,
+   D1PCT/D2PCT/D3PCT, WALL_MS, PER_PAIR_MS) — no re-derivation — with a
+   note on what the raw `TOKS` count includes: total generated (decoded)
+   tokens emitted over the run (one per single-token step plus the 1–3
+   tokens per verify, accepted drafts included, prompt excluded;
+   `TOKS_S` = TOKS ÷ total generation wall; the loop budget is 256
+   *iterations*, not 256 tokens). The run-1 values are struck as
+   unverifiable. The canonical-method table (69.95/75.00) stands
+   untouched. Raw-log cross-check: the t1292 reference row's "n_refwd
+   101, D3 48.2 %" does not match the raw `inst_A3.log` (n_refwd=100,
+   D3PCT=50.0) — corrected in the retired table; the CORRECTION
+   section's "vs 101" wording was left untouched per the fix scope and
+   is flagged here for the orchestrator.
+2. **PROVENANCE (major)** — CORRECTION now states the canonical script
+   is `mtp-bench-k3-tape.py` (md5-pinned) and `bench/mtp-bench-k3.py`
+   is the t1228-v2 per-token re-forward variant, not the 11-01
+   canonical script (branch file byte-identical to the guest
+   `rs-mtp-bench-k3.py`). The stale operational-notes line
+   "(bench mtp-bench-k3.py = t1292 script, unmodified)" was corrected.
+3. **DISTRIBUTION GATE WORDING (major)** — the token-id-overlap gate is
+   degenerate (all 8 same-seed pairs diverge at token 2). Restated as:
+   "not distinguishable beyond seed noise; the overlap gate is
+   unresolvable in this chaotic regime" — no longer called PASS on
+   overlap evidence. The distributional argument now rests on the direct
+   1–2 ULP kernel measurement (t1297 probe: maxdiff 9.54e-07 at
+   N=248320, 7.15–9.54e-07 at N=12288) + the acceptance-parity tables
+   (sampling degenerate-PASS both arms; greedy b-run D deltas; canonical
+   D −1.5/−2.0/−0.9 pp, FIRST20 bit-identical). Verdict bullet
+   updated to match.
+4. **LINT (major)** — `uv run ruff format .` (3 files reformatted) +
+   fixed all 25 `ruff check` errors in `bench/mtp-bench-k3.py`,
+   `bench/mtp-sample-k3.py`, `bench/qmv_rows_engage.py` (E501,
+   E741 x10, F841 x6, E402, I001, UP031 x4). Behavior-neutral: local
+   `l`→`lgrow` renames, unused unpacks → `_`, import move (E402) and
+   sort (I001), long lines wrapped, % -format → f-string with
+   byte-identical print output. No semantic touch was required. End
+   state: `uv run ruff format --check .` clean, `uv run ruff check .`
+   clean (0 errors), `uv run pytest -m 'not gpu'` 22 passed / 1 skipped,
+   size gate OK.
+5. **GATE CODE IN BRANCH (minor)** — the rows dispatch/gate code (reads
+   `MLX_ROCM_QMV_ROWS` / `MLX_ROCM_QMV_ROWS_MIN_N`) was only in the
+   guest vendor layer. Extracted read-only from the guest vendor-rs
+   delta (`git diff` of `mlx/backend/rocm/quantized/qmm.hip` vs fork
+   base `75ca881`, guest file md5 `4dec02b00e3c750d683fbc0dc6ce8231`)
+   and committed as `patches/qmv-rows-dispatch-gate.diff` (the
+   rows-gate dispatch block as a zero-context insertion hunk anchored
+   after the host_warp `else {`, plus the rows-kernel `#include`
+   hunk). With `patches/qmv-rows-msg-kernel-wsfix.diff` the kernel +
+   gate are now source-verifiable in the branch; README note added.
+   The committed vendor tree is the build base per project convention;
+   the guest layers are the delta.

@@ -36,6 +36,24 @@ Three pieces:
    ROCm, and runs the GPU GEMM + fp8 probe there (guest-a phase budgeted
    ~120 s; failures are recorded, not fatal).
 
+## qmv-rows patches (kernel + gate, source-verifiable in the branch)
+
+The multi-row QMV ("rows") work is captured in `patches/` as:
+
+- `patches/qmv-rows-msg-kernel-wsfix.diff` — the ws[4] kernel fix
+  (`qmv_rows_msg_kernel.hip`).
+- `patches/qmv-rows-dispatch-gate.diff` — the rows dispatch/gate block in
+  `mlx/backend/rocm/quantized/qmm.hip` (reads `MLX_ROCM_QMV_ROWS`,
+  **opt-in, default OFF**; band floor `MLX_ROCM_QMV_ROWS_MIN_N`, default
+  16384; engages at M=2..4, N ≥ min_n) plus the rows-kernel
+  `#include`. Extracted read-only from the guest vendor-rs working-tree
+  delta (`git diff` of `qmm.hip` vs fork base `75ca881`; guest `qmm.hip`
+  md5 `4dec02b00e3c750d683fbc0dc6ce8231`).
+
+Per project convention the **committed vendor tree is the build base**;
+the guest layers (including these patches) are deltas applied on top for
+the build wheel.
+
 ## gfx1201 notes
 
 - **RX 9070 XT = `gfx1201`** (RDNA4). `gfx110x` is RDNA3 (RX 7000). The

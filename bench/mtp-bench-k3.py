@@ -9,6 +9,7 @@ Wall-clock decomposition of the K=3 verify loop. Classes (disjoint):
 Sub-components inside single: draft (3 mtp module calls), dlmh (3 lm_head).
 Computation identical to bench/mtp-bench6.py mode 4.
 """
+
 import os
 import time
 
@@ -18,17 +19,17 @@ from mlx_lm.models.cache import KVCache
 
 MODELS = os.environ.get("MODELS", "/models")
 MODEL = os.environ.get("MTP_MODEL", f"{MODELS}/qwen3-9b-mlx")
-PROMPT = "Explain in great detail how a modern smartphone works, from the hardware components to the operating system, covering every subsystem. Be exhaustive."
+PROMPT = (
+    "Explain in great detail how a modern smartphone works, from the "
+    "hardware components to the operating system, covering every "
+    "subsystem. Be exhaustive."
+)
 MAX_TOKENS = int(os.environ.get("MTP_MAX_TOKENS", "256"))
 EOS = 248044
 
 
 def save_gdn(cache):
-    return [
-        (i, c[0], c[1], c.lengths)
-        for i, c in enumerate(cache)
-        if hasattr(c, "cache")
-    ]
+    return [(i, c[0], c[1], c.lengths) for i, c in enumerate(cache) if hasattr(c, "cache")]
 
 
 def restore_gdn(cache, saved):
@@ -64,11 +65,9 @@ def main():
 
     prompt_ids = tok.encode(PROMPT, add_special_tokens=False)
     cache = lm.make_cache()
-    logits, hidden = lm(
-        mx.array([prompt_ids]), cache=cache, return_hidden=True, return_prenorm=True
-    )
+    logits, hidden = lm(mx.array([prompt_ids]), cache=cache, return_hidden=True, return_prenorm=True)
     mx.eval(logits, hidden)
-    l = logits[0, -1]
+    lgrow = logits[0, -1]
     h = hidden[0, -1]
     draft1 = None
     draft2 = None
@@ -84,7 +83,7 @@ def main():
         if draft1 is None:
             # Single-token step
             ts = time.perf_counter()
-            t = int(mx.argmax(l))
+            t = int(mx.argmax(lgrow))
             if t == EOS:
                 break
             out.append(t)
@@ -124,16 +123,13 @@ def main():
             saved = save_gdn(cache)
             ta = time.perf_counter()
             logits, hidden = lm(
-                mx.array([[prev_token, d1, d2, d3]]),
-                cache=cache,
-                return_hidden=True,
-                return_prenorm=True
+                mx.array([[prev_token, d1, d2, d3]]), cache=cache, return_hidden=True, return_prenorm=True
             )
             mx.eval(logits, hidden)
             tp.verify += time.perf_counter() - ta
-            l0, h0 = logits[0, 0], hidden[0, 0]
-            l1, h1 = logits[0, 1], hidden[0, 1]
-            l2, h2 = logits[0, 2], hidden[0, 2]
+            l0, _ = logits[0, 0], hidden[0, 0]
+            l1, _ = logits[0, 1], hidden[0, 1]
+            l2, _ = logits[0, 2], hidden[0, 2]
             l3, h3 = logits[0, 3], hidden[0, 3]
             t2 = int(mx.argmax(l0))
             if t2 == EOS:
@@ -153,7 +149,7 @@ def main():
                     if t4 == d3:
                         d3_acc += 1
                         out.append(t4)
-                        l, h = l3, h3
+                        lgrow, h = l3, h3
                     else:
                         out.append(t4)
                         restore_gdn(cache, saved)
@@ -163,13 +159,12 @@ def main():
                         for tok_ in (prev_token, d1, d2, t4):
                             ta = time.perf_counter()
                             logits, hidden = lm(
-                                mx.array([[tok_]]), cache=cache,
-                                return_hidden=True, return_prenorm=True
+                                mx.array([[tok_]]), cache=cache, return_hidden=True, return_prenorm=True
                             )
                             mx.eval(logits, hidden)
                             tp.refwd += time.perf_counter() - ta
                             tp.n_refwd += 1
-                        l, h = logits[0, -1], hidden[0, -1]
+                        lgrow, h = logits[0, -1], hidden[0, -1]
                 else:
                     out.append(t3)
                     restore_gdn(cache, saved)
@@ -178,14 +173,11 @@ def main():
                             c.trim(4)
                     for tok_ in (prev_token, d1, t3):
                         ta = time.perf_counter()
-                        logits, hidden = lm(
-                            mx.array([[tok_]]), cache=cache,
-                            return_hidden=True, return_prenorm=True
-                        )
+                        logits, hidden = lm(mx.array([[tok_]]), cache=cache, return_hidden=True, return_prenorm=True)
                         mx.eval(logits, hidden)
                         tp.refwd += time.perf_counter() - ta
                         tp.n_refwd += 1
-                    l, h = logits[0, -1], hidden[0, -1]
+                    lgrow, h = logits[0, -1], hidden[0, -1]
             else:
                 out.append(t2)
                 restore_gdn(cache, saved)
@@ -194,14 +186,11 @@ def main():
                         c.trim(4)
                 for tok_ in (prev_token, t2):
                     ta = time.perf_counter()
-                    logits, hidden = lm(
-                        mx.array([[tok_]]), cache=cache,
-                        return_hidden=True, return_prenorm=True
-                    )
+                    logits, hidden = lm(mx.array([[tok_]]), cache=cache, return_hidden=True, return_prenorm=True)
                     mx.eval(logits, hidden)
                     tp.refwd += time.perf_counter() - ta
                     tp.n_refwd += 1
-                l, h = logits[0, -1], hidden[0, -1]
+                lgrow, h = logits[0, -1], hidden[0, -1]
     wall = time.perf_counter() - t1
     n = len(out)
     d1pct = 100.0 * d1_acc / verifies if verifies else 0.0
@@ -209,20 +198,27 @@ def main():
     d3pct = 100.0 * d3_acc / d2_acc if d2_acc else 0.0
     nv = max(tp.n_verify, 1)
     print(
-        "MTP=%s LOAD=%.2f GEN=%.2f TOKS=%d TOKS_S=%.2f VERIFIES=%d D1ACC=%d D2ACC=%d D3ACC=%d D1PCT=%.1f D2PCT=%.1f D3PCT=%.1f TOK_PER_2ITER=%.3f"
-        % (mode, t_load, wall, n, n / wall, verifies, d1_acc, d2_acc, d3_acc,
-           d1pct, d2pct, d3pct, n / nv),
+        f"MTP={mode} LOAD={t_load:.2f} GEN={wall:.2f} TOKS={n} "
+        f"TOKS_S={n / wall:.2f} VERIFIES={verifies} D1ACC={d1_acc} "
+        f"D2ACC={d2_acc} D3ACC={d3_acc} D1PCT={d1pct:.1f} "
+        f"D2PCT={d2pct:.1f} D3PCT={d3pct:.1f} TOK_PER_2ITER={n / nv:.3f}",
         flush=True,
     )
     other = wall - tp.single - tp.verify - tp.refwd
-    print("WALL_MS single=%.2f verify=%.2f refwd=%.2f other=%.2f (n_refwd=%d)"
-          % (1000 * tp.single / nv, 1000 * tp.verify / nv,
-             1000 * tp.refwd / nv, 1000 * other / nv, tp.n_refwd), flush=True)
-    print("SUB_MS draft=%.2f dlmh=%.2f (inside single)"
-          % (1000 * tp.draft / nv, 1000 * tp.dlmh / nv), flush=True)
-    print("PER_PAIR_MS wall=%.2f fwd_only=%.2f"
-          % (1000 * wall / nv,
-             1000 * (tp.single + tp.verify + tp.refwd) / nv), flush=True)
+    print(
+        f"WALL_MS single={1000 * tp.single / nv:.2f} "
+        f"verify={1000 * tp.verify / nv:.2f} refwd={1000 * tp.refwd / nv:.2f} "
+        f"other={1000 * other / nv:.2f} (n_refwd={tp.n_refwd})",
+        flush=True,
+    )
+    print(
+        f"SUB_MS draft={1000 * tp.draft / nv:.2f} dlmh={1000 * tp.dlmh / nv:.2f} (inside single)",
+        flush=True,
+    )
+    print(
+        f"PER_PAIR_MS wall={1000 * wall / nv:.2f} fwd_only={1000 * (tp.single + tp.verify + tp.refwd) / nv:.2f}",
+        flush=True,
+    )
     print("FIRST20:", " ".join(map(str, out[:20])), flush=True)
     print("ALLTOKS:", " ".join(map(str, out)), flush=True)
 

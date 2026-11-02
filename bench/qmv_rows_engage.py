@@ -12,6 +12,7 @@ Output: ARM=<rows-off|rows-on> line per shape.
 """
 
 import os
+import time
 
 import mlx.core as mx
 
@@ -22,13 +23,10 @@ REPS = 20
 rows_env = os.environ.get("MLX_ROCM_QMV_ROWS")
 min_n = os.environ.get("MLX_ROCM_QMV_ROWS_MIN_N")
 print(
-    f"CONFIG: mlx_wheel={mx.__version__} "
-    f"rows_env={rows_env!r} rows_min_n={min_n!r}",
+    f"CONFIG: mlx_wheel={mx.__version__} rows_env={rows_env!r} rows_min_n={min_n!r}",
     flush=True,
 )
 assert mx.rocm.is_available(), "mx.rocm not available"
-
-import time
 
 for K, N, tag in SHAPES:
     mx.random.seed(42)
@@ -47,7 +45,6 @@ for K, N, tag in SHAPES:
     ts.sort()
     med = ts[len(ts) // 2]
     print(
-        f"QMV: K={K} N={N} M=4 {tag}: wall_med_ms={1000 * med:.3f} "
-        f"wall_min_ms={1000 * ts[0]:.3f}",
+        f"QMV: K={K} N={N} M=4 {tag}: wall_med_ms={1000 * med:.3f} wall_min_ms={1000 * ts[0]:.3f}",
         flush=True,
     )

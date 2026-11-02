@@ -16,12 +16,15 @@ import os
 import time
 
 import mlx.core as mx
-
 from mlx_lm import load
 from mlx_lm.models.cache import KVCache
 
 MODEL = os.environ.get("MTP_MODEL", f"{os.environ.get('MODELS', '/mnt/models')}/qwen3-9b-mlx")
-PROMPT = "Explain in great detail how a modern smartphone works, from the hardware components to the operating system, covering every subsystem. Be exhaustive."
+PROMPT = (
+    "Explain in great detail how a modern smartphone works, from the "
+    "hardware components to the operating system, covering every "
+    "subsystem. Be exhaustive."
+)
 MAX_TOKENS = int(os.environ.get("MTP_MAX_TOKENS", "256"))
 TEMP = 1.0
 TOP_P = 0.95
@@ -44,11 +47,7 @@ def sample(logits):
 
 
 def save_gdn(cache):
-    return [
-        (i, c[0], c[1], c.lengths)
-        for i, c in enumerate(cache)
-        if hasattr(c, "cache")
-    ]
+    return [(i, c[0], c[1], c.lengths) for i, c in enumerate(cache) if hasattr(c, "cache")]
 
 
 def restore_gdn(cache, saved):
@@ -71,10 +70,9 @@ def main():
 
     prompt_ids = tok.encode(PROMPT, add_special_tokens=False)
     cache = lm.make_cache()
-    logits, hidden = lm(mx.array([prompt_ids]), cache=cache,
-                       return_hidden=True, return_prenorm=True)
+    logits, hidden = lm(mx.array([prompt_ids]), cache=cache, return_hidden=True, return_prenorm=True)
     mx.eval(logits, hidden)
-    l = logits[0, -1]
+    lgrow = logits[0, -1]
     h = hidden[0, -1]
     out = []
     verifies = 0
@@ -91,7 +89,7 @@ def main():
         # the draft stays a function of (target prenorm hidden, emb), with
         # intra-step chain context (dh1->dh2->dh3) preserved.
         mtp_cache[0] = KVCache()
-        t = sample(l)
+        t = sample(lgrow)
         if t == EOS:
             break
         out.append(t)
@@ -111,12 +109,13 @@ def main():
         # Verify (S=4 target — rows engages here when ON)
         verifies += 1
         saved = save_gdn(cache)
-        vlogits, vhidden = lm(mx.array([[prev_token, d1, d2, d3]]),
-                            cache=cache, return_hidden=True, return_prenorm=True)
+        vlogits, vhidden = lm(
+            mx.array([[prev_token, d1, d2, d3]]), cache=cache, return_hidden=True, return_prenorm=True
+        )
         mx.eval(vlogits, vhidden)
-        l0, h0 = vlogits[0, 0], vhidden[0, 0]
-        l1v, h1v = vlogits[0, 1], vhidden[0, 1]
-        l2v, h2v = vlogits[0, 2], vhidden[0, 2]
+        l0, _ = vlogits[0, 0], vhidden[0, 0]
+        l1v, _ = vlogits[0, 1], vhidden[0, 1]
+        l2v, _ = vlogits[0, 2], vhidden[0, 2]
         l3v, h3v = vlogits[0, 3], vhidden[0, 3]
         t2 = sample(l0)
         if t2 == EOS:
@@ -136,7 +135,7 @@ def main():
                 if t4 == d3:
                     d3_acc += 1
                     out.append(t4)
-                    l, h = l3v, h3v
+                    lgrow, h = l3v, h3v
                 else:
                     out.append(t4)
                     restore_gdn(cache, saved)
@@ -144,10 +143,9 @@ def main():
                         if isinstance(c, KVCache):
                             c.trim(4)
                     for tok_ in (prev_token, d1, d2, t4):
-                        lg, hh = lm(mx.array([[tok_]]), cache=cache,
-                                   return_hidden=True, return_prenorm=True)
+                        lg, hh = lm(mx.array([[tok_]]), cache=cache, return_hidden=True, return_prenorm=True)
                         mx.eval(lg, hh)
-                    l, h = lg[0, -1], hh[0, -1]
+                    lgrow, h = lg[0, -1], hh[0, -1]
             else:
                 out.append(t3)
                 restore_gdn(cache, saved)
@@ -155,10 +153,9 @@ def main():
                     if isinstance(c, KVCache):
                         c.trim(4)
                 for tok_ in (prev_token, d1, t3):
-                    lg, hh = lm(mx.array([[tok_]]), cache=cache,
-                               return_hidden=True, return_prenorm=True)
+                    lg, hh = lm(mx.array([[tok_]]), cache=cache, return_hidden=True, return_prenorm=True)
                     mx.eval(lg, hh)
-                l, h = lg[0, -1], hh[0, -1]
+                lgrow, h = lg[0, -1], hh[0, -1]
         else:
             out.append(t2)
             restore_gdn(cache, saved)
@@ -166,10 +163,9 @@ def main():
                 if isinstance(c, KVCache):
                     c.trim(4)
             for tok_ in (prev_token, t2):
-                lg, hh = lm(mx.array([[tok_]]), cache=cache,
-                           return_hidden=True, return_prenorm=True)
+                lg, hh = lm(mx.array([[tok_]]), cache=cache, return_hidden=True, return_prenorm=True)
                 mx.eval(lg, hh)
-            l, h = lg[0, -1], hh[0, -1]
+            lgrow, h = lg[0, -1], hh[0, -1]
         prev_token = out[-1]
 
     wall = time.perf_counter() - t1
