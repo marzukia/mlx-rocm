@@ -19,6 +19,7 @@ template <typename ScaleT, int GROUP_SIZE, bool AFFINE>
 __device__ inline float load_scale_value(ScaleT raw);
 }
 #include "mlx/backend/rocm/quantized/qmv_wide_mr_kernel.hip"
+#include "mlx/backend/rocm/quantized/qmv_rows_msg_kernel.hip"
 #include "mlx/primitives.h"
 
 #include <hip/hip_bfloat16.h>
@@ -4108,8 +4109,18 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
       has_bias && transpose_ && batch_count == 1 && non_batched && M >= 1 &&
       M <= 8 && (K % 32 == 0) &&
       (group_size_ == 32 || group_size_ == 64 || group_size_ == 128) &&
-      (x.dtype() == bfloat16 || x.dtype() == float16);
+      (x.dtype() == bfloat16 || x.dtype() == float16 || x.dtype() == float32);
+      if (std::getenv("MLX_T1251_DBG") != nullptr) {
+        static long t1251_n = 0;
+        if (t1251_n++ < 64)
+          fprintf(stderr, "[t1251] M=%d N=%d K=%d bits=%d gs=%d dt=%s has_bias=%d trans=%d nb=%d bc=%d hw=%d\n",
+                  (int)M, (int)N, (int)K, (int)bits_, (int)group_size_,
+                  (x.dtype() == bfloat16) ? "bf16" : (x.dtype() == float16) ? "f16" : "other",
+                  (int)has_bias, (int)transpose_, (int)non_batched, (int)batch_count,
+                  (int)host_warp);
+      }
   if (wide_ok) {
+
     int wcols = hw_info.is_low_cu_igpu ? 4 : 8;
     // Wave32 kernels only (hardcoded 32 in qmv_wide). Skip on CDNA host_warp=64.
     if (host_warp != 32) {
@@ -4120,13 +4131,130 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
       // cols/block). Bit-identical per row to qmv_wide_kernel (same tile
       // order). Opt out: MLX_QMV_NO_MR; cols: MLX_QMV_MR_COLS.
       static bool use_mr_qmv = (std::getenv("MLX_QMV_NO_MR") == nullptr);
+
       static int mr_cols_env = parse_non_negative_int_env("MLX_QMV_MR_COLS", 0);
       // run-889: A/B toggle for the run-852 LX hoist (default 1 = hoist on;
       // 0 = run-825 path — the same kernel without the in-k barrier).
       static int mr_lx_env = parse_non_negative_int_env("MLX_QMV_MR_LX", 1);
       int mcols = (mr_cols_env >= 8) ? mr_cols_env : 16;
+      // 2-byte-typed staging: the old MR kernel is bf16/f16-only; f32 x must
+      // not reach it (4B elements overflow the 2B vector loads).
       size_t mr_lds = (size_t)std::min(4, M) * (size_t)K * 2;
-      bool mr_ok = use_mr_qmv && (M <= 4) && (mr_lds <= 32768);
+      if (x.dtype() == float32)
+        mr_lds = (size_t)-1;  // force per-row for f32
+      // t1251: mr2 — vectorized-LDS, K/4 chunked-staging MR (4-bit, M = 2..4,
+      // large N). Covers K = 8192 / 12288 (16 / 24 KB staging, M = 4) which
+      // the full-staging MR cannot (64 KB + 1 KB > 64 KB per-block limit),
+      // and is 6-9% faster than the full-staging MR at K = 4096 (lab
+      // 2026-11-01, gfx1201: lm_head N = 248320 M = 4, 2.59 vs 2.79 ms,
+      // per-row 4.00 ms; bit-identical to per-row, maxdiff 0.0). Large-N
+      // only (N >= 16384): below that the per-row wide kernel wins on
+      // block count (lab gate_up N = 12288: mr2 0.138 vs per-row 0.131;
+      // down N = 4096: mr2 0.154 vs per-row 0.123). Opt out:
+      // MLX_QMV_NO_MR (shared); threshold: MLX_QMV_MR2_MIN_N.
+      static int mr2_min_n_env = parse_non_negative_int_env("MLX_QMV_MR2_MIN_N", 0);
+      int mr2_min_n = (mr2_min_n_env > 0) ? mr2_min_n_env : 16384;
+      // t1253: rows-msg — multi-row QMV with shared weight decode (the
+      // MTPLX msg morphology ported to gfx1201/HIP; see
+      // qmv_rows_msg_kernel.hip + docs/qmv-rows-msg.md). One workgroup =
+      // 6 waves, each wave owns BN=4 columns and all M rows in a 16-
+      // accumulator array; full-K lane-strided over 128-bit pack-
+      // interleaved weight loads; each 4/8-bit weight tile is decoded
+      // once and MAC'd against all rows (one weight pass regardless of
+      // M). No LDS, no barriers. Per-row math transcribes qmv_wide
+      // verbatim (row-exact contract: output row r ==
+      // quantized_matmul(x[r:r+1]) bit for bit). Large-N band (N >=
+      // rows_min_n). OPT-IN ONLY: MLX_ROCM_QMV_ROWS=1 (DEFAULT OFF —
+      // zero behavior change when unset); band floor:
+      // MLX_ROCM_QMV_ROWS_MIN_N (default 16384).
+      static bool use_rows_qmv = (std::getenv("MLX_ROCM_QMV_ROWS") != nullptr);
+      static bool use_hoist =
+          (std::getenv("MLX_ROCM_QMV_ROWS_HOIST") != nullptr);
+      static int rows_min_n_env =
+          parse_non_negative_int_env("MLX_ROCM_QMV_ROWS_MIN_N", 0);
+      int rows_min_n = (rows_min_n_env > 0) ? rows_min_n_env : 16384;
+      bool rows_ok = use_rows_qmv && (M >= 2) && (M <= 4) &&
+          (N >= rows_min_n) && (K % 32 == 0);
+      if (rows_ok) {
+        dim3 rblock(32 * 6);
+        dim3 rgrid((N + 23) / 24, 1);
+#define LAUNCH_QMV_ROWS_MSG(TT, ST, GS, BV)                              \
+  enc.add_kernel_node(                                                  \
+      &rocm::qmv_rows_msg_kernel<TT, ST, GS, BV>, rgrid, rblock, 0u,   \
+      (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr,                 \
+      (const ST*)biases_ptr, (TT*)out_ptr, M, N, K, has_bias)
+#define LAUNCH_QMV_ROWS_MSG_H(TT, ST, GS, BV)                              \
+  enc.add_kernel_node(                                                  \
+      &rocm::qmv_rows_msg_hoist_kernel<TT, ST, GS, BV>, rgrid, rblock, 0u,   \
+      (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr,                 \
+      (const ST*)biases_ptr, (TT*)out_ptr, M, N, K, has_bias)
+#define LAUNCH_QMV_ROWS_MSG_GS(TT, ST, BV)                             \
+  do {                                                                  \
+    if (use_hoist) {                                                  \
+      if (group_size_ == 32) { LAUNCH_QMV_ROWS_MSG_H(TT, ST, 32, BV); }   \
+      else if (group_size_ == 64) { LAUNCH_QMV_ROWS_MSG_H(TT, ST, 64, BV); } \
+      else { LAUNCH_QMV_ROWS_MSG_H(TT, ST, 128, BV); }                    \
+    } else {                                                          \
+      if (group_size_ == 32) { LAUNCH_QMV_ROWS_MSG(TT, ST, 32, BV); }   \
+      else if (group_size_ == 64) { LAUNCH_QMV_ROWS_MSG(TT, ST, 64, BV); } \
+      else { LAUNCH_QMV_ROWS_MSG(TT, ST, 128, BV); }                    \
+    }                                                                 \
+  } while (0)
+        if (x.dtype() == bfloat16) {
+          if (bits_ == 4) { LAUNCH_QMV_ROWS_MSG_GS(hip_bfloat16, hip_bfloat16, 4); }
+          else { LAUNCH_QMV_ROWS_MSG_GS(hip_bfloat16, hip_bfloat16, 8); }
+        } else if (x.dtype() == float32) {
+          // f32 x (the op promotes bf16 x when scales are f32): T=ST=float.
+          if (bits_ == 4) { LAUNCH_QMV_ROWS_MSG_GS(float, float, 4); }
+          else { LAUNCH_QMV_ROWS_MSG_GS(float, float, 8); }
+        } else {
+          if (bits_ == 4) { LAUNCH_QMV_ROWS_MSG_GS(__half, __half, 4); }
+          else { LAUNCH_QMV_ROWS_MSG_GS(__half, __half, 8); }
+        }
+#undef LAUNCH_QMV_ROWS_MSG_GS
+#undef LAUNCH_QMV_ROWS_MSG
+        return;
+      }
+      // x staging is T-sized: f32 x (the op promotes bf16 x when scales are
+      // f32) needs 4 bytes/element, not 2.
+      const size_t tbytes = (x.dtype() == float32) ? 4 : 2;
+      size_t mr2_lds = (size_t)std::min(4, M) * (size_t)(K / 4) * tbytes;
+      // f32 x: per-row wide measured faster than mr2 on gfx1201 (4.03 vs 9.68ms
+      // at N=248320 K=4096 M=4); mr2 f32 is opt-in only.
+      const bool mr2_f32_ok =
+          (std::getenv("MLX_QMV_MR2_F32") != nullptr) ||
+          (x.dtype() != float32);
+      bool mr2_ok = use_mr_qmv && mr2_f32_ok && (bits_ == 4) && (M >= 2) &&
+          (M <= 4) && (K % 1024 == 0) && ((K / 4) % 32 == 0) &&
+          (N >= mr2_min_n) && (mr2_lds + 1024 <= 65536);
+      if (mr2_ok) {
+        dim3 mr2block(32, 16);
+        dim3 mr2grid((N + 15) / 16, (M + 3) / 4);
+#define LAUNCH_QMV_WIDE_MR2(TT, ST, GS)                                     \
+  enc.add_kernel_node(                                                    \
+      &rocm::qmv_wide_mr2_kernel<TT, ST, GS, 4>, mr2grid, mr2block,      \
+      (uint32_t)mr2_lds, (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr,       (const ST*)biases_ptr, (TT*)out_ptr, M, N, K, has_bias)
+#define LAUNCH_QMV_WIDE_MR2_GS(TT, ST)                                    \
+  do {                                                                    \
+    if (group_size_ == 32) { LAUNCH_QMV_WIDE_MR2(TT, ST, 32); }          \
+    else if (group_size_ == 64) { LAUNCH_QMV_WIDE_MR2(TT, ST, 64); }    \
+    else { LAUNCH_QMV_WIDE_MR2(TT, ST, 128); }                          \
+  } while (0)
+        if (x.dtype() == bfloat16) { LAUNCH_QMV_WIDE_MR2_GS(hip_bfloat16, hip_bfloat16); }
+        else if (x.dtype() == float32) { LAUNCH_QMV_WIDE_MR2_GS(float, float); }
+        else { LAUNCH_QMV_WIDE_MR2_GS(__half, __half); }
+#undef LAUNCH_QMV_WIDE_MR2_GS
+#undef LAUNCH_QMV_WIDE_MR2
+        return;
+      }
+      // M>=2: the multi-row kernel batches up to 4 rows per block to share one weight pass.
+      // At M=1 (eager decode) three of the four rows are padding: no bandwidth win, plus
+      // LDS staging + sync overhead. Measured on gfx1201 bare metal 2026-11-01: M=1 AR
+      // 77.39 tok/s with MR on vs 80.94 with MLX_QMV_NO_MR=1 (-4.5% eager tax). The
+      // multi-row win is real at M=2..4 (MTP verify / batch decode), where the shared
+      // weight pass is fully utilized, so gate on M instead of defaulting off.
+      bool mr_ok = use_mr_qmv && (M <= 4) && (M >= 2) && (mr_lds <= 32768) &&
+          (N >= mr2_min_n);  // t1251: small-N per-row wins (lab 2026-11-01)
       // run-852: the MR kernel's in-k-loop __syncthreads (LX hoist) requires
       // uniform k-iteration counts across lanes: K % (32 * WPER) == 0
       // (K % 1024 == 0 for 4-bit, K % 512 == 0 for 8-bit). Shapes that do
@@ -4151,6 +4279,9 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
         if (x.dtype() == bfloat16) {
           if (bits_ == 4) { LAUNCH_QMV_WIDE_GS(hip_bfloat16, hip_bfloat16, 4); }
           else { LAUNCH_QMV_WIDE_GS(hip_bfloat16, hip_bfloat16, 8); }
+        } else if (x.dtype() == float32) {
+          if (bits_ == 4) { LAUNCH_QMV_WIDE_GS(float, float, 4); }
+          else { LAUNCH_QMV_WIDE_GS(float, float, 8); }
         } else {
           if (bits_ == 4) { LAUNCH_QMV_WIDE_GS(__half, __half, 4); }
           else { LAUNCH_QMV_WIDE_GS(__half, __half, 8); }
@@ -4182,6 +4313,14 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
         } else {
           if (lxhoist) { LAUNCH_QMV_WIDE_MR_GS(hip_bfloat16, hip_bfloat16, 8, true); }
           else { LAUNCH_QMV_WIDE_MR_GS(hip_bfloat16, hip_bfloat16, 8, false); }
+        }
+      } else if (x.dtype() == float32) {
+        if (bits_ == 4) {
+          if (lxhoist) { LAUNCH_QMV_WIDE_MR_GS(float, float, 4, true); }
+          else { LAUNCH_QMV_WIDE_MR_GS(float, float, 4, false); }
+        } else {
+          if (lxhoist) { LAUNCH_QMV_WIDE_MR_GS(float, float, 8, true); }
+          else { LAUNCH_QMV_WIDE_MR_GS(float, float, 8, false); }
         }
       } else {
         if (bits_ == 4) {
