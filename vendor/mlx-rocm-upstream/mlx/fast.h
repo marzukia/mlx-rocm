@@ -92,6 +92,27 @@ MLX_API std::vector<array> gated_delta_update(
     const std::optional<array>& mask = std::nullopt,
     StreamOrDevice s = {});
 
+MLX_API std::vector<array> gdn_prep(
+    const array& q_raw,
+    const array& k_raw,
+    const array& v_raw,
+    const array& b,
+    const array& a,
+    const array& A_log,
+    const array& dt_bias,
+    const array& conv_state,
+    const array& conv_weight,
+    float inv_scale,
+    float eps,
+    StreamOrDevice s = {});
+
+MLX_API std::vector<array> gdn_norm_gated(
+    const array& out,
+    const array& z,
+    const array& weight,
+    float eps,
+    StreamOrDevice s = {});
+
 using TemplateArg = std::variant<int, bool, Dtype>;
 using ScalarArg = std::variant<bool, int, float>;
 

@@ -492,6 +492,86 @@ class GatedDeltaUpdate : public Custom {
  private:
 };
 
+class GdnPrep : public Custom {
+ public:
+  GdnPrep(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback,
+      int key_dim,
+      int value_dim,
+      int conv_dim,
+      int kernel_size,
+      float inv_scale,
+      float eps)
+      : Custom(stream, std::move(fallback)),
+        key_dim_(key_dim),
+        value_dim_(value_dim),
+        conv_dim_(conv_dim),
+        kernel_size_(kernel_size),
+        inv_scale_(inv_scale),
+        eps_(eps) {}
+
+  DEFINE_DEFAULT_IS_EQUIVALENT()
+
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    return {
+        inputs[0].shape(),  // q_normed
+        inputs[1].shape(),  // k_normed
+        inputs[2].shape(),  // v_conv
+        inputs[3].shape(),  // beta
+        inputs[4].shape()   // g
+    };
+  }
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(GdnPrep);
+
+ private:
+  int key_dim_;
+  int value_dim_;
+  int conv_dim_;
+  int kernel_size_;
+  float inv_scale_;
+  float eps_;
+};
+
+class GdnNormGated : public Custom {
+ public:
+  GdnNormGated(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback,
+      float eps)
+      : Custom(stream, std::move(fallback)),
+        eps_(eps) {}
+
+  DEFINE_DEFAULT_IS_EQUIVALENT()
+
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    return {inputs[0].shape()};
+  }
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(GdnNormGated);
+
+ private:
+  float eps_;
+};
+
+
 class Quantize : public Custom {
  public:
   explicit Quantize(

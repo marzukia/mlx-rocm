@@ -1361,6 +1361,86 @@ std::vector<array> gated_delta_update(
   return result;
 }
 
+std::vector<array> gdn_prep(
+    const array& q_raw,
+    const array& k_raw,
+    const array& v_raw,
+    const array& b,
+    const array& a,
+    const array& A_log,
+    const array& dt_bias,
+    const array& conv_state,
+    const array& conv_weight,
+    float inv_scale,
+    float eps,
+    StreamOrDevice s_ /* = {} */) {
+  auto s = to_stream(s_);
+  auto q = astype(q_raw, bfloat16, s);
+  auto k = astype(k_raw, bfloat16, s);
+  auto v = astype(v_raw, bfloat16, s);
+  auto bb = astype(b, bfloat16, s);
+  auto aa = astype(a, bfloat16, s);
+  auto al = astype(A_log, float32, s);
+  auto db = astype(dt_bias, float32, s);
+  auto cs = astype(conv_state, bfloat16, s);
+  auto cw = astype(conv_weight, bfloat16, s);
+
+  int key_dim = (int)q.size();
+  int value_dim = (int)v.size();
+  int conv_dim = key_dim + (int)k.size() + value_dim;
+  int kernel_size = 4;
+
+  auto fallback = [](std::vector<array> inputs) -> std::vector<array> {
+    throw std::runtime_error("gdn_prep: fallback NYI (GPU only)");
+  };
+
+  return array::make_arrays(
+      /* output shapes */
+      {{key_dim}, {(int)k.size()}, {value_dim}, {(int)bb.size()}, {(int)aa.size()}},
+      /* dtypes */
+      {bfloat16, bfloat16, bfloat16, bfloat16, float32},
+      /* primitive */
+      std::make_shared<GdnPrep>(
+          s,
+          fallback,
+          key_dim,
+          value_dim,
+          conv_dim,
+          kernel_size,
+          inv_scale,
+          eps),
+      /* inputs */
+      {q, k, v, bb, aa, al, db, cs, cw});
+}
+
+std::vector<array> gdn_norm_gated(
+    const array& out,
+    const array& z,
+    const array& weight,
+    float eps,
+    StreamOrDevice s_ /* = {} */) {
+  auto s = to_stream(s_);
+  auto o = astype(out, bfloat16, s);
+  auto zg = astype(z, bfloat16, s);
+  auto w = astype(weight, bfloat16, s);
+
+  auto fallback = [](std::vector<array> inputs) -> std::vector<array> {
+    throw std::runtime_error("gdn_norm_gated: fallback NYI (GPU only)");
+  };
+
+  return array::make_arrays(
+      /* output shapes */
+      {o.shape()},
+      /* dtypes */
+      {bfloat16},
+      /* primitive */
+      std::make_shared<GdnNormGated>(s, fallback, eps),
+      /* inputs */
+      {o, zg, w});
+}
+
+
+
 bool Quantize::is_equivalent(const Primitive& other) const {
   const Quantize& p_other = static_cast<const Quantize&>(other);
   return (
