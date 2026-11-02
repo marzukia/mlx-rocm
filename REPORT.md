@@ -217,3 +217,120 @@ The K=3 arm interleaves a single-token step (emit greedy token + 3 draft forward
 
 - Kernel/patch/model-diff: `patches/gdn_fused_step/{gdn_fused_step.hip,gdn_fused_step.patch}`, `patches/qwen35_fuse_branch/qwen35_fuse_branch.diff` (S<=4); static-source test updated (`tests/test_gdn_fuse.py`); probe extended (`bench/gdn_fused_t2_probe.py`, T=4 checks; as-run copy on `<guest>`).
 - Guest state: `<vendor>` dirty tree = base 75ca881 + PR3-HYBRID + T=4 graft; kernel file md5 `cf646082b3458cc202f6d3b9123689f8`; `fast.cpp` pre-edit md5 `9b8ca9983820d99609e0dab885d65ede`; gate logs `t4_gates/gate_{g3_default,g3_t4on,g3b_count,g4_ar,g5_k3}.log`.
+
+## QMV-ROWS reconcile (t1281) — the t1265 root cause: a toolchain codegen defect, not a kernel bug
+
+The t1265 GPU verdict was FAIL: with `MLX_ROCM_QMV_ROWS=1` engaged,
+`qmv_rows_msg_kernel` produced garbage from token 0 on the real 9B f32
+path, in BOTH the V1 and V2 wheels; MIN_N bracketing proved engagement was
+the sole cause. This task reconciled the multi-row kernel line-by-line
+against the one-row reference (`qmv_wide_kernel`), scoped a fix, and
+compile-verified it (GPU verify is `docs/RUN-qmv-rows-reconcile.md`).
+
+### Method
+
+Line-by-line audit of the per-row MAC sequence, scale/bias gather, k-tile
+boundary, x staging, accumulator init/cast, and the 5-stage `__shfl_down`
+close, V2 kernel vs `qmv_wide_kernel` (vendor 75ca881). Where the textual
+audit was inconclusive (both look right), SASS/IR forensics on the guest
+toolchain (ROCm 10.0, clang 23.0.0rocm7.14) — the one that built the
+t1265 wheels — with a staged minimal-kernel bisection at `-O3`.
+
+### Numbered divergences
+
+- **D1 — V1 f32 defect (known, fixed in V2, NOT the t1265 cause):** the
+  V1 `qmv_rows_msg_kernel` used the 2-byte `NVEC = WPER/8` assumption for
+  all T: for f32 x it read only 4 of 32 x values (out of bounds on the
+  `v4` staging array), and the dispatch had no f32 branch (f32 x fell to
+  the `__half` kernel). V2 fixes both (`ES`/`EPU`/`NLOAD` type-generic
+  staging + the `T=ST=float` dispatch branch). Both t1265 wheels failed
+  identically when engaged, so D1 cannot explain the V2 failure.
+- **D2 — V2 vs reference source: NO divergence.** The per-row arithmetic is
+  a faithful transcription: same x values (type-generic 16B staging,
+  bit-identical to scalar reads), same weight decode
+  (`(word >> (4·j)) & 0xF` → `static_cast<float>`, the same int→float
+  chain), same q-major j-minor FMA order for `la`, the same `lx` sum
+  chain, the same `s * la + b * lx` update (b = 0.0f when `!has_bias`,
+  bit-identical), the same accumulator init (0.0f) and the same 5-stage
+  `__shfl_down` close with the lane-0 store. Nothing arithmetically wrong
+  in the source — yet the compiled kernel was a no-op (below).
+- **D3 — TOOLCHAIN CODEGEN DEFECT (the actual t1265 cause).** On the
+  wheel's toolchain (ROCm 10.0 userland / clang 23.0.0rocm7.14, `-O3`),
+  the 32-element `wn[V]` weight-decode array in this kernel triggers a
+  two-part defect that deletes the kernel's entire k-loop body:
+  1. **Frontend (O0):** the kernel-argument pointers round-trip through
+     `ockl` scratch slots and come back as generic `ptr` (p0) — the
+     `addrspace(1)` marker is lost — so the x/w 16B loads emit as
+     `llvm.memcpy.p0.p0.i64` instead of `addrspace(1)` vector loads.
+  2. **Optimizer (O1+):** for this kernel shape, the `p0→p0` memcpys are
+     eliminated WITHOUT re-materializing the loads (the reference kernel's
+     equivalent memcpys ARE re-materialized as `addrspace(1)` loads by the
+     same pipeline — its loads are direct scalar/vector reads and its
+     accumulator is a single register, not a 2D scratch array). The
+     `acc[4][4]` 0.0f initialization is then poisoned with `+qnan`
+     (stores guarded by `col < N`), the k-loop body's `acc[m][c] += s*la +
+     b*lx` writes are DSE-eliminated (writes to poisoned slots are no-ops),
+     the FMA chain and the x/w loads are DCE-eliminated, and the epilogue
+     reads, `freeze`s, shuffle-reduces, and stores the qnan —
+     deterministic garbage.
+  - **SASS signature (t1265 wheels):** 22 VGPR, 0 spill, ~20 FMA-like ops
+    (the epilogue shuffle only), 4 `global_store_b32`, **ZERO global
+    loads**, an undefined `ttmp9` register in the address computation.
+  - **All 18 instantiations affected** (f32/bf16/f16 × GS 32/64/128 × BITS
+    4/8) — not type-specific, not optimization-level-specific (present at
+    every level ≥ O1). Register pressure was ruled out (22 VGPR, 0 spill);
+    wheel provenance was ruled out (`qmm.o` mtime postdates the source
+    patch); the V1 f32 defect (D1) is a separate, V2-fixed issue.
+  - **Trigger bisection (`-O3` IR/SASS probe matrix):** the defect keys on
+    the **32-element decode array** in this kernel position. 1-word/8-value
+    and 2-word/16-value decode arrays survive; the 4-word/32-value form
+    degenerates — independent of 16B vs 4×4B weight loads and of `xn`
+    array vs scalar x loads. `#pragma unroll`, the m-loop `break`, the
+    `uint4` x staging, and the 16B x staging each survive in isolation.
+    (A variant with the epilogue read made unconditional does NOT dodge it
+    — the body-write elimination happens regardless.)
+
+### The scoped fix (kernel-file only; dispatch untouched)
+
+Replace the 32-element decoded float array with the four 32-bit
+pack-interleaved words in a 4-element array, and run the identical
+shift+mask+cvt chain inline in the MAC loop:
+
+```
+- float wn[V]; ...wn[q*8+j] = static_cast<float>((wp[q] >> (4*j)) & 0xF); ...
+- la += xn[q*8+j] * wn[q*8+j];
++ uint32_t ws[4]; ...ws[q] = wp[q];
++ la += xn[q*8+j] * static_cast<float>((ws[q] >> (4*j)) & 0xF);
+```
+
+Bit-identical arithmetic: the decoded values are the same int→float
+conversion in the same order, the FMA order is unchanged (q-major, j-minor),
+and the `16B` coalesced weight load is retained. `patches/qmv-rows-msg-kernel-wsfix.diff`
+is the V2-kernel → fixed diff (applied to the guest V2 tree; the
+authoritative copy is committed at
+`vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_rows_msg_kernel.hip`).
+
+### Compile verification (host-side, guest toolchain)
+
+- Bar (`--offload-arch=gfx1201 -fsyntax-only`): fixed kernel = the
+  pre-fix profile (3 pre-existing host-side `__launch_bounds__` notes, 0
+  device-side errors).
+- `-O3 -Xclang -emit-llvm`, all 18 instantiations: fixed = 56 (4-bit) /
+  40 (8-bit) `addrspace(1)` loads per kernel; the pre-fix control in the
+  same harness = 0 global loads in all 18 (the defect reproduced in the
+  current toolchain).
+- `-O3 -S` SASS: fixed = 14–20 `global_load` + 4 `global_store` per
+  instantiation, 1680 `v_fmac_f32_e32` + 240 FMA-class ops total; pre-fix
+  control = 0 global loads.
+- GPU verify (probe 2 f32 bit-exact at K=4096 N=248320 M=4, N=12288
+  shape, K=3 lossless A/B): `docs/RUN-qmv-rows-reconcile.md` (GPU lock was
+  BUSY at audit time; the guest V2 tree now carries the fixed kernel —
+  md5 `3dc576ba9733b61415ea58587ae087c7`, pre-fix backup alongside).
+
+### Artifacts
+
+- Fixed kernel: `vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_rows_msg_kernel.hip`
+  (committed copy; the guest V2 tree carries the same bytes).
+- `patches/qmv-rows-msg-kernel-wsfix.diff` — V2-kernel → fixed diff.
+- `docs/RUN-qmv-rows-reconcile.md` — GPU RUN card (build + SASS spot-check
+  + the three probes).

@@ -1,0 +1,63 @@
+--- qmv_rows_msg_kernel.hip	2026-11-01 23:43:02.726493175 +0000
++++ qmv_rows_msg_kernel_fixed.hip	2026-11-02 00:32:22.708075824 +0000
+@@ -136,37 +136,40 @@
+         const uint4 wv = *reinterpret_cast<const uint4*>(
+             &w[static_cast<size_t>(col) * row_bytes + (k * BITS) / 8]);
+         const uint32_t* wp = reinterpret_cast<const uint32_t*>(&wv);
+-        // WEIGHT SHARED DECODE: dequantize the tile ONCE and reuse it
+-        // across all M rows (same shift+mask+cvt chain as the per-row
+-        // kernel -> bit-identical values).
+-        float wn[V];
+-        if constexpr (BITS == 4) {
+-#pragma unroll
+-          for (int q = 0; q < 4; ++q)
+-#pragma unroll
+-            for (int j = 0; j < 8; ++j)
+-              wn[q * 8 + j] = static_cast<float>((wp[q] >> (4 * j)) & 0xF);
+-        } else {
+-#pragma unroll
+-          for (int q = 0; q < 4; ++q)
+-#pragma unroll
+-            for (int j = 0; j < 4; ++j)
+-              wn[q * 4 + j] = static_cast<float>((wp[q] >> (8 * j)) & 0xFF);
+-        }
+-        // Per-row math: the qmv_wide_kernel inner loop, verbatim order.
++        // Weight words: keep the four 32-bit pack-interleaved words in a
++        // 4-element array (ws) instead of a 32-element decoded float
++        // array (wn[V]), and run the identical shift+mask+cvt chain
++        // inline in the MAC loop. The decoded values are bit-identical
++        // to a standalone decode (same int->float conversion, same order)
++        // and the FMA order is unchanged (q-major, j-minor). The 4-element
++        // form is required to dodge a codegen defect in the ROCm 10.0 /
++        // clang 23.0.0rocm7.14 toolchain: the 32-element wn[V] array in
++        // this position qnan-poisons the acc initialization and deletes
++        // the entire k-loop body (all 18 instantiations compile to a no-op
++        // storing qnan). Probe matrix (t1281): 1-word/8-value and
++        // 2-word/16-value decode arrays survive at -O3; the 32-element
++        // 4-word form degenerates regardless of 16B vs 4B weight load
++        // and regardless of whether xn is an array or scalar loads.
++        uint32_t ws[4];
++#pragma unroll
++        for (int q = 0; q < 4; ++q)
++          ws[q] = wp[q];
++        // Per-row math: the qmv_wide_kernel inner loop, verbatim order
++        // (inline decode == same cvt chain as the shared decode; FMA
++        // order q-major, j-minor, identical values).
+         float la = 0.0f;
+         if constexpr (BITS == 4) {
+ #pragma unroll
+           for (int q = 0; q < 4; ++q)
+ #pragma unroll
+             for (int j = 0; j < 8; ++j)
+-              la += xn[q * 8 + j] * wn[q * 8 + j];
++              la += xn[q * 8 + j] * static_cast<float>((ws[q] >> (4 * j)) & 0xF);
+         } else {
+ #pragma unroll
+           for (int q = 0; q < 4; ++q)
+ #pragma unroll
+             for (int j = 0; j < 4; ++j)
+-              la += xn[q * 4 + j] * wn[q * 4 + j];
++              la += xn[q * 4 + j] * static_cast<float>((ws[q] >> (8 * j)) & 0xFF);
+         }
+         acc[m][c] += s * la + b * lx;
+       }
