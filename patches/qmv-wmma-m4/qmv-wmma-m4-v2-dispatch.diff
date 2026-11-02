@@ -1,0 +1,128 @@
+--- a/mlx/backend/rocm/quantized/qmm.hip
++++ b/mlx/backend/rocm/quantized/qmm.hip
+@@ -4154,58 +4154,78 @@
+ // filler
+       static int mr2_min_n_env = parse_non_negative_int_env("MLX_QMV_MR2_MIN_N", 0);
+       int mr2_min_n = (mr2_min_n_env > 0) ? mr2_min_n_env : 16384;
+-      // t1339: wmma-m4 — M<=4 QMV on the gfx1201 (RDNA4) WMMA 16x16x16
+-      // 16x16x16 matrix units (fp16 in / f32 out; the M=1->M=4 scalar-FMA
+-      // excess lever, REPORT-gemms-m4 s4; kernel in qmv_wmma_m4_kernel.hip). One
+-      // block = one wave = one 16-column n-tile x all M rows; the
+-      // 16x16 4-bit weight tile is dequantized once per k-tile (the
+-      // per-group scale/bias is constant within the 16-wide tile) ->
+-      // T B fragment; A = x tile; two k-tiles per iteration on two
+-      // independent f32 accumulators (ILP = 2); next-iteration global
+-      // data is prefetched in registers and both x and the packed 4-bit
+-      // tile are 16B vector loads (the unpipelined scalar form measured
+-      // 6-9x slow of rows). STATISTICAL (not row-exact): the dequant
+-      // rounds to fp16 (the native 16x16x16 f32-accumulate wmma input
+-      // class; bf16's 8-bit mantissa missed the 1e-2 bar) and the
+-      // FMA order/precision differs from the rows path (gate:
+-      // maxdiff <= 1e-2 vs the rows reference, finite). AHEAD of the
+-      // rows gate: when MLX_QMV_WMMA is set, M=1..4 shapes at
+-      // N%16==0 / K%16==0 run the matrix units regardless of
+-      // MLX_ROCM_QMV_ROWS. f32 x declines (the affine op promotes x to
+-      // the scales dtype; bf16 scales keep x bf16 — the model layout).
+-      // OPT-IN ONLY: MLX_QMV_WMMA=1 (DEFAULT OFF — zero behavior
+-      // change when unset: the rows/mr2/mr/wide selection below runs
+-      // exactly as before).
++      // t1347: wmma-m4 v2 — M=4 QMV on the gfx1201 (RDNA4) WMMA
++      // 16x16x16 matrix units (fp16 in / f32 out; the M=1->M=4
++      // scalar-FMA excess lever, REPORT-gemms-m4 s4; kernel in
++      // qmv_wmma_m4_kernel.hip). v1 (one block = one 32-thread wave
++      // = one 16-column n-tile x all M rows) was correct and faster
++      // than rows on 4/6 isolated shape classes but cost +25-44us/
++      // call in the full model stream (REPORT-wmma-m4: 1-wave
++      // workgroup scheduling/occupancy interaction with the GDN+SDPA
++      // kernel stream). v2 groups WAVES waves (1/2/4, template) in one
++      // block tiling 16*WAVES n-columns, so the workgroups interleave
++      // with the model stream like the rows kernel's 6-wave blocks;
++      // the per-tile math (dequant once per k-tile -> fp16 B
++      // fragment; A = x tile; two k-tiles per iteration on two
++      // independent f32 accumulators (ILP = 2); prefetched 16B vector
++      // loads) is unchanged. M=4 ONLY: M<=3 falls through to
++      // rows/scalar (M=1 is an inherent loss — 15/16 rows dead in the
++      // 16-row mma). STATISTICAL (not row-exact): the dequant rounds
++      // to fp16 (the native 16x16x16 f32-accumulate wmma input class;
++      // bf16's 8-bit mantissa missed the 1e-2 bar) and the FMA
++      // order/precision differs from the rows path (gate: maxdiff
++      // <= 1e-2 vs the rows reference, finite). AHEAD of the rows
++      // gate: when MLX_QMV_WMMA is set, M=4 shapes at N%16==0 /
++      // K%16==0 run the matrix units regardless of MLX_ROCM_QMV_ROWS.
++      // f32 x declines (the affine op promotes x to the scales dtype;
++      // bf16 scales keep x bf16 — the model layout). OPT-IN ONLY:
++      // MLX_QMV_WMMA=1 (DEFAULT OFF — zero behavior change when unset:
++      // the rows/mr2/mr/wide selection below runs exactly as before).
++      // Block size: MLX_QMV_WMMA_WAVES (1/2/4, default 2); the launch
++      // falls back to the largest power-of-2 wave count that divides
++      // N/16 (e.g. N=32 -> 2-wave even if 4 was requested).
+       static bool use_wmma_qmv = (std::getenv("MLX_QMV_WMMA") != nullptr);
+-      bool wmma_ok = use_wmma_qmv && (bits_ == 4) &&
+-          (M >= 1) && (M <= 4) && (N % 16 == 0) && (K % 16 == 0) &&
+-          (x.dtype() != float32);
++      static int wmma_waves_env = parse_non_negative_int_env("MLX_QMV_WMMA_WAVES", 2);
++      bool wmma_ok = use_wmma_qmv && (bits_ == 4) && (M == 4) &&
++          (N % 16 == 0) && (K % 16 == 0) && (x.dtype() != float32);
+       if (wmma_ok) {
+-        dim3 wblock(32);
+-        dim3 wgrid(N / 16, 1);
+-#define LAUNCH_QMV_WMMA_M4(XT, ST, GS)                             \
+-  enc.add_kernel_node(                                            \
+-      &rocm::qmv_wmma_m4_kernel<XT, ST, GS>, wgrid, wblock, 0u,  \
+-      (const XT*)x_ptr, w_ptr, (const ST*)scales_ptr,            \
++        int W = wmma_waves_env;
++        W = (W >= 4) ? 4 : (W >= 2) ? 2 : 1;
++        while (W > 1 && (N % (16 * W) != 0))
++          W >>= 1;
++#define LAUNCH_QMV_WMMA_M4(XT, ST, GS, WV)                      \
++  enc.add_kernel_node(                                        \
++      &rocm::qmv_wmma_m4_kernel<XT, ST, GS, WV>,             \
++      dim3(N / (16 * WV), 1), dim3(32 * WV), 0u,            \
++      (const XT*)x_ptr, w_ptr, (const ST*)scales_ptr,       \
+       (const XT*)biases_ptr, (XT*)out_ptr, M, N, K, has_bias)
+-#define LAUNCH_QMV_WMMA_M4_GS(XT, ST)                               \
+-  do {                                                            \
+-    if (group_size_ == 32) { LAUNCH_QMV_WMMA_M4(XT, ST, 32); }   \
+-    else if (group_size_ == 64) { LAUNCH_QMV_WMMA_M4(XT, ST, 64); } \
+-    else { LAUNCH_QMV_WMMA_M4(XT, ST, 128); }                    \
++#define LAUNCH_QMV_WMMA_M4_GS(XT, ST, WV)                        \
++  do {                                                          \
++    if (group_size_ == 32) { LAUNCH_QMV_WMMA_M4(XT, ST, 32, WV); } \
++    else if (group_size_ == 64) { LAUNCH_QMV_WMMA_M4(XT, ST, 64, WV); } \
++    else { LAUNCH_QMV_WMMA_M4(XT, ST, 128, WV); }              \
+   } while (0)
+-#define LAUNCH_QMV_WMMA_M4_X(XT)                                   \
+-  do {                                                            \
+-    if (scales.dtype() == bfloat16) {                            \
+-      LAUNCH_QMV_WMMA_M4_GS(XT, hip_bfloat16);                   \
+-    } else if (scales.dtype() == float32) {                      \
+-      LAUNCH_QMV_WMMA_M4_GS(XT, float);                          \
+-    } else { LAUNCH_QMV_WMMA_M4_GS(XT, __half); }                \
++#define LAUNCH_QMV_WMMA_M4_X(XT, WV)                             \
++  do {                                                          \
++    if (scales.dtype() == bfloat16) {                          \
++      LAUNCH_QMV_WMMA_M4_GS(XT, hip_bfloat16, WV);            \
++    } else if (scales.dtype() == float32) {                    \
++      LAUNCH_QMV_WMMA_M4_GS(XT, float, WV);                  \
++    } else { LAUNCH_QMV_WMMA_M4_GS(XT, __half, WV); }         \
+   } while (0)
+-        if (x.dtype() == bfloat16) {
+-          LAUNCH_QMV_WMMA_M4_X(hip_bfloat16);
+-        } else {
+-          LAUNCH_QMV_WMMA_M4_X(__half);
++        switch (W) {
++          case 4:
++            if (x.dtype() == bfloat16) { LAUNCH_QMV_WMMA_M4_X(hip_bfloat16, 4); }
++            else { LAUNCH_QMV_WMMA_M4_X(__half, 4); }
++            break;
++          case 2:
++            if (x.dtype() == bfloat16) { LAUNCH_QMV_WMMA_M4_X(hip_bfloat16, 2); }
++            else { LAUNCH_QMV_WMMA_M4_X(__half, 2); }
++            break;
++          default:
++            if (x.dtype() == bfloat16) { LAUNCH_QMV_WMMA_M4_X(hip_bfloat16, 1); }
++            else { LAUNCH_QMV_WMMA_M4_X(__half, 1); }
++            break;
+         }
+ #undef LAUNCH_QMV_WMMA_M4_X
+ #undef LAUNCH_QMV_WMMA_M4_GS

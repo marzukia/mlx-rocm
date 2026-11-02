@@ -1,20 +1,31 @@
-// t1339: WMMA (rocwmma) M<=4 QMV kernel for gfx1201 (RDNA4) — K=3 MTP verify.
+// t1347: WMMA (rocwmma) M=4 QMV kernel for gfx1201 (RDNA4) — K=3 MTP
+// verify, multi-wave v2.
 //
-// One block = one wave (32 threads) = one 16-column n-tile x all M rows.
-// The 16x16 4-bit weight tile is dequantized once per k-tile (the
-// per-group scale/bias is constant within the 16-wide tile, since
-// group_size >= 32 > 16) into the fp16 B fragment staging; A = x tile.
-// Two k-tiles per iteration on two independent f32 accumulators
-// (ILP = 2). The NEXT iteration's global data is prefetched into
-// registers while the current iteration's LDS/fragment/mma work runs,
-// and both x and the packed weight tile are 16B vector loads (the v1
-// scalar strided 4B/8B loads + unpipelined latency chain measured
-// 6-9x slow of the rows reference; this is the pipelined v3 form).
+// v1 (REPORT-wmma-m4): one block = one wave (32 threads) = one 16-column
+// n-tile x all M rows. Correct (unit 24/24 maxdiff 0.007812, A/B 200/200)
+// and faster than the rows scalar kernel on 4/6 isolated shape classes —
+// but +25-44us/call in the full model stream. Prime suspect: 32-thread
+// (1-wave) workgroup scheduling/occupancy interaction with the GDN+SDPA
+// kernel stream on gfx1201.
 //
-// Thread mapping (lane = 32): n = lane>>1 (0..15, the weight row /
-// output column), h = lane&1 (half of the 16-wide tile):
+// v2: the per-tile algorithm is UNCHANGED from v1 (one 16-column n-tile x
+// all M rows; the 16x16 4-bit weight tile is dequantized once per k-tile —
+// the per-group scale/bias is constant within the 16-wide tile — into the
+// fp16 B fragment staging; A = x tile; two k-tiles per iteration on two
+// independent f32 accumulators (ILP = 2); the NEXT iteration's global data
+// is prefetched into registers while the current iteration's
+// LDS/fragment/mma work runs; both x and the packed 4-bit tile are 16B
+// vector loads). What changes: WAVES waves (1/2/4, template) are grouped
+// in ONE block tiling 16*WAVES consecutive n-columns, so the workgroup
+// interleave/granularity matches the rows kernel's multi-wave blocks.
+// Wave g (threadIdx.x / 32) owns n-tile
+// blockIdx.x * 16*WAVES + g*16; the per-tile math, fp16 dequant rounding,
+// and f32-accumulate wmma are identical to v1.
+//
+// Thread mapping (g = wave, lane = 32): n = lane>>1 (0..15, the weight row
+// / output column), h = lane&1 (half of the 16-wide tile):
 //   x:  tile t at kt0: 8 consecutive values at x[n*K + kt0 + 8h]
-//       (one 16B vector; valid rows m < M only, M <= 4, rest zeroed)
+//       (one 16B vector; valid rows m < M only, M = 4, rest zeroed)
 //   w:  the 32-wide k-pair: 4 consecutive words at
 //       w[col * row_words + kt/2 + 4h] (one 16B vector); h = 0 decodes
 //       tile 0 (words 0..3 -> kk 0..15), h = 1 decodes tile 1 (words
@@ -29,10 +40,14 @@
 // f32-accumulate wmma vs the rows path's f32 scalar FMA. Gate:
 // maxdiff <= 1e-2 vs the rows reference, finite.
 //
-// Dispatch (qmm.hip): MLX_QMV_WMMA=1 (DEFAULT OFF), bits_ == 4,
-// M = 1..4, N % 16 == 0, K % 16 == 0, x NOT float32 (the affine op
-// promotes x to the scales dtype, so f32 scales reach here as f32 x
-// and decline — bf16 scales keep x bf16, the model layout).
+// Dispatch (qmm.hip): MLX_QMV_WMMA=1 (DEFAULT OFF), bits_ == 4, M = 4
+// ONLY (M<=3 falls through to rows/scalar — M=1 is an inherent loss:
+// 15/16 rows dead in the 16-row mma), N % 16 == 0, K % 16 == 0, x NOT
+// float32 (the affine op promotes x to the scales dtype, so f32 scales
+// reach here as f32 x and decline — bf16 scales keep x bf16, the model
+// layout). Block size: MLX_QMV_WMMA_WAVES (1/2/4, default 2); the launch
+// falls back to the largest power-of-2 wave count that divides N/16
+// (e.g. N = 32 -> 2-wave even if 4 was requested).
 #include <hip/hip_runtime.h>
 #include <hip/hip_bfloat16.h>
 #include <hip/hip_fp16.h>
@@ -47,25 +62,26 @@
 
 namespace mlx::core::rocm {
 
-template <typename T, typename ST, int GROUP_SIZE>
-__global__ void __launch_bounds__(32)
+template <typename T, typename ST, int GROUP_SIZE, int WAVES>
+__global__ void __launch_bounds__(32 * WAVES)
 qmv_wmma_m4_kernel(
     const T* __restrict__ x, const uint32_t* __restrict__ w,
     const ST* __restrict__ scales, const T* __restrict__ biases,
     T* __restrict__ out, int M, int N, int K, bool has_bias)
 {
 #if ROCM_QMV_WMMA_M4
+  const int g = threadIdx.x >> 5;  // 0..WAVES-1 — the wave in this block
   const int lane = threadIdx.x & 31;
-  const int n0 = static_cast<int>(blockIdx.x) * 16;
+  const int n0 = static_cast<int>(blockIdx.x) * (16 * WAVES) + g * 16;
   const int n = lane >> 1;        // 0..15 — the weight row / output col index
   const int h = lane & 1;         // half of the 16-wide tile
   const int col = n0 + n;         // N % 16 == 0 -> col < N always
   const int row_words = K >> 3;  // packed 4-bit weight row (words: 8 nibbles / word)
   const int ng = K / GROUP_SIZE;
 
-  __shared__ __half A[2][16][16];  // x tiles (t, m, k)
-  __shared__ __half B[2][16][16];  // w dequant tiles (t, n, k)
-  __shared__ float Cs[16][16];
+  __shared__ __half A[WAVES][2][16][16];  // x tiles (g, t, m, k)
+  __shared__ __half B[WAVES][2][16][16];  // w dequant tiles (g, t, n, k)
+  __shared__ float Cs[WAVES][16][16];
 
   rocwmma::fragment<
       rocwmma::matrix_a, 16, 16, 16, __half, rocwmma::row_major>
@@ -96,12 +112,12 @@ qmv_wmma_m4_kernel(
   // xvt: main loop — 16 consecutive kk per thread (off 0..14, step 2).
   // xv:  tail — 8 kk per thread at 8h..8h+7 (off 0..6, step 2).
   auto xvt = [&](uint32_t v, int t, int off) {
-    A[t][n][off] = xh(v);
-    A[t][n][off + 1] = xh(v >> 16);
+    A[g][t][n][off] = xh(v);
+    A[g][t][n][off + 1] = xh(v >> 16);
   };
   auto xv = [&](uint32_t v, int t, int off) {
-    A[t][n][8 * h + off] = xh(v);
-    A[t][n][8 * h + off + 1] = xh(v >> 16);
+    A[g][t][n][8 * h + off] = xh(v);
+    A[g][t][n][8 * h + off + 1] = xh(v >> 16);
   };
 
   // w nibble -> s*w + b -> fp16.
@@ -137,7 +153,7 @@ qmv_wmma_m4_kernel(
   };
 
   // 2 consecutive packed words (one 8B vector) for the 32-wide k-pair
-  // starting at kt0: words kt0/8 + 2h .. +1 (8 nibbles per word;
+  // starting at kt0: words kt0/8 + 2h .. + 1 (8 nibbles per word;
   // h = 0 -> tile 0's 16 values, h = 1 -> tile 1's 16 values).
   auto load_w2 = [&](int kt0) -> uint2 {
     return *reinterpret_cast<const uint2*>(
@@ -172,24 +188,24 @@ qmv_wmma_m4_kernel(
       // h = 0 decodes tile 0 (2 words -> 16 values).
 #pragma unroll
       for (int j = 0; j < 8; ++j) {
-        B[0][n][j] = bval(wv.x, j, s0, b0);
-        B[0][n][8 + j] = bval(wv.y, j, s0, b0);
+        B[g][0][n][j] = bval(wv.x, j, s0, b0);
+        B[g][0][n][8 + j] = bval(wv.y, j, s0, b0);
       }
     } else {
       // h = 1 decodes tile 1 (2 words -> 16 values).
 #pragma unroll
       for (int j = 0; j < 8; ++j) {
-        B[1][n][j] = bval(wv.x, j, s1, b1);
-        B[1][n][8 + j] = bval(wv.y, j, s1, b1);
+        B[g][1][n][j] = bval(wv.x, j, s1, b1);
+        B[g][1][n][8 + j] = bval(wv.y, j, s1, b1);
       }
     }
     __syncthreads();
 
     // 2. Fragment loads (LDS -> registers).
-    rocwmma::load_matrix_sync(fA[0], &A[0][0][0], 16);
-    rocwmma::load_matrix_sync(fB[0], &B[0][0][0], 16);
-    rocwmma::load_matrix_sync(fA[1], &A[1][0][0], 16);
-    rocwmma::load_matrix_sync(fB[1], &B[1][0][0], 16);
+    rocwmma::load_matrix_sync(fA[0], &A[g][0][0][0], 16);
+    rocwmma::load_matrix_sync(fB[0], &B[g][0][0][0], 16);
+    rocwmma::load_matrix_sync(fA[1], &A[g][1][0][0], 16);
+    rocwmma::load_matrix_sync(fB[1], &B[g][1][0][0], 16);
 
     // 3. Prefetch the next k-pair (overlaps the mma + barrier below).
     if (kt + 32 < kt_last) {
@@ -217,24 +233,24 @@ qmv_wmma_m4_kernel(
   // Tail: K % 32 != 0 -> one final 16-wide tile (K % 16 == 0 at dispatch).
   if (kt_last < K) {
     const int kt = kt_last;
-    const int g = kt / GROUP_SIZE;
-    const float s = static_cast<float>(scales[static_cast<size_t>(col) * ng + g]);
+    const int gg = kt / GROUP_SIZE;
+    const float s = static_cast<float>(scales[static_cast<size_t>(col) * ng + gg]);
     const float b =
-        has_bias ? static_cast<float>(biases[static_cast<size_t>(col) * ng + g])
+        has_bias ? static_cast<float>(biases[static_cast<size_t>(col) * ng + gg])
                  : 0.0f;
     // one word per thread (8 nibbles = 8 values): word kt/8 + h
     const uint32_t w1 = w[static_cast<size_t>(col) * row_words + (kt >> 3) + h];
 #pragma unroll
     for (int j = 0; j < 8; ++j)
-      B[0][n][8 * h + j] = bval(w1, j, s, b);
+      B[g][0][n][8 * h + j] = bval(w1, j, s, b);
     const uint4 xvt = load_x8(kt);
     xv(xvt.x, 0, 0);
     xv(xvt.y, 0, 2);
     xv(xvt.z, 0, 4);
     xv(xvt.w, 0, 6);
     __syncthreads();
-    rocwmma::load_matrix_sync(fA[0], &A[0][0][0], 16);
-    rocwmma::load_matrix_sync(fB[0], &B[0][0][0], 16);
+    rocwmma::load_matrix_sync(fA[0], &A[g][0][0][0], 16);
+    rocwmma::load_matrix_sync(fB[0], &B[g][0][0][0], 16);
     rocwmma::mma_sync(fC[0], fA[0], fB[0], fC[0]);
     __syncthreads();
   }
@@ -242,7 +258,7 @@ qmv_wmma_m4_kernel(
   // Merge the two accumulators, f32 -> LDS -> T-convert -> global.
   for (int e = 0; e < fC[0].num_elements; ++e)
     fC[0].x[e] += fC[1].x[e];
-  rocwmma::store_matrix_sync(&Cs[0][0], fC[0], 16, rocwmma::mem_row_major);
+  rocwmma::store_matrix_sync(&Cs[g][0][0], fC[0], 16, rocwmma::mem_row_major);
   __syncthreads();
 #pragma unroll
   for (int e = 0; e < 8; ++e) {
@@ -252,7 +268,7 @@ qmv_wmma_m4_kernel(
     const int m = 8 * (lane >> 4) + e;
     const int c = lane & 15;
     if (m < M)
-      out[static_cast<size_t>(m) * N + n0 + c] = static_cast<T>(Cs[m][c]);
+      out[static_cast<size_t>(m) * N + n0 + c] = static_cast<T>(Cs[g][m][c]);
   }
 #endif
 }
