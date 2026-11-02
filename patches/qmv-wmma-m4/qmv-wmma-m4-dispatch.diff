@@ -1,0 +1,74 @@
+--- a/mlx/backend/rocm/quantized/qmm.hip
++++ b/mlx/backend/rocm/quantized/qmm.hip
+@@ -20,6 +20,7 @@
+ }
+ #include "mlx/backend/rocm/quantized/qmv_wide_mr_kernel.hip"
+ #include "mlx/backend/rocm/quantized/qmv_rows_msg_kernel.hip"
++#include "mlx/backend/rocm/quantized/qmv_wmma_m4_kernel.hip"
+ #include "mlx/primitives.h"
+ 
+ #include <hip/hip_bfloat16.h>
+@@ -4155,5 +4156,63 @@
+       static int mr2_min_n_env = parse_non_negative_int_env("MLX_QMV_MR2_MIN_N", 0);
+       int mr2_min_n = (mr2_min_n_env > 0) ? mr2_min_n_env : 16384;
++      // t1339: wmma-m4 — M<=4 QMV on the gfx1201 (RDNA4) WMMA 16x16x16
++      // 16x16x16 matrix units (fp16 in / f32 out; the M=1->M=4 scalar-FMA
++      // excess lever, REPORT-gemms-m4 s4; kernel in qmv_wmma_m4_kernel.hip). One
++      // block = one wave = one 16-column n-tile x all M rows; the
++      // 16x16 4-bit weight tile is dequantized once per k-tile (the
++      // per-group scale/bias is constant within the 16-wide tile) ->
++      // T B fragment; A = x tile; two k-tiles per iteration on two
++      // independent f32 accumulators (ILP = 2); next-iteration global
++      // data is prefetched in registers and both x and the packed 4-bit
++      // tile are 16B vector loads (the unpipelined scalar form measured
++      // 6-9x slow of rows). STATISTICAL (not row-exact): the dequant
++      // rounds to fp16 (the native 16x16x16 f32-accumulate wmma input
++      // class; bf16's 8-bit mantissa missed the 1e-2 bar) and the
++      // FMA order/precision differs from the rows path (gate:
++      // maxdiff <= 1e-2 vs the rows reference, finite). AHEAD of the
++      // rows gate: when MLX_QMV_WMMA is set, M=1..4 shapes at
++      // N%16==0 / K%16==0 run the matrix units regardless of
++      // MLX_ROCM_QMV_ROWS. f32 x declines (the affine op promotes x to
++      // the scales dtype; bf16 scales keep x bf16 — the model layout).
++      // OPT-IN ONLY: MLX_QMV_WMMA=1 (DEFAULT OFF — zero behavior
++      // change when unset: the rows/mr2/mr/wide selection below runs
++      // exactly as before).
++      static bool use_wmma_qmv = (std::getenv("MLX_QMV_WMMA") != nullptr);
++      bool wmma_ok = use_wmma_qmv && (bits_ == 4) &&
++          (M >= 1) && (M <= 4) && (N % 16 == 0) && (K % 16 == 0) &&
++          (x.dtype() != float32);
++      if (wmma_ok) {
++        dim3 wblock(32);
++        dim3 wgrid(N / 16, 1);
++#define LAUNCH_QMV_WMMA_M4(XT, ST, GS)                             \
++  enc.add_kernel_node(                                            \
++      &rocm::qmv_wmma_m4_kernel<XT, ST, GS>, wgrid, wblock, 0u,  \
++      (const XT*)x_ptr, w_ptr, (const ST*)scales_ptr,            \
++      (const XT*)biases_ptr, (XT*)out_ptr, M, N, K, has_bias)
++#define LAUNCH_QMV_WMMA_M4_GS(XT, ST)                               \
++  do {                                                            \
++    if (group_size_ == 32) { LAUNCH_QMV_WMMA_M4(XT, ST, 32); }   \
++    else if (group_size_ == 64) { LAUNCH_QMV_WMMA_M4(XT, ST, 64); } \
++    else { LAUNCH_QMV_WMMA_M4(XT, ST, 128); }                    \
++  } while (0)
++#define LAUNCH_QMV_WMMA_M4_X(XT)                                   \
++  do {                                                            \
++    if (scales.dtype() == bfloat16) {                            \
++      LAUNCH_QMV_WMMA_M4_GS(XT, hip_bfloat16);                   \
++    } else if (scales.dtype() == float32) {                      \
++      LAUNCH_QMV_WMMA_M4_GS(XT, float);                          \
++    } else { LAUNCH_QMV_WMMA_M4_GS(XT, __half); }                \
++  } while (0)
++        if (x.dtype() == bfloat16) {
++          LAUNCH_QMV_WMMA_M4_X(hip_bfloat16);
++        } else {
++          LAUNCH_QMV_WMMA_M4_X(__half);
++        }
++#undef LAUNCH_QMV_WMMA_M4_X
++#undef LAUNCH_QMV_WMMA_M4_GS
++#undef LAUNCH_QMV_WMMA_M4
++        return;
++      }
+       // t1253: rows-msg — multi-row QMV with shared weight decode (the
+       // MTPLX msg morphology ported to gfx1201/HIP; see
+       // qmv_rows_msg_kernel.hip + docs/qmv-rows-msg.md). One workgroup =
