@@ -13,13 +13,14 @@ Output: SAMPSTATS line + ALLTOKS (token ids, for overlap metrics).
 """
 
 import os
+import os.path
 import time
 
 import mlx.core as mx
 from mlx_lm import load
 from mlx_lm.models.cache import KVCache
 
-MODEL = os.environ.get("MTP_MODEL", f"{os.environ.get('MODELS', '/mnt/models')}/qwen3-9b-mlx")
+MODEL = os.environ.get("MTP_MODEL", os.path.join(os.environ.get("MODELS", "models"), "qwen3-9b-mlx"))
 PROMPT = (
     "Explain in great detail how a modern smartphone works, from the "
     "hardware components to the operating system, covering every "

@@ -33,11 +33,11 @@
 # Usage (ON guest-a):
 #   bash bench/run-rows-tuning.sh <venv-py> [model-dir] [tape-bench]
 #     venv-py:    the interpreter with the built wheel (venv-rs)
-#     model-dir:  default /mnt/models/qwen3-9b-mlx
+#     model-dir:  default $MODELS/qwen3-9b-mlx
 #     tape-bench: default $HOME/t1325-canon/mtp-bench-k3-tape.py
 set -uo pipefail
 PY=$1
-MODEL=${2:-/mnt/models/qwen3-9b-mlx}
+MODEL=${2:-${MODELS:-models}/qwen3-9b-mlx}
 TAPE=${3:-$HOME/t1325-canon/mtp-bench-k3-tape.py}
 MODELS=$(dirname "$MODEL")
 T=$MODELS/tmp/t1354-rows-tuning
