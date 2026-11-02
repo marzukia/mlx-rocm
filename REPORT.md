@@ -334,3 +334,99 @@ authoritative copy is committed at
 - `patches/qmv-rows-msg-kernel-wsfix.diff` — V2-kernel → fixed diff.
 - `docs/RUN-qmv-rows-reconcile.md` — GPU RUN card (build + SASS spot-check
   + the three probes).
+
+## QMV-ROWS GPU verify (bench + probe mission, t1297) — the ws[4] fix dodges the codegen defect but is NOT bit-exact: K=3 A/B is not lossless; do not serve
+
+Guest RX 9070 XT (gfx1201), lane-locked, sibling-staggered. Wheel
+`mlx-0.32.3.dev20261102+75ca881` (rebuilt from the guest V2 tree, kernel
+md5 `3dc576ba…`), model `qwen3-9b-mlx`, MTP=4 (K=3), MAX_TOKENS=256
+(≈400 tokens). Verdict per gate:
+
+1. **SASS spot-check: PASS.** The freshly compiled `qmm.o` (the previous
+   object was STALE — the CMake custom command only tracks `qmm.hip`, not
+   the `#include`d kernel header, so the 00:35 patch never recompiled;
+   the stale `.o` was preserved and the object force-rebuilt) shows, per
+   rows-kernel instantiation: 288 global loads (16), 72 stores (4),
+   **1680 `v_fmac_f32_e32`** (122) — vs the pre-fix object's 0 loads / 0
+   FMA no-op. The t1281 codegen defect is dodged: the k-loop body is
+   real, present, and executed (N=248320 rows now takes 1.55 ms — the
+   127 MB weight read at ~96 GB/s — vs the pre-fix 0.158 ms no-op).
+2. **Standalone bit-exact probe: FAIL.** Rows is finite and 3.14x faster
+   than wide, but NOT bit-exact vs the per-row contract reference
+   (`quantized_matmul(x[r:r+1])`):
+
+   | N | path | wall (ms) | md5(out) | maxdiff vs per-row ref |
+   |---|---|---|---|---|
+   | 248320 | rows (MIN_N=16384) | 1.550 | `268943ea…` | **9.54e-07 (≈1–2 ULP)** |
+   | 248320 | wide (MIN_N=400000) | 4.873 | `bbce531c…` | 0.0 (bit-exact) |
+   | 12288 | rows (MIN_N=8192) | 0.133 | `03175235…` | **7.15–9.54e-07 (≈1–2 ULP)** |
+   | 12288 | wide (MIN_N=20000) | 0.142 | `08448118…` | 0.0 (bit-exact) |
+
+   md5(rows) ≠ md5(wide) in both shapes. The one-row (wide) path is
+   bit-exact; the multi-row path deviates by 1–2 ULP per element.
+3. **K=3 lossless A/B (400 tokens, B0 rows-OFF vs R1 rows-ON MIN_N=1):
+   FAIL.** FIRST20 identical on both arms; the full token streams diverge
+   at **token index 172** (B0: `…7370 318 68 1257 2487 7905…`, R1:
+   `…7370 11 424 369 264 1559 63164…`); ALLTOKS md5
+   `9707b15d…` ≠ `05a141f0…`. `LOSSLESS_GATE=FAIL`.
+4. **Benchmark (same session, same prompt, 256 pairs):**
+
+   | | B0 (rows OFF) | R1 (rows ON) | Δ |
+   |---|---|---|---|
+   | TOKS | 415 | 412 | −0.7% |
+   | TOKS_S | 37.78 | 38.66 | **+2.3%** |
+   | verify ms/pair | 41.39 | 37.83 | **−8.6%** |
+   | wall ms/pair | 85.82 | 83.27 | −3.0% |
+   | D1PCT / D2PCT / D3PCT | 77.3 / 60.6 / 48.3 | 75.0 / 62.5 / 43.3 | −2.3 / +1.9 / −5.0 pp |
+   | n_refwd | 299 | 308 | |
+   | refwd ms | 34.54 | 35.56 | |
+
+   (Session B0 control differs from the t1265 reference, 45.77 tok/s /
+   D1PCT 68.0 / n_refwd 272 — run-to-run acceptance variance; the
+   in-session A/B is the valid comparison. R1's verify-time saving is
+   real and consistent with the probe's 3.14x QMV speedup.)
+
+### Diagnosis
+
+The ws[4] fix is a **dodge, not a fix, of the t1281 defect, and it does
+not meet the row-exact bit-exact contract.** The source-level arithmetic
+is bit-identical by inspection (same values, same decode chain, same
+q-major/j-minor FMA order), but bit-exactness across two *different
+kernel functions* depends on the compiler emitting the same FP
+association/contraction for both. It does not: the multi-row kernel's
+unrolled 8-wide `la` additions / `acc[m][c]` 2D-scratch context get a
+different contraction or ordering than the one-row reference's single
+accumulator, yielding a systematic 1–2 ULP deviation. That is enough:
+under greedy argmax, one ULP-scale logit perturbation flips a token at
+index 172, and the K=3 stream diverges from there — the A/B is not
+lossless. (Note also the acceptance wobble, D1 77.3→75.0, D3 48.3→43.3:
+the 1–2 ULP draft-side logit jitter changes draft-acceptance outcomes,
+which is why the streams diverge even though both arms are the "same"
+model.)
+
+**Do not serve R1.** The ws[4] kernel is numerically close (1–2 ULP) and
+3.14x faster, but it is not bit-exact and K=3 is not lossless. To close:
+(a) make the multi-row kernel bit-exact — the t1281 audit should be
+extended to a *compiled* comparison (disassemble both kernels and match
+the FP op sequence, not just the FMA count), or restructure the kernel
+so the per-row op sequence is provably the same contraction the
+reference gets (e.g. per-row scalar loads and a scalar accumulator,
+matching `qmv_wide_kernel`'s shape exactly — the 16B x/weight vector
+staging may itself be the codegen-shape difference that re-triggers a
+different contraction), then re-run probe 2 (bit-exact) and probe 3
+(lossless A/B); or (b) drop the bit-exact requirement and re-validate
+K=3 as "statistically equivalent" (not the t1265 contract).
+
+### Build-process findings (both traps cost a full GPU round-trip)
+
+1. **Stale object.** `qmm.o` mtime predates the kernel-header patch; the
+   CMake custom command's `DEPENDS ${hip_src}` does not include
+   `#include`d headers. Any qmv-kernel patch requires deleting the `.o`
+   (preserved as `qmm.o.stale-1793581877`) and a `--no-cache-dir`
+   rebuild.
+2. **`pip install --target` does not replace existing files.** After the
+   rebuild, the venv still ran the old `libmlx.so` (md5 mismatch vs the
+   wheel) — the first probe round measured the PRE-FIX kernel (all-NaN,
+   0.158 ms) while the SASS check (run on the build-tree object) already
+   showed the fix. Wipe the package dir before `--target` install, and
+   hash-pin `libmlx.so` before trusting any run.
