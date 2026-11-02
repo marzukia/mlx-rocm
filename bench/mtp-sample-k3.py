@@ -18,7 +18,7 @@ import time
 import mlx.core as mx
 
 from mlx_lm import load
-from mlx_lm.cache_types import KVCache
+from mlx_lm.models.cache import KVCache
 
 MODEL = os.environ.get("MTP_MODEL", f"{os.environ.get('MODELS', '/mnt/models')}/qwen3-9b-mlx")
 PROMPT = "Explain in great detail how a modern smartphone works, from the hardware components to the operating system, covering every subsystem. Be exhaustive."
@@ -33,14 +33,14 @@ def sample(logits):
     """One target sample: temperature 1.0 + top-p 0.95, shared stream."""
     p = mx.softmax(logits / TEMP)
     # top-p mask: keep the smallest set whose cumulative mass >= TOP_P
-    sorted_p, idx = mx.sort(p, descending=True)
+    idx = mx.argsort(-p)  # descending by value (argsort is ascending-only)
+    sorted_p = mx.take(p, idx)
     csum = mx.cumsum(sorted_p)
-    cutoff = csum - sorted_p + TOP_P  # keep where csum - p < top_p
-    keep = (csum <= cutoff) | (csum - sorted_p < TOP_P)
+    keep = csum - sorted_p < TOP_P
     masked = mx.where(keep, sorted_p, 0.0)
     masked = masked / mx.sum(masked)
     i = mx.random.categorical(masked)
-    return int(idx[i])
+    return int(mx.take(idx, i))
 
 
 def save_gdn(cache):
@@ -76,8 +76,7 @@ def main():
     mx.eval(logits, hidden)
     l = logits[0, -1]
     h = hidden[0, -1]
-    prev_token = sample(l)
-    out = [prev_token]
+    out = []
     verifies = 0
     d1_acc = d2_acc = d3_acc = 0
     t1 = time.perf_counter()
@@ -87,6 +86,11 @@ def main():
             break
         # Single-token step: target sample at the carried position, then
         # the MTP drafter chain (S=1 — rows never engages here by design).
+        # mtp_cache is reset per step: under sampling the drafter's own KV
+        # context accumulates rejected drafts and poisons the next draft;
+        # the draft stays a function of (target prenorm hidden, emb), with
+        # intra-step chain context (dh1->dh2->dh3) preserved.
+        mtp_cache[0] = KVCache()
         t = sample(l)
         if t == EOS:
             break
