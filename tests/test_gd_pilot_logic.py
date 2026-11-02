@@ -34,8 +34,7 @@ def _cc() -> str | None:
 def test_pilot_logic_header_and_test_exist():
     assert SRC.is_file(), "tests/cpp/gd_pilot_logic_test.cpp missing"
     assert HDR.is_file(), "graph_decode_pilot_logic.h missing"
-    # The test includes the header by name; the header must be
-    # self-contained (no HIP/MLX includes).
+    # The test includes the header by name; the header must be self-contained (no HIP/MLX includes).
     src = SRC.read_text()
     assert '#include "graph_decode_pilot_logic.h"' in src
     hdr = HDR.read_text()
@@ -44,9 +43,7 @@ def test_pilot_logic_header_and_test_exist():
 
 
 def test_eval_cpp_mirrors_the_pilot_logic():
-    # The transition logic must live in the header (unit-tested), and
-    # eval.cpp must consume it (not carry a second copy of the arming
-    # state machine).
+    # The transition logic must live in the header (unit-tested), and eval.cpp must consume it (not carry a second copy of the arming state machine).  # noqa: E501 (flowing comment line, line-wrap rule)
     eval_src = (ROOT / "vendor" / "mlx-rocm-upstream" / "mlx" / "backend" / "rocm" / "eval.cpp").read_text()
     assert 'graph_decode_pilot_logic.h"' in eval_src
     assert "GdPilotLogic" in eval_src
@@ -68,7 +65,6 @@ def test_pilot_logic_transitions():
     r2 = subprocess.run([str(out)], capture_output=True, text=True, timeout=60)
     assert r2.returncode == 0, f"test main failed (exit {r2.returncode}):\n{r2.stdout}\n{r2.stderr}"
     assert "all checks passed" in r2.stdout
-    # The check count guards against a vacuous test: the main must
-    # report the single success line and nothing else.
+    # The check count guards against a vacuous test: the main must report the single success line and nothing else.
     lines = [ln for ln in r2.stdout.splitlines() if ln.strip()]
     assert len(lines) == 1, lines

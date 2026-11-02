@@ -67,8 +67,7 @@ print("a shape:", a.shape, "A_log:", A_log.shape, flush=True)
 g_model = np.asarray(compute_g(lay.A_log, a_t, lay.dt_bias).astype(mx.float32))
 
 
-# kernel path (f32): sum = bf16(a_f32 + bias_f32); sp_f32 = mxv + log1p(exp(mnv-mxv));
-#                   sp = bf16(sp_f32); arg = -expf(A_log)*sp; g = expf(arg)
+# kernel path (f32): sum = bf16(a_f32 + bias_f32); sp_f32 = mxv + log1p(exp(mnv-mxv)); sp = bf16(sp_f32); arg = -expf(A_log)*sp; g = expf(arg)
 def bf16(x):
     return x.astype(np.float32).astype(np.float32)  # placeholder
 
