@@ -76,8 +76,7 @@ Protocol: `flock`, DPM high (caveat: DPM sysfs read EBUSY this session — see b
 Gates:
 - R0 window 57.33–60.98, drift headroom 61.5: R0 medians 60.93 (R0-2 at 61.08 is +0.10 above the window top, inside the 61.5 headroom — same disposition as t1434's 61.10/61.11).
 - In-run spread: R0 0.52%, R3 0.06% (t1434: 0.02% / 0.15%).
-- vs t1434 (R0 61.10/61.11; R3 65.74/65.84): R0 delta −0.54%/−0.05%, R3 delta −0.09%/−0.30%
-  — inside the −0.55% t1434 band. FIRST20 bit-identical to the t1434/t1426 signature (271 1919 369 264 15352 11 70042 29006 314 1204 264 6278 …).
+- vs t1434 (R0 61.10/61.11; R3 65.74/65.84): R0 delta −0.54%/−0.05%, R3 delta −0.09%/−0.30% — inside the −0.55% t1434 band. FIRST20 bit-identical to the t1434/t1426 signature (271 1919 369 264 15352 11 70042 29006 314 1204 264 6278 …).
 - Pins: bench md5 2c2d6c90 ✓, guard 4a262a0d ✓, sidecar 02a54359 pre/post ✓, venv-ra .so 93810e87 ✓.
  **Interpretation.** Same machine, same locked regime, same stack: still 65.6/60.9. The 37.47-class canonical (item 1) runs on the same machine in the same session window. Therefore the 37-class is a **stack property** (4-op GDN chain + savestate re-forward policy + full bf16 head on 75ca881), not a machine-state regression. Nothing about the box moved between t1434 and now.
  Caveat: the `pp_dpm_force_performance_level`/`pp_dpm_sclk` sysfs reads returned EBUSY at session start and mid-session (amdgpu transient state); the background sampler did capture sclk during the runs (1476→3249 MHz ramp under load, 0 MHz in the 25 s idle gaps). The runs themselves produce bit-identical FIRST20 and t1434-band timings, which is the regime's actual acceptance criterion.
