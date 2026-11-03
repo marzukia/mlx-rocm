@@ -59,7 +59,7 @@ void Load::eval_gpu(const std::vector<array>& inputs, array& out) {
       // Zero the full 16 B first: a 4 B (int32) load into an 8 B (int64)
       // reader would otherwise leave stale high bytes in the slot.
       memset(sl.host, 0, 16);
-      reader_->read(static_cast<char*>(sl.host), nbytes, offset_);
+      reader_->read(reinterpret_cast<char*>(sl.host), nbytes, offset_);
       if (swap_endianness_) {
         switch (out.itemsize()) {
           case 2:
