@@ -12,16 +12,11 @@ The task pinned bench `452d363` (plain canonical 512 bench) and requested `TAPEM
 
 ## Regime
 
-- `flock ~/gpu-bench.lock` held for every run; 25 s idle before and
-  between runs.
-- DPM: non-root sysfs read is EPERM on this box (worse than the battery's
-  EBUSY); the v2 root wrapper had a quoting bug, so the force-level was never read/written this session. **Root sampler instead:** sclk under load ramps to ~3.30 GHz (table max) and drops to 0 MHz in the 25 s idle gaps — exactly the t1508 battery pattern under which 65.68/65.64 were bit-reproduced. Per the battery's documented caveat, FIRST20 + timing band are the acceptance criterion.
-- **FIRST20 = bit-identical to the 65-class anchor line in 10/10 runs** (9 A/B/C
-  runs + the 128 anchor). Token streams: 9/9 A/B/C runs bit-identical (single md5). SBCAR `model-mtp.safetensors` md5 `02a54359…` pre/post every session.
-- Wheels pinned: venv-ra `libmlx.so` `93810e871f7bc977e723d5288a3b73e2` (= canon
-  `b1de59fda0e4fc607d620e287deeaaf8` + 456 bytes, i.e. 75ca881 + REFWD_M1); venv-canon `b1de59fd…`.
-- Heads: both benches use the full bf16 `lm_head` (the 128-graft bench is
-  bf16 by code; the 512 bench prints `INT2=off` because `mx.fast.lm_head_int2` is absent from the wheel). No head lever gap between the two protocols.
+- `flock ~/gpu-bench.lock` held for every run; 25 s idle before and between runs.
+- DPM: non-root sysfs read is EPERM on this box (worse than the battery's EBUSY); the v2 root wrapper had a quoting bug, so the force-level was never read/written this session. **Root sampler instead:** sclk under load ramps to ~3.30 GHz (table max) and drops to 0 MHz in the 25 s idle gaps — exactly the t1508 battery pattern under which 65.68/65.64 were bit-reproduced. Per the battery's documented caveat, FIRST20 + timing band are the acceptance criterion.
+- **FIRST20 = bit-identical to the 65-class anchor line in 10/10 runs** (9 A/B/C runs + the 128 anchor). Token streams: 9/9 A/B/C runs bit-identical (single md5). SBCAR `model-mtp.safetensors` md5 `02a54359…` pre/post every session.
+- Wheels pinned: venv-ra `libmlx.so` `93810e871f7bc977e723d5288a3b73e2` (= canon `b1de59fda0e4fc607d620e287deeaaf8` + 456 bytes, i.e. 75ca881 + REFWD_M1); venv-canon `b1de59fd…`.
+- Heads: both benches use the full bf16 `lm_head` (the 128-graft bench is bf16 by code; the 512 bench prints `INT2=off` because `mx.fast.lm_head_int2` is absent from the wheel). No head lever gap between the two protocols.
 
 ## Numbers (3-run medians, 512 verifies, `MLX_MTP=4 MTP6_TAPE=hybrid`,
 `GDN_FUSE=1 QMV_ROWS=1 QMV_ROWS_MIN_N=1`)
@@ -63,12 +58,9 @@ Comparison, same wheel/regime/head:
 
 ## Wheel verdict (exoneration)
 
-- `venv-canon` (75ca881 wheel, `b1de59fd`) = 40.37 = `venv-ra` (93810e87) with
-  REFWD_M1 on (40.38) and off (40.37), bit-identical token streams across all nine runs.
-- Per the graft source (t1391 gate, lines 688–700), with `QMV_ROWS=1` the
-  `REFWD_M1` M=1 lx re-route is off by design, so the 456-byte patch is an inactive variable in this regime — the zero A−B/C delta is the expected behavior, not a measurement artifact.
-- The 65.68 (128 protocol) vs 40.4 (512 protocol) gap is therefore a
-  protocol/stack property, not a wheel property. **Nothing to port; the canonical tree is left untouched.**
+- `venv-canon` (75ca881 wheel, `b1de59fd`) = 40.37 = `venv-ra` (93810e87) with REFWD_M1 on (40.38) and off (40.37), bit-identical token streams across all nine runs.
+- Per the graft source (t1391 gate, lines 688–700), with `QMV_ROWS=1` the `REFWD_M1` M=1 lx re-route is off by design, so the 456-byte patch is an inactive variable in this regime — the zero A−B/C delta is the expected behavior, not a measurement artifact.
+- The 65.68 (128 protocol) vs 40.4 (512 protocol) gap is therefore a protocol/stack property, not a wheel property. **Nothing to port; the canonical tree is left untouched.**
 
 ## Losslessness
 

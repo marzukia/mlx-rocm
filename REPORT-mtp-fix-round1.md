@@ -64,8 +64,7 @@ Canonical: verify (4.5 GB 4-bit weights + GDN save/restore 2×50 MB on 77% of st
 
 - `565c9b4` vendor sync to vendor-canon (canonical wheel source)
 - `7455906` fix round 1: tape commit, int2 head (kernel + plumbing), mtp trim, phase bench
-- `059245e` fixes: tape B-dim restore, rejection S=1 forward, int2 row-quarter packing
-  geometry, dequant algebra (s, z·s), re-rank argmax→token-column map, MTP6_TAPE switch + savestate A/B fallback
+- `059245e` fixes: tape B-dim restore, rejection S=1 forward, int2 row-quarter packing geometry, dequant algebra (s, z·s), re-rank argmax→token-column map, MTP6_TAPE switch + savestate A/B fallback
 
 ## Standing numbers after the round
 

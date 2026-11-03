@@ -1,7 +1,7 @@
 #!/bin/bash
 # R4b: fused S=4 verify lever A/B (mtp-r4b-fused-verify).
 #
-# Lever: multi-row QMV (one weight pass for all M=4 verify rows). Probe findings that shaped the matrix:
+# Lever: multi-row QMV (shared-weight pass for the M=4 verify rows). Probe findings that shaped the matrix:
 set -u
 W=$(dirname "$0")
 mkdir -p $W
