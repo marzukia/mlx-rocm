@@ -41,6 +41,10 @@ target-version = "py311"
 # 80.93 tok/s wheel; mtp-bench6.py = the K=3 arm, t1224/t1225; mtp-bench6-phase.py
 # = the K=3 phase-timing harness, mtp-fix-round2, md5 608a7770); kept
 # byte-identical to as-run evidence; excluded.
+# bench/mtp-bench6-phase-gdn.py = the as-run GDN-instrumented phase harness of
+# the GDN launch-merge probe (md5 b1ba7070); kept byte-identical to as-run
+# evidence; excluded. bench/gdn-op-probe.py = the as-run per-op GDN cost probe
+# (final form: the forced-read flush fix postdates the as-run run); excluded.
 extend-exclude = [
     "np-rca-*.py",
     "bench/mtp-bench3.py",
@@ -48,6 +52,8 @@ extend-exclude = [
     "bench/mtp-bench5.py",
     "bench/mtp-bench6.py",
     "bench/mtp-bench6-phase.py",
+    "bench/mtp-bench6-phase-gdn.py",
+    "bench/gdn-op-probe.py",
     "bench/g1-t3-parts.py",
     # T=2 fused-kernel development diagnostics (guest bisect/probe runs): kept as
     # as-run evidence; excluded from lint + format.
