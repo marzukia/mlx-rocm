@@ -1,30 +1,16 @@
 #!/usr/bin/env python3
 """INSTRUMENTED copy of mtp-bench6.py: phase timing + mode-4 path switches.
 
-Diagnostic only - NOT the official protocol (mtp-bench6.py is the
-byte-identical canonical bench; this file exists to split the per-step
-cost: prefill / draft (sidecar + head) / verify (batched S=4) / commit
-(restore+re-forward vs tape rebind) / single-token step B).
+Diagnostic only - NOT the official protocol (mtp-bench6.py is the byte-identical canonical bench; this file exists to split the per-step cost: prefill / draft (sidecar + head) / verify (batched S=4) / commit (restore+re-forward vs tape rebind) / single-token step B).
 
 Switches (mode 4 only):
-    MTP6_ACCEPT=savestate|tape   - savestate = the canonical path
-        (save/restore GDN + 2-4 re-forwards on rejection; the default
-        when nothing is set); tape = the gdn_fused_step_tape per-row
-        state-tape commit (lazy cache-leaf rebind, no re-forward).
-        tape sets MLX_ROCM_GDN_TAPE=1.
-    MTP6_DRAFT_HEAD=int2|bf16   - int2 = mx.fast.lm_head_int2 dequant
-        GEMV + exact top-32 re-rank (requires the patched wheel; an
-        explicit opt-in); bf16 = the canonical full lm_head (the
-        default: the canonical 4-bit path runs when unset).
-    MTP6_MTPTRIM=1              - also trim mtp_cache to the accepted
-        prefix (off by default: the canonical path never rolls the
-        sidecar back).
+    MTP6_ACCEPT=savestate|tape   - savestate = the canonical path (save/restore GDN + 2-4 re-forwards on rejection; the default when nothing is set); tape = the gdn_fused_step_tape per-row state-tape commit (lazy cache-leaf rebind, no re-forward). tape sets MLX_ROCM_GDN_TAPE=1.
+    MTP6_DRAFT_HEAD=int2|bf16   - int2 = mx.fast.lm_head_int2 dequant GEMV + exact top-32 re-rank (requires the patched wheel; an explicit opt-in); bf16 = the canonical full lm_head (the default: the canonical 4-bit path runs when unset).
+    MTP6_MTPTRIM=1              - also trim mtp_cache to the accepted prefix (off by default: the canonical path never rolls the sidecar back).
 
-All other modes (0-3) run the canonical path unchanged; the phase
-timers still accumulate (step B / AR).
+All other modes (0-3) run the canonical path unchanged; the phase timers still accumulate (step B / AR).
 
-Prints the mtp-bench6 protocol lines + PHASE ms (cumulative, % of the
-generate window) + INFO (REFWDS / GDN_TAPE_CALLS / INT2 / MTPTRIM).
+Prints the mtp-bench6 protocol lines + PHASE ms (cumulative, % of the generate window) + INFO (REFWDS / GDN_TAPE_CALLS / INT2 / MTPTRIM).
 """
 
 import os
@@ -60,12 +46,7 @@ def restore_gdn(cache, saved):
 
 
 def quantize_int2(w, chunk=8192):
-    """Int2 g128-group asymmetric quantization (quarter-split 2-bit
-    packing, radiance port): per 128-group, s = max((hi-lo)/3, 1e-8),
-    z = clamp(round(-lo/s), 0, 3), q = clamp(round(w/s + z), 0, 3);
-    byte j holds v0..v3 for x indices j, j+Q, j+2Q, j+3Q (Q = K/4).
-    Returns (packed u8 [N, K/4], scale f32 [N, K/128] = s, zs f32
-    [N, K/128] = z*s)."""
+    """Int2 g128-group asymmetric quantization (quarter-split 2-bit packing, radiance port): per 128-group, s = max((hi-lo)/3, 1e-8), z = clamp(round(-lo/s), 0, 3), q = clamp(round(w/s + z), 0, 3); byte j holds v0..v3 for x indices j, j+Q, j+2Q, j+3Q (Q = K/4). Returns (packed u8 [N, K/4], scale f32 [N, K/128] = s, zs f32 [N, K/128] = z*s)."""
     N, K = w.shape
     NG, Q = K // 128, K // 4
     packed = mx.zeros((N, Q), dtype=mx.int32)
@@ -94,9 +75,7 @@ def quantize_int2(w, chunk=8192):
 
 
 def int2_argmax(x, qh):
-    """Int2 draft head: int2 g128-asym dequant GEMV (mx.fast.lm_head_int2)
-    + exact bf16 re-rank of the global top-32 candidates (in-kernel
-    per-64-column top-8 emission). Returns the argmax token id."""
+    """Int2 draft head: int2 g128-asym dequant GEMV (mx.fast.lm_head_int2) + exact bf16 re-rank of the global top-32 candidates (in-kernel per-64-column top-8 emission). Returns the argmax token id."""
     x = x.reshape(1, -1)
     K = x.shape[1]
     NG = K // 128

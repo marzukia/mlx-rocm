@@ -1,19 +1,12 @@
 #!/usr/bin/env python3
 """R4b probe: which QMM kernel path serves bias-free 4-bit affine M=4 GEMMs?
 
-Hypothesis under test (the R4b lever): in the standing wheel, bias-free
-quantized matmul at M=2..4 falls to the per-row qmv_warp_shared path
-(fast_grid Y = M -> each output row re-reads the weights), because the
-wide/rows/mr dispatch section is gated on `has_bias`. The probe measures:
+Hypothesis under test (the R4b lever): in the standing wheel, bias-free quantized matmul at M=2..4 falls to the per-row qmv_warp_shared path (fast_grid Y = M -> each output row re-reads the weights), because the wide/rows/mr dispatch section is gated on `has_bias`. The probe measures:
 
   1. bias-free M=1 vs M=4 wall (same K/N): ratio ~4x => per-row confirmed.
-  2. biased M=1 vs M=4 wall (bias=True, same shapes): ratio ~1.1-1.5x =>
-     the fused (rows/wide) section IS reachable when has_bias is true
-     (i.e. the gate, not the kernel, is the blocker).
-  3. bias-free M=4 with MLX_ROCM_QMV_ROWS set vs unset: identical timing
-     => rows is dead for bias-free shapes in the standing wheel.
-  4. correctness spot check: bias-free M=4 output == per-row
-     quantized_matmul maxdiff (the row-exact contract).
+  2. biased M=1 vs M=4 wall (bias=True, same shapes): ratio ~1.1-1.5x => the fused (rows/wide) section IS reachable when has_bias is true (i.e. the gate, not the kernel, is the blocker).
+  3. bias-free M=4 with MLX_ROCM_QMV_ROWS set vs unset: identical timing => rows is dead for bias-free shapes in the standing wheel.
+  4. correctness spot check: bias-free M=4 output == per-row quantized_matmul maxdiff (the row-exact contract).
 
 Shapes are the qwen3-9b-mlx model GEMM shapes (4-bit affine, group 64).
 GPU box only; run under the host GPU lock. Stdlib + mlx only.

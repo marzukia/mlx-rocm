@@ -6,7 +6,7 @@ Same session, same box (neon, RX 9070 XT), same wheel (93810e87): the 128- proto
 
 ## Protocol note (bench md5 discrepancy, resolved)
 
-The task pinned bench `452d363` (plain canonical 512 bench) and requested `TAPEMODE=hybrid`. The 452d363 bench on the box (and the vendored copy under `vendor/`) has **no tape switch** — `MTP6_TAPE=hybrid` exists only in the round-2 bench `700f1810207ccf8837be58f81c5eb944`, which is bit-identical to the repo's `bench/mtp-bench6.py` on this branch. That bench's `MTP6_TAPE=0` branch is exactly the 452d363 protocol (round-2 A0n = PRE bit-repro, 37.43/1623), so the round-2 bench is the correct instrument: `MTP6_TAPE=hybrid` runs the hybrid tape path and `MTP6_TAPE=0` reproduces the plain canonical path.
+The task pinned bench `452d363` (plain canonical 512 bench) and requested `TAPEMODE=hybrid`. The 452d363 bench on the box (and the vendored copy under `vendor/`) has **no tape switch** — `MTP6_TAPE=hybrid` exists only in the round-2 bench `25c1790bc323587a9435e61de9cffa70`, which is bit-identical to the repo's `bench/mtp-bench6.py` on this branch. That bench's `MTP6_TAPE=0` branch is exactly the 452d363 protocol (round-2 A0n = PRE bit-repro, 37.43/1623), so the round-2 bench is the correct instrument: `MTP6_TAPE=hybrid` runs the hybrid tape path and `MTP6_TAPE=0` reproduces the plain canonical path.
 
 **v1 session mistake, corrected in v2 (numbers of record):** the first session ran `MTP_MAX_TOKENS=512` → 256 verify steps (the 46.4-class, 808 tokens). The canonical "512" runs (38.94 tape / 37.47 savestate, 1623–1657 tokens) are **512 verify steps**, i.e. the bench's default `MAX_TOKENS=1024`. v2 re-ran A/B/C at the default (512 verifies, 1628 tokens). v1 numbers are tabulated only as a protocol-length datapoint.
 
@@ -18,8 +18,7 @@ The task pinned bench `452d363` (plain canonical 512 bench) and requested `TAPEM
 - Wheels pinned: venv-ra `libmlx.so` `93810e871f7bc977e723d5288a3b73e2` (= canon `b1de59fda0e4fc607d620e287deeaaf8` + 456 bytes, i.e. 75ca881 + REFWD_M1); venv-canon `b1de59fd…`.
 - Heads: both benches use the full bf16 `lm_head` (the 128-graft bench is bf16 by code; the 512 bench prints `INT2=off` because `mx.fast.lm_head_int2` is absent from the wheel). No head lever gap between the two protocols.
 
-## Numbers (3-run medians, 512 verifies, `MLX_MTP=4 MTP6_TAPE=hybrid`,
-`GDN_FUSE=1 QMV_ROWS=1 QMV_ROWS_MIN_N=1`)
+## Numbers (3-run medians, 512 verifies, `MLX_MTP=4 MTP6_TAPE=hybrid`, `GDN_FUSE=1 QMV_ROWS=1 QMV_ROWS_MIN_N=1`)
 
 | arm | venv | REFWD_M1 | t/s | tokens | verifies | D1/D2/D3 % | REFWDS | FIRST20 |
 |---|---|---|---|---|---|---|---|---|
@@ -33,7 +32,7 @@ v1 session (256 verifies, same arms): A 46.37 / B 46.28 / C 46.35, 808 tokens, b
 
 ## Phase-timer delta decomposition (the stop-branch deliverable)
 
-512 hybrid+rows phase arm (`mtp-bench6-phase.py` 608a7770, `MTP6_TAPE=hybrid MTP6_MTPTRIM=1`, venv-ra, REFWD_M1=1): 512 verifies, D1/D2/D3 373/231/132, TAPE_CALLS 21408, INT2=off, FIRST20 anchor OK. Cumulative over the 40.3 s generate window:
+512 hybrid+rows phase arm (`mtp-bench6-phase.py` 2bce8190, `MTP6_TAPE=hybrid MTP6_MTPTRIM=1`, venv-ra, REFWD_M1=1): 512 verifies, D1/D2/D3 373/231/132, TAPE_CALLS 21408, INT2=off, FIRST20 anchor OK. Cumulative over the 40.3 s generate window:
 
 | phase | ms | % | ms/step | what it is (lazy-eval caveat, battery §1.4) |
 |---|---|---|---|---|

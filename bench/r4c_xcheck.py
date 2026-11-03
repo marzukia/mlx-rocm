@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""R4c xcheck: the int2 op's per-call cost in a tight warm loop,
-bench6-style (per-row M=1 calls) vs standalone, plus the shared
-QuantizedLinear head for scale. Prints XCHECK lines. GPU only."""
+"""R4c xcheck: the int2 op's per-call cost in a tight warm loop, bench6-style (per-row M=1 calls) vs standalone, plus the shared QuantizedLinear head for scale. Prints XCHECK lines. GPU only."""
 
 import os
 import time

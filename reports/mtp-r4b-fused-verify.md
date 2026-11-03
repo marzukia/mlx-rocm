@@ -1,6 +1,6 @@
 # R4b — fused S=4 verify (multi-row QMV) A/B report
 
-Anchor protocol: `bench/mtp-bench6.py` (md5 700f1810207ccf8837be58f81c5eb944), `bench/mtp-bench6-phase.py` (md5 608a7770ef29fee23c33be057e7114a1), 3 repeats per arm, 25 s idle before the first run and between runs, all under `flock -x` on the GPU lock (lock was free at start; no kill, only wait). Model SBCAR md5 02a54359cda8b247f76b277dd9bc4d4c pre and post (unchanged). Both arms: `MTP6_TAPE=hybrid GDN_FUSE=1 REFWD_M1=1` (the canonical t1541 env); GPU: RX 9070 XT / gfx1201, 32 CUs.
+Anchor protocol: `bench/mtp-bench6.py` (md5 25c1790bc323587a9435e61de9cffa70), `bench/mtp-bench6-phase.py` (md5 2bce8190412bf2c00312cec1d6842caf), 3 repeats per arm, 25 s idle before the first run and between runs, all under `flock -x` on the GPU lock (lock was free at start; no kill, only wait). Model SBCAR md5 02a54359cda8b247f76b277dd9bc4d4c pre and post (unchanged). Both arms: `MTP6_TAPE=hybrid GDN_FUSE=1 REFWD_M1=1` (the canonical t1541 env); GPU: RX 9070 XT / gfx1201, 32 CUs.
 
 ## Lever and wheels
 

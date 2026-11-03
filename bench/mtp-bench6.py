@@ -74,12 +74,7 @@ def restore_gdn(cache, saved):
 
 
 def quantize_int2(w, chunk=8192):
-    """Int2 g128-group asymmetric quantization of the bf16 lm_head weights
-    (quarter-split 2-bit packing, radiance port): per 128-group, s =
-    max((hi-lo)/3, 1e-8), z = clamp(round(-lo/s), 0, 3), q =
-    clamp(round(w/s + z), 0, 3); byte j holds v0..v3 for x indices j,
-    j+Q, j+2Q, j+3Q (Q = K/4). Returns (packed u8 [N, K/4], scale f32
-    [N, K/128] = s, zs f32 [N, K/128] = z*s)."""
+    """Int2 g128-group asymmetric quantization of the bf16 lm_head weights (quarter-split 2-bit packing, radiance port): per 128-group, s = max((hi-lo)/3, 1e-8), z = clamp(round(-lo/s), 0, 3), q = clamp(round(w/s + z), 0, 3); byte j holds v0..v3 for x indices j, j+Q, j+2Q, j+3Q (Q = K/4). Returns (packed u8 [N, K/4], scale f32 [N, K/128] = s, zs f32 [N, K/128] = z*s)."""
     N, K = w.shape
     NG, Q = K // 128, K // 4
     packed = mx.zeros((N, Q), dtype=mx.int32)
@@ -109,9 +104,7 @@ def quantize_int2(w, chunk=8192):
 
 
 def int2_argmax(x, qh):
-    """Int2 draft head: int2 g128-asym dequant GEMV (mx.fast.lm_head_int2)
-    + exact bf16 re-rank of the global top-32 candidates (in-kernel
-    per-64-column top-8 emission). Returns the argmax token id."""
+    """Int2 draft head: int2 g128-asym dequant GEMV (mx.fast.lm_head_int2) + exact bf16 re-rank of the global top-32 candidates (in-kernel per-64-column top-8 emission). Returns the argmax token id."""
     x = x.reshape(1, -1)
     K = x.shape[1]
     NG = K // 128
