@@ -328,3 +328,38 @@ Branch `worker/gdn-fused-t4` = main (509c1c3) + t1223 (T=2 fused kernel) + t1225
 - K=3 parity needs the M=4 QMV/attention path (or merged/cheaper drafts); the m8 sdpa single-kernel patch is absent from this wheel (watch item, not fixed per instruction).
 - Branch pushed (worker/gdn-fused-t4 @ report commit); PR + adversarial review pending.
 - Review-fix round 2 (host-side, t1240): reflowed the 73 hard-wrapped prose lines the round-3 report flagged (.hip comment blocks 51, gdn_fused_step.patch fast.cpp comments 7, WORKSTATE 15) plus 2 detector-caught additions the report missed (the fallback-lambda and gdnf_make_row_contiguous comments in the +1176 hunk); re-verified all 9 patch hunk headers after the body-length change (648 -> 568 .hip section re-synced byte-identical + index blob hash refreshed, +1176 hunk 232 -> 221); the 28-line K2 carryover (191 hunk, pre-existing on main) left untouched; hunk-wellformedness test green; one appended commit, no history rewrite.
+# WORKSTATE — ar-step-change (AR decode gap: 73.45 → ~87 t/s, MTP=0 fused-AR path)
+
+Branch `ar-step-change` (base 60ad8a7 = main). Canonical bench mtp-bench6.py
+(md5 452d363de7c6754de8333ae09999327f), 400-token window, 3x per config.
+
+## Round 1 (done, 02:02Z)
+- Static profile delivered: docs/ar-step-profile.md (per-layer kernel selection
+  map, 3.84 GB GEMM weight traffic/token, 294 vs 348 GB/s effective vs the
+  llama.cpp 86.9 t/s anchor).
+- Kernel patch (patches/ar-step-qmm-gates.diff, all DEFAULT OFF): B1
+  MLX_ROCM_M1_LX (M=1 → int8-dot4, rows-agnostic) + B2 MLX_ROCM_M1_ROWSMSG
+  (M=1 → rows-msg morphology, claimed bit-identical) + B3 MLX_QMV_WCOLS +
+  faithful REFWD_M1 port (no-op under standing config, as in the t1434 wheel).
+- A/B (guest-a, RX 9070 XT, ROCm 10.1, standing config, 400 tokens):
+  - A (venv-canon baseline): 74.42 / 75.28 / 74.56 → **median 74.56 t/s**
+    (FIRST20 anchor match; ALLTOKS deterministic across runs)
+  - B1 (M1_LX): 68.28 / 69.43 / 69.89 → **median 69.43 — REGRESSION -6.9%**;
+    token stream diverges at token 5 (int8 staging, expected, lossless FAIL)
+  - B2 (M1_ROWSMSG): 69.03 / 69.05 / 69.09 → **median 69.05 — REGRESSION
+    -7.4%**; token stream diverges at token 32 (NOT bit-identical despite the
+    row-exact contract claim — open question)
+- Negative-result rule: B1 and B2 both net-negative on this wheel/toolchain —
+  the canonical M=1 wide default is the local optimum among tested QMM
+  morphologies. The gap to 86.9 t/s is NOT in the M=1 QMM morphology.
+
+## Round 2 (in flight)
+- CONTROL (venv-ar standing config, no new env) ×3 — isolates wheel/codegen
+  effects from the gate effects (answers the B2-divergence question).
+- Per-shape M=1 QMM probe (scripts/arstep_qmm_probe.py, bf16 x, production
+  shapes incl. N=248320 lm_head and K=12288 down): baseline vs m1lx /
+  m1rowsmsg / wcols-16 / wcols-4.
+- MTP=4 guard on venv-canon (1024 tokens, expect ~65.9-class).
+- If probes show a WCOLS win → 3-run A/B on the winning config; else record
+  the negative result and target the non-GEMM remainder (~launch/overhead:
+  ~517 eager launches/token vs llama.cpp graph-captured).
