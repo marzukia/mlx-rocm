@@ -138,7 +138,7 @@ MLX_API std::vector<array> lm_head_int2(
     const array& sx,
     StreamOrDevice s = {});
 
-// lm_head_int2_wide: vectorized (wave-wide) int2 g128-asymmetric dequant GEMV (M=1) — the R4c scalar port's vectorized follow-up (backend/rocm/lm_head_int2w.hip). Same op surface as lm_head_int2 (x [1, K] bf16, wq [N, K/4] u8 quarter-split, scale/zs [N, K/128] f32, sx [K/128] f32) and the same outputs {logits [N] f32, cand_val [N/64, 8] f32, cand_col [N/64, 8] i32} with the identical per-64-column top-8 candidate contract; shape guards N%64==0 + K%512==0 (N=248320, K=4096 both exact).
+// lm_head_int2_wide: vectorized (wave-wide) int2 g128-asymmetric dequant GEMV (M=1) - the R4c scalar port's vectorized follow-up (backend/rocm/lm_head_int2w.hip). Same op surface as lm_head_int2; outputs are {logits [N] f32, cand_val [N/32, 8] f32, cand_col [N/32, 8] i32} (per-32-column top-8 candidate emission, refining the scalar's per-64), shape guards N%32==0 + K%512==0 (N=248320, K=4096 both exact).
 MLX_API std::vector<array> lm_head_int2_wide(
     const array& x,
     const array& wq,

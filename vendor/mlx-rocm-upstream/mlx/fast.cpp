@@ -1615,12 +1615,12 @@ std::vector<array> lm_head_int2_wide(
     throw std::invalid_argument("lm_head_int2_wide: scale/zs must be [N, K/128] "
                                 "and sx [K/128]");
   }
-  if (N % 64 != 0) {
+  if (N % 32 != 0) {
     throw std::invalid_argument(
-        "lm_head_int2_wide: N must be a multiple of 64 (grid = "
-        "N/64 64-column blocks of 2048 threads; a partial block would run "
+        "lm_head_int2_wide: N must be a multiple of 32 (grid = "
+        "N/32 32-column blocks of 1024 threads; a partial block would run "
         "the 8-round candidate selection over dead shared columns and "
-        "write past the [N/64, 8] candidate arrays); got N="
+        "write past the [N/32, 8] candidate arrays); got N="
         + std::to_string(N));
   }
   if (K % 512 != 0) {
@@ -1643,8 +1643,8 @@ std::vector<array> lm_head_int2_wide(
     return array::make_arrays(
         std::vector<Shape>{
             {N},
-            {N / 64, 8},
-            {N / 64, 8}},
+            {N / 32, 8},
+            {N / 32, 8}},
         std::vector<Dtype>{float32, float32, int32},
         std::make_shared<LMHeadInt2W>(s, fallback),
         inputs);
