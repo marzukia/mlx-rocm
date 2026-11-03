@@ -44,7 +44,25 @@ Per-phase wall (phase harness 64v, median of 3) — KEY for schedule analysis:
 
 ## 2. R4b report (reports/mtp-r4b-fused-verify.md)
 
-[TO FILL: rows-fused M=4 pass evidence, phase timings, 48.93 anchor details]
+Facts that matter for the design:
+- Anchor 48.93 t/s = +6.2% over OFF (46.07); lever = MLX_ROCM_QMV_ROWS=1 (env gate;
+  the wheel change is belt-and-braces for bias-free calls).
+- rows-fused M=4 = ONE weight read shared across the 4 verify rows; output vs
+  per-row maxdiff 1.2e-4 (bf16, NOT bit-identical); acceptance drift is the
+  expected FP-order effect (D3 -2.7 pts, D2 +3.4, tok/step 2.385 -> 2.410).
+- FIRST20 identical across arms/runs: 271 1919 369 264 15352 ... (lossless anchor).
+- mx.eval is a side effect: the S=4 verify GEMM is forced by the first argmax in
+  the commit section and billed to commit. verify timer = lazy graph build only.
+- Phase 64v ON totals (ms, /64 => per-step): draft 2515.2 (39.3), verify 35.3
+  (0.55), commit 1709.2 (26.7), correction 25.5 (0.4). 512v: draft 14789.8
+  (28.9), verify 278.1 (0.54), commit 25189.8 (49.2), correction 187.3 (0.37).
+- Standing env: MTP6_TAPE=hybrid GDN_FUSE=1 REFWD_M1=1 MLX_ROCM_QMV_ROWS=1
+  MLX_ROCM_QMV_ROWS_MIN_N=1. Wheels: venv-canon (md5 b1de59fd...) vs R4b wheel
+  (md5 3d19e4f3...).
+- Implied per-step schedule (64v): 39.3 + 0.55 + 26.7 + 0.4 = 66.9 ms/step, matching
+  the audit's ~66.9. The S=4 GEMM weight read (4.16 GiB) happens inside the
+  26.7 ms commit window; the correction S=1 read (3.26 GiB) happens inside the
+  39.3 ms draft window of the NEXT step (audit: "GEMM billed to next draft").
 
 ## 3. Code map (files/functions)
 
