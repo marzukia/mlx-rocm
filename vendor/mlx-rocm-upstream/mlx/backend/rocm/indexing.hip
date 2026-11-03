@@ -782,39 +782,41 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
                     (int)took, ixs.data, src);
           }
           if (src != nullptr) {
-            // The per-step idx buffer's pinned host shadow holds the token
-            // in both delivery flows (the mx.array flush path — the bench
-            // flow, where the H2D into the per-step idx buffer already ran
-            // in the gpu_ptr flush above — and the token Load path, which
-            // stages the same value). It is the source of every write
-            // below.
             auto* ib =
                 static_cast<const rocm::RocmBuffer*>(
                     inputs[1].buffer().ptr());
             const void* shadow = (ib != nullptr) ? ib->host_shadow : nullptr;
             bool fresh = (rocm::allocator().decode_idx_src_va() == 0);
             size_t sn = std::min<size_t>(16, inputs[1].nbytes());
-            if ((fresh || !took) && shadow != nullptr) {
-              // Capture (fresh): stage the token into the stable source —
-              // an H2D from the pinned shadow, the same copy class as the
-              // flush that just ran in-window without the 906 the D2D
-              // staging memcpy hit. Replay (and no Load this step):
-              // refresh the source with the new token; the re-run staging
-              // node (source -> slot, recorded at the capture) delivers it
-              // at the step-end graph launch. A Load-delivered step (took)
-              // already refreshed the source in load.cpp.
+            if (!fresh && !took && shadow != nullptr) {
+              // Replay (no Load this step): refresh the source with the
+              // new token (its pinned host shadow holds the value the
+              // gpu_ptr flush above already moved into the per-step idx
+              // buffer). Outside the capture window (replay steps are not
+              // captured); the blocking H2D completes before the step-end
+              // graph launch is issued, and the re-run staging node
+              // (source -> slot, recorded at the capture) delivers it.
+              // A Load-delivered step (took) already refreshed the
+              // source in load.cpp.
               (void)hipMemcpy(src, shadow, sn, hipMemcpyHostToDevice);
             }
-            if (fresh && shadow != nullptr) {
-              // Record the staging node ONCE, at the capture: dst is the
-              // persistent idx slot (baked into the embedding gather
-              // below), src is the persistent staging source (baked VA,
-              // rewritten in place every step — the H2D above). The node
-              // re-copies whatever is in the source at every launch, and
-              // zero-fills the slot's remaining bytes (a blind 16 B read
-              // would run off the nbytes-wide token). Not recorded when
-              // the shadow is null (no valid source this step; a
-              // Load-delivered capture reads the slot the Load wrote).
+            if (fresh) {
+              // Capture: NO host/device memcpy in this window (a blocking
+              // hipMemcpy lands on the legacy stream and 906s inside a
+              // capture window — the R4 re-capture crash; the per-step
+              // idx buffer's shadow is not even guaranteed to exist at
+              // the first capture). Instead record the staging node once,
+              // and pending-record a pre-launch seed: between the
+              // EndCapture and the deferred buffer frees, end_record copies
+              // the capture step's idx buffer (device, still live) into
+              // the staging source via a plain D2D that completes before
+              // the graph launch is issued. First launch: the node then
+              // copies the capture step's token into the slot; replay
+              // launches: the per-step refresh above (or the Load path)
+              // rewrites the source before launch. The node re-copies
+              // whatever is in the source at every launch and zero-fills
+              // the slot's remaining bytes (a blind 16 B read would run
+              // off the nbytes-wide token).
               dim3 cgrid(1);
               dim3 cblk(2);
               encoder.add_kernel_node(
@@ -823,17 +825,24 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
                   reinterpret_cast<const int64_t*>(src),
                   (int)inputs[1].nbytes());
               rocm::allocator().decode_idx_set_src_va(src, inputs[1].nbytes());
+              rocm::allocator().decode_idx_set_seed(
+                  reinterpret_cast<const int64_t*>(gpu_ptr<void>(inputs[1])),
+                  inputs[1].nbytes());
               if (std::getenv("MLX_G1Y_DEBUG") != nullptr) {
-                fprintf(stderr, "[gdidx] gather: staged node recorded, src=%p\n",
-                        src);
+                fprintf(stderr,
+                        "[gdidx] gather: staged node recorded, src=%p "
+                        "seed=%p\n",
+                        src,
+                        reinterpret_cast<const void*>(
+                            gpu_ptr<void>(inputs[1])));
               }
-            }
-            if (shadow != nullptr || took) {
-              // Slot read: the staging node (recorded/refreshed above) or
-              // this step's Load delivers the token. Otherwise (no shadow,
-              // no Load) h_indices[0] keeps the idx device VA from the
-              // fill loop above (best effort — nothing delivered the
-              // token to the device this step).
+              // Slot read: the staging node (recorded above, seeded
+              // pre-launch) delivers the capture step's token; a
+              // Load-delivered capture (took) wrote the slot directly.
+              h_indices[0] = ixs.data;
+            } else if (!fresh && (shadow != nullptr || took)) {
+              // Slot read at replay: the staging node (source refreshed
+              // above, or by the Load) delivers the token.
               h_indices[0] = ixs.data;
             }
           }

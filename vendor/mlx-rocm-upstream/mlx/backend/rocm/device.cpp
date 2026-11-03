@@ -1587,6 +1587,34 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
   g1_check_hip("hipStreamEndCapture", ee, "end");
   g_decode_capturing.store(false, std::memory_order_relaxed);
   set_stream_capturing(false);
+  // GD-idx (R4): consume the pending staging-source seed BETWEEN the
+  // EndCapture and the deferred buffer frees: the capture step's per-step
+  // idx buffer is still live (its deferred free lands in signal_now
+  // below), and the plain D2D (staging source <- idx buffer) completes
+  // before the graph launch is issued further down, so the first
+  // launch's re-run staging node carries the capture step's token into
+  // the slot. The per-step idx buffer's VA cannot be the node source
+  // directly: it is a plain-malloc buffer at the capture step (the
+  // arena activates later / is the step-end offset at replay steps),
+  // freed after this step (the R3/R4 264 attractor: the re-run node
+  // read the stale capture-time value on every replay).
+  if (ee == hipSuccess && g != nullptr) {
+    auto& al = rocm::allocator();
+    void* seed_va = al.decode_idx_consume_seed();
+    if (seed_va != nullptr) {
+      void* src = al.decode_idx_src_buffer();
+      if (src != nullptr) {
+        hipError_t sm = hipMemcpy(
+            src, seed_va, al.decode_idx_seed_nbytes(), hipMemcpyDeviceToDevice);
+        g1_check_hip("hipMemcpy D2D (idx seed pre-launch)", sm, "end");
+        if (std::getenv("MLX_G1Y_DEBUG") != nullptr) {
+          fprintf(stderr,
+                  "[gdidx] seed: D2D pre-launch src=%p seed=%p n=%zu mc=%d\n",
+                  src, seed_va, al.decode_idx_seed_nbytes(), (int)sm);
+        }
+      }
+    }
+  }
   // Run the completion handlers (buffer frees) that were deferred during the
   // capture. Doing this now (after the stream is no longer capturing) avoids
   // the cross-thread hipFreeAsync invalidating the capture.

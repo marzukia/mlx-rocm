@@ -1096,7 +1096,28 @@ void RocmAllocator::decode_idx_reset_src() {
   std::lock_guard lock(mutex_);
   decode_idx_src_va_ = nullptr;
   decode_idx_src_nbytes_ = 0;
+  decode_idx_seed_va_ = nullptr;
+  decode_idx_seed_nbytes_ = 0;
   idx_slot_armed_ = false;
+}
+
+void RocmAllocator::decode_idx_set_seed(const void* va, size_t nbytes) {
+  std::lock_guard lock(mutex_);
+  decode_idx_seed_va_ = const_cast<void*>(va);
+  decode_idx_seed_nbytes_ = nbytes;
+}
+
+void* RocmAllocator::decode_idx_consume_seed() {
+  std::lock_guard lock(mutex_);
+  void* va = decode_idx_seed_va_;
+  decode_idx_seed_va_ = nullptr;
+  decode_idx_seed_nbytes_ = 0;
+  return va;
+}
+
+size_t RocmAllocator::decode_idx_seed_nbytes() {
+  std::lock_guard lock(mutex_);
+  return decode_idx_seed_nbytes_;
 }
 
 bool RocmAllocator::is_persistent_staging_host(const void* p) const {
