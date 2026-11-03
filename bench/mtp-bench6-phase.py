@@ -87,11 +87,7 @@ def quantize_int2(w, chunk=8192):
             .reshape(j - i, K)
         )
         packed[i:j] = q[:, :Q] | (q[:, Q : 2 * Q] << 2) | (q[:, 2 * Q : 3 * Q] << 4) | (q[:, 3 * Q :] << 6)
-        # Dequant coefficients exactly as the kernel takes them (lm_head_int2.hip: the
-        # header contract and the per-group algebra `acc += d*s - sx*(z*s)`, i.e. the
-        # dequant of w_hat = s*(q - z) for q = clamp(round(w/s + z), 0, 3)). An earlier
-        # revision of this reference wrote 4.0*s / (4.0+z)*s, which rescales each group
-        # by 4x plus a per-group offset and corrupts the argmax ranking.
+        # Dequant coefficients exactly as the kernel takes them (lm_head_int2.hip: the header contract and the per-group algebra `acc += d*s - sx*(z*s)`, i.e. the dequant of w_hat = s*(q - z) for q = clamp(round(w/s + z), 0, 3)). An earlier revision of this reference wrote 4.0*s / (4.0+z)*s, which rescales each group by 4x plus a per-group offset and corrupts the argmax ranking.
         scale[i:j] = s
         zs[i:j] = z * s
     return packed.astype(mx.uint8), scale, zs

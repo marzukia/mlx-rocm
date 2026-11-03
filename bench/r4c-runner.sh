@@ -1,24 +1,15 @@
 #!/bin/bash
 # R4c: int2 g128-asymmetric draft head A/B (mtp-r4c-int2-head).
 #
-# Lever: the MTP draft path's head. The draft arm calls the shared
-# lm_head per draft token (3x per step, 248320x4096); the int2 arm
-# calls mx.fast.lm_head_int2 (0.27 GiB packed, quarter-split) + an
-# exact top-32 re-rank against the shared head's columns. The verify
-# head is the shared head in EVERY arm, so greedy output is lossless;
-# the draft head only proposes (acceptance may move).
+# Lever: the MTP draft path's head. The draft arm calls the shared lm_head per draft token (3x per step, 248320x4096); the int2 arm calls mx.fast.lm_head_int2 (0.27 GiB packed, quarter-split) + an exact top-32 re-rank against the shared head's columns. The verify head is the shared head in EVERY arm, so greedy output is lossless; the draft head only proposes (acceptance may move).
 #
-# Config of record (all arms): MLX_MTP=4 MTP6_TAPE=hybrid GDN_FUSE=1
-# MLX_ROCM_QMV_ROWS=1 MLX_ROCM_QMV_ROWS_MIN_N=1 REFWD_M1=1 (the R4b
-# rows env is standing since t1558).
+# Config of record (all arms): MLX_MTP=4 MTP6_TAPE=hybrid GDN_FUSE=1 MLX_ROCM_QMV_ROWS=1 MLX_ROCM_QMV_ROWS_MIN_N=1 REFWD_M1=1 (the R4b rows env is standing since t1558).
 # Arms:
-#   OFF   : venv-canon (standing wheel, no int2 op; bf16-class head)
-#          + MTP6_DRAFT_HEAD=bf16
+#   OFF   : venv-canon (standing wheel, no int2 op; bf16-class head) + MTP6_DRAFT_HEAD=bf16
 #   ON    : venv-r4c (base vendor tree wheel: int2 + R4b qmm) + int2
 #   CTRL  : venv-r4c + MTP6_DRAFT_HEAD=bf16 (wheel-delta attribution)
 #   CTRL2 : venv-r4c + int2, rows env OFF (draft-head-only attribution)
-# 25 s idle before each run; the whole run is one flock -x hold on the
-# GPU lock (fuser checked free first: wait, never bench contended).
+# 25 s idle before each run; the whole run is one flock -x hold on the GPU lock (fuser checked free first: wait, never bench contended).
 # Host paths from the environment: OFF_PY / ON_PY / MODELS / LOCK
 set -u
 W=$(dirname "$0")

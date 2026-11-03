@@ -4,11 +4,8 @@
 Times one draft-head call (M=1) three ways on the model's own lm_head:
   head   : lm.lm_head(x)               (the OFF arm's per-draft call)
   int2g  : mx.fast.lm_head_int2       (the coarse int2 pass alone)
-  int2   : int2 pass + exact top-32 re-rank (the ON arm's full call;
-           radiance's "473 us including the rerank" definition)
-median over 32 repeated x. Then over 256 seeded random x rows: argmax
-agreement (int2 rerank vs the shared head) and max abs logit diff of
-the coarse int2 logits vs the shared head. Prints HEAD_PROBE lines.
+  int2   : int2 pass + exact top-32 re-rank (the ON arm's full call; radiance's "473 us including the rerank" definition)
+median over 32 repeated x. Then over 256 seeded random x rows: argmax agreement (int2 rerank vs the shared head) and max abs logit diff of the coarse int2 logits vs the shared head. Prints HEAD_PROBE lines.
 GPU only.
 """
 
