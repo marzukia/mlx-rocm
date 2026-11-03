@@ -4104,10 +4104,16 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   // (opt out with MLX_QMV_NO_WIDE): +14-20% on dense decode, never regresses.
   // Replaces qmv_tiled for decode; ~175 vs ~108 GB/s.
   static bool use_wide_qmv = (std::getenv("MLX_QMV_NO_WIDE") == nullptr);
+  // t1558 R4b: the wide/multi-row branch (rows/mr2/mr share one weight
+  // pass across M rows) was gated on has_bias, so bias-free M=2..4 (the
+  // S=4 verify GEMMs) fell to the per-row warp path (grid Y = M, each
+  // output row re-reads the weights). The sub-kernels all take has_bias
+  // and handle the no-bias case; open it for bias-free M=2..4 (M=1 and
+  // M=5..8 dispatch unchanged; per-row outputs stay row-exact).
   bool wide_ok = use_wide_qmv && (bits_ == 4 || bits_ == 8) &&
       mode_ == QuantizationMode::Affine &&
-      has_bias && transpose_ && batch_count == 1 && non_batched && M >= 1 &&
-      M <= 8 && (K % 32 == 0) &&
+      (has_bias || (M >= 2 && M <= 4)) && transpose_ && batch_count == 1 &&
+      non_batched && M >= 1 && M <= 8 && (K % 32 == 0) &&
       (group_size_ == 32 || group_size_ == 64 || group_size_ == 128) &&
       (x.dtype() == bfloat16 || x.dtype() == float16 || x.dtype() == float32);
       if (std::getenv("MLX_T1251_DBG") != nullptr) {
