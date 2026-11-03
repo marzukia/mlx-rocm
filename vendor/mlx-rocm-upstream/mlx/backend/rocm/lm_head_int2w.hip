@@ -6,7 +6,7 @@
 //
 // Per lane per column: 4 iterations x (2 u32 = 8 packed bytes, 8-byte aligned, streaming) = 32 weight bytes (half the 4-bit kernel's 64), 128 FMA + 128 per-element decodes (one FMA + one decode per weight, same per-weight instruction count as the 4-bit kernel), 8 fused group ops (one per quarter - the 4-bit kernel's count), the 4-lane group reductions, and the final 5-step __shfl_xor warp reduction.
 //
-// Block shape: (32, 32) = 1024 threads (one wave per column; AMD workgroups cap at 1024 threads, so the 2048-thread design is not launchable on gfx1201). 32 columns per tile, N/32 tiles, grid-stride over the CU-bounded grid; 2 blocks per CU (2048 threads, 32.5 KB LDS on the 64 KB CU budget). x staged f32 in dynamic LDS (K floats = 16 KB at K=4096) once per tile.
+// Block shape: (32, 32) = 1024 threads (one wave per column; AMD workgroups cap at 1024 threads, so the 2048-thread design is not launchable on gfx1201). 32 columns per tile, N/32 tiles, grid-stride over the CU-bounded grid; 2 blocks per CU (2048 threads, 32.5 KB LDS on the 64 KB CU budget). x staged f32 in dynamic LDS (K floats = 16 KB at K=4096) once per block, then this lane's 128 x-values (32 j per quarter x 4 quarters, 32 contiguous per quarter) are preloaded into VGPRs before the tile loop - mirroring the 4-bit tiled kernel's x_local staging, so the FMA loop does 0 LDS x-reads (the x row is fixed per call, so the staging is hoisted out of the grid-stride loop entirely).
 //
 // Candidate emission: per-32-column top-8, the scalar port's 8-round shared-memory max selection re-cast onto 32 entries with the single-selection warp (threadIdx.y == 0) - 8 rounds of 5-step __shfl_xor warp reduce-max (offsets 16..1, strict '>' so the lower index wins ties), the winner removed with -INFINITY in the pool, sres[8] in shared. Per-32 top-8 strictly refines per-64 top-8 (each per-64 top-8 set is contained in the union of its two per-32 top-8 sets), so the re-rank contract (top-32 candidates re-scored with exact weights by the caller) holds at least as strongly; the candidate arrays are [N/32, 8].
 //
@@ -48,14 +48,26 @@ __global__ __launch_bounds__(1024) void lm_head_int2w_kernel(
   __shared__ float sres[8];
   __shared__ int sresi[8];
 
+  // ---- x staging (f32, once per block; the x row is fixed per call and
+  // shared by the 32 column-warps across all grid-stride tiles) ----
+  for (int i = lane; i < K; i += 1024)
+    x_shared[i] = static_cast<float>(x[i]);
+  __syncthreads();
+
+  // ---- Register-resident x: this lane's 32 j per quarter x 4 quarters =
+  // 128 x-values (mirrors the 4-bit tiled kernel's x_local staging; the
+  // per-lane j block 128*gl + 32*l3 + [0..32) is 32 contiguous elements per
+  // quarter). Loaded once before the tile loop: the FMA loop does 0 LDS
+  // x-reads. ----
+  float xv[4][32];
+  #pragma unroll
+  for (int q = 0; q < 4; ++q)
+    #pragma unroll
+    for (int j = 0; j < 32; ++j)
+      xv[q][j] = x_shared[q * Q + 128 * gl + 32 * l3 + j];
+
   for (int tile = blockIdx.y; tile < n_tiles; tile += gridDim.y) {
     const int col = tile * 32 + ty;
-    // ---- x staging (f32, once per tile, shared by the 32 column-warps) ----
-    __syncthreads();
-    for (int i = lane; i < K; i += 1024)
-      x_shared[i] = static_cast<float>(x[i]);
-    __syncthreads();
-
     const uint8_t* wr = wq + (size_t)col * Q;
     const float* sr = scale + (size_t)col * NG;
     const float* zr = zs + (size_t)col * NG;
@@ -74,12 +86,13 @@ __global__ __launch_bounds__(1024) void lm_head_int2w_kernel(
       for (int b = 0; b < 8; ++b) {
         const uint32_t byte =
             (b < 4) ? ((w0 >> (8 * b)) & 0xFFu) : ((w1 >> (8 * (b - 4))) & 0xFFu);
-        const int j = j0 + b;
         #pragma unroll
         for (int q = 0; q < 4; ++q) {
           // Plane q of packed byte j0 + b = element q*Q + (j0 + b); the decode
-          // (byte >> 2q) & 3 is fused into the FMA (no pre-pass).
-          d[q] += x_shared[q * Q + j] * static_cast<float>((byte >> (2 * q)) & 3u);
+          // (byte >> 2q) & 3 is fused into the FMA (no pre-pass); the x
+          // operand is register-resident (xv[q][b] = x_shared[q*Q + 128*gl +
+          // 32*l3 + 8*it + b], preloaded before the tile loop).
+          d[q] += xv[q][b] * static_cast<float>((byte >> (2 * q)) & 3u);
         }
       }
     }
