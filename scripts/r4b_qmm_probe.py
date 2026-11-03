@@ -40,7 +40,7 @@ WARM = 5
 
 def make_lin(K: int, N: int, bias: bool) -> nn.QuantizedLinear:
     lin = nn.QuantizedLinear(K, N, bias=bias)
-    w, scales = mx.quantize(mx.random.normal((K, N)), 4, group_size=64)
+    w, scales, _ = mx.quantize(mx.random.normal((N, K)), bits=4, group_size=64)
     lin.weight = w
     lin.scales = scales
     return lin
@@ -60,28 +60,30 @@ def main() -> None:
     print(f"probe env: QMV_ROWS={os.environ.get('MLX_ROCM_QMV_ROWS')} "
           f"ROWS_MIN_N={os.environ.get('MLX_ROCM_QMV_ROWS_MIN_N')} "
           f"(rows_live={rows_on})")
-    for K, N in SHAPES:
+    for name, K, N in SHAPES:
         lin_nb = make_lin(K, N, bias=False)
         x1 = mx.random.normal((1, K)).astype(mx.bfloat16)
         x4 = mx.random.normal((4, K)).astype(mx.bfloat16)
         t_m1 = bench(lin_nb, x1)
         t_m4 = bench(lin_nb, x4)
-        row = f"bias-free  K={K:6d} N={N:6d}: M1={t_m1:8.3f} ms  "
-        f"M4={t_m4:8.3f} ms  M4/M1={t_m4 / t_m1:5.2f}x"
-        # per-row reference (one row at a time, same op)
-        refs = [mx.eval(lin_nb(x4[i:i + 1])) for i in range(4)]
-        out4 = mx.eval(lin_nb(x4))
+        row = (f"bias-free {name:12s} K={K:6d} N={N:6d}: M1={t_m1:8.3f} ms  "
+               f"M4={t_m4:8.3f} ms  M4/M1={t_m4 / t_m1:5.2f}x")
+        # per-row reference (one row at a time, same op). NOTE: mx.eval in this
+        # wheel returns None (side effect only) - use the lazy graph and force
+        # with float() on a reducing op.
+        refs = [lin_nb(x4[i:i + 1]) for i in range(4)]
+        out4 = lin_nb(x4)
         maxdiff = 0.0
-        for r in refs:
+        for i, r in enumerate(refs):
             maxdiff = max(maxdiff,
-                         float(mx.max(mx.abs(out4[r.shape[0]:r.shape[0]+1] - r))))
+                         float(mx.max(mx.abs(out4[i:i + 1] - r))))
         row += f"  maxdiff_vs_perrow={maxdiff:.3e}"
         print(row)
         if N <= 12288:  # biased arm only for the cheap shapes
             lin_b = make_lin(K, N, bias=True)
             tb_m1 = bench(lin_b, x1)
             tb_m4 = bench(lin_b, x4)
-            print(f"biased      K={K:6d} N={N:6d}: M1={tb_m1:8.3f} ms  "
+            print(f"biased     {name:12s} K={K:6d} N={N:6d}: M1={tb_m1:8.3f} ms  "
                   f"M4={tb_m4:8.3f} ms  M4/M1={tb_m4 / tb_m1:5.2f}x")
             del lin_b
         del lin_nb, x1, x4
