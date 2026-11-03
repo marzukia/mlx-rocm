@@ -99,10 +99,13 @@ Verified-safe target (qwen3-9b, the only shape this branch runs): **M = 1** (the
 uv run ruff format --check .                          # pass (all files)
 uv run ruff check .                                  # pass (0 errors; the bench harnesses are ruff-excluded as as-run evidence)
 uv run pytest -m "not gpu"                           # hermetic set: 25 passed, 1 skipped
+
 uv run python scripts/size_ratchet.py --base HEAD    # SIZE GATE: OK (2 ratcheted)
 CI on the head of this report (gh API):             # lint-and-check success, size success
+
 flock -x ~/gpu-bench.lock                           # held for every GPU run
 SBCAR md5 02a54359cda8b247f76b277dd9bc4d4c         # pre/post all sessions
+
 venv-canon libmlx b1de59fda0e4fc607d620e287deeaaf8 # untouched pre/post
 ```
 

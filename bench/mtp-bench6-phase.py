@@ -17,14 +17,12 @@ Switches (mode 4 only):
         explicit opt-in); bf16 = the canonical full lm_head (the
         default: the canonical 4-bit path runs when unset).
     MTP6_MTPTRIM=1              - also trim mtp_cache to the accepted
-        prefix (off by default: the canonical path never rolls the
-        sidecar back).
+        prefix (off by default: the canonical path never rolls the sidecar back).
 
 All other modes (0-3) run the canonical path unchanged; the phase
 timers still accumulate (step B / AR).
 
-Prints the mtp-bench6 protocol lines + PHASE ms (cumulative, % of the
-generate window) + INFO (REFWDS / GDN_TAPE_CALLS / INT2 / MTPTRIM).
+Prints the mtp-bench6 protocol lines + PHASE ms (cumulative, % of the generate window) + INFO (REFWDS / GDN_TAPE_CALLS / INT2 / MTPTRIM).
 """
 
 import os
@@ -95,8 +93,7 @@ def quantize_int2(w, chunk=8192):
 
 def int2_argmax(x, qh):
     """Int2 draft head: int2 g128-asym dequant GEMV (mx.fast.lm_head_int2)
-    + exact bf16 re-rank of the global top-32 candidates (in-kernel
-    per-64-column top-8 emission). Returns the argmax token id."""
+    + exact bf16 re-rank of the global top-32 candidates (in-kernel per-64-column top-8 emission). Returns the argmax token id."""
     x = x.reshape(1, -1)
     K = x.shape[1]
     NG = K // 128

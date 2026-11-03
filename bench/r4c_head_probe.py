@@ -22,8 +22,7 @@ N_TEST = 256
 
 
 def quantize_int2(w, chunk=8192):
-    """Int2 g128-group asymmetric quantization, quarter-split 2-bit
-    packing (radiance port). Same algebra as bench/mtp-bench6.py."""
+    """Int2 g128-group asymmetric quantization, quarter-split 2-bit packing (radiance port). Same algebra as bench/mtp-bench6.py."""
     N, K_ = w.shape
     NG, Q = K_ // 128, K_ // 4
     packed = mx.zeros((N, Q), dtype=mx.int32)
