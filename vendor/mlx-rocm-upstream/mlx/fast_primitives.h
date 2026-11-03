@@ -590,8 +590,8 @@ class GdnFusedStepTape : public Custom {
 };
 // LMHeadInt2: int2 g128-asymmetric dequant GEMV (M=1) + in-kernel
 // per-64-column top-8 candidate emission (see backend/rocm/lm_head_int2.hip).
-// Inputs: x [M, K] bf16, wq [N, K/4] u8, scale [N, NG] f32 (pre-mul 4*s),
-// zs [N, NG] f32 (pre-mul (4+z)*s), sx [NG] f32 (sum of x per 128-group).
+// Inputs: x [M, K] bf16, wq [N, K/4] u8, scale [N, NG] f32 (per-group s),
+// zs [N, NG] f32 (z*s), sx [NG] f32 (sum of x per 128-group).
 // Outputs: logits [N] f32, cand_val [N/64, 8] f32, cand_col [N/64, 8] i32.
 class LMHeadInt2 : public Custom {
  public:
@@ -616,11 +616,6 @@ class LMHeadInt2 : public Custom {
     int NG = (int)inputs[4].shape(0);
     (void)NG;
     return {Shape{N}, Shape{N / 64, 8}, Shape{N / 64, 8}};
-  }
-
-  std::vector<Dtype> output_dtypes(const std::vector<array>& inputs) override {
-    (void)inputs;
-    return {Dtype::float32, Dtype::float32, Dtype::int32};
   }
 };
 class GdnPrep : public Custom {

@@ -531,7 +531,7 @@ void init_fast(nb::module_& parent_module) {
                 wq: [N, K/4] uint8 quarter-split 2-bit planes (byte j
                     holds v0..v3 for x indices j, j+K/4, j+K/2,
                     j+3K/4 of the group).
-                scale: [N, K/128] float32, pre-multiplied 4*s.
+                scale: [N, K/128] float32, per-group s.
                 zs: [N, K/128] float32, pre-multiplied (4+z)*s.
                 sx: [K/128] float32, sum of x per 128-group.
 

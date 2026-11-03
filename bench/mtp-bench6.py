@@ -79,7 +79,7 @@ def quantize_int2(w, chunk=8192):
     max((hi-lo)/3, 1e-8), z = clamp(round(-lo/s), 0, 3), q =
     clamp(round(w/s + z), 0, 3); byte j holds v0..v3 for x indices j,
     j+Q, j+2Q, j+3Q (Q = K/4). Returns (packed u8 [N, K/4], scale f32
-    [N, K/128] = 4*s, zs f32 [N, K/128] = (4+z)*s)."""
+    [N, K/128] = s, zs f32 [N, K/128] = z*s)."""
     N, K = w.shape
     NG, Q = K // 128, K // 4
     packed = mx.zeros((N, Q), dtype=mx.int32)
@@ -103,8 +103,8 @@ def quantize_int2(w, chunk=8192):
             .reshape(j - i, K)
         )
         packed[i:j] = q[:, :Q] | (q[:, Q:2*Q] << 2) | (q[:, 2*Q:3*Q] << 4) | (q[:, 3*Q:] << 6)
-        scale[i:j] = 4.0 * s
-        zs[i:j] = (4.0 + z) * s
+        scale[i:j] = s
+        zs[i:j] = z * s
     return packed.astype(mx.uint8), scale, zs
 
 
@@ -112,6 +112,7 @@ def int2_argmax(x, qh):
     """Int2 draft head: int2 g128-asym dequant GEMV (mx.fast.lm_head_int2)
     + exact bf16 re-rank of the global top-32 candidates (in-kernel
     per-64-column top-8 emission). Returns the argmax token id."""
+    x = x.reshape(1, -1)
     K = x.shape[1]
     NG = K // 128
     xf = x.reshape(NG, 128).astype(mx.float32)
@@ -120,10 +121,21 @@ def int2_argmax(x, qh):
         x, qh["packed"], qh["scale"], qh["zs"], sx
     )
     perm = mx.argsort(cval.reshape(-1))
-    idx = mx.gather(ccol.reshape(-1), perm[-32:])
-    cols = mx.gather(qh["w"], idx)
-    exact = mx.sum(xf * cols.astype(mx.float32), axis=1)
-    return int(mx.argmax(exact))
+    idx = mx.take(ccol.reshape(-1), perm[-32:])
+    if "w" in qh:
+        cols = mx.take(qh["w"], idx, 0)
+    else:
+        # Re-dequantize exactly the 32 candidate rows (bit-exact vs the
+        # target's 4-bit head; avoids keeping a 2 GB bf16 copy).
+        cols = mx.dequantize(
+            mx.take(qh["wq"], idx, 0),
+            mx.take(qh["s4"], idx, 0),
+            mx.take(qh["b4"], idx, 0),
+            group_size=qh["gs"],
+            bits=qh["bits"],
+        )
+    exact = mx.sum(x.astype(mx.float32) * cols.astype(mx.float32), axis=1)
+    return int(mx.take(idx, mx.argmax(exact)))
 
 
 def main():
@@ -151,16 +163,34 @@ def main():
             mx.fast, "lm_head_int2"
         ):
             tq0 = time.time()
-            w_bf16 = lm.lm_head.weight
+            _h = lm.lm_head
+            if type(_h).__name__ == "QuantizedLinear":
+                w_bf16 = mx.dequantize(
+                    _h.weight, _h.scales, _h.biases, group_size=_h.group_size, bits=_h.bits
+                )
+            else:
+                w_bf16 = _h.weight
             packed, scale, zs = quantize_int2(w_bf16)
             mx.eval(packed, scale, zs)
-            qh = {"packed": packed, "scale": scale, "zs": zs, "w": w_bf16}
+            n_rows, n_cols = w_bf16.shape
+            if type(_h).__name__ == "QuantizedLinear":
+                # 16 GB card: do NOT keep the 2 GB bf16 copy; re-rank by
+                # re-dequantizing the 32 candidate rows.
+                del w_bf16
+                mx.clear_cache()
+                qh = {
+                    "packed": packed, "scale": scale, "zs": zs,
+                    "wq": _h.weight, "s4": _h.scales, "b4": _h.biases,
+                    "bits": _h.bits, "gs": _h.group_size,
+                }
+            else:
+                qh = {"packed": packed, "scale": scale, "zs": zs, "w": w_bf16}
             print(
                 "INT2_BUILD %.1fs N=%d K=%d (packed %d MB)" % (
                     time.time() - tq0,
-                    w_bf16.shape[0],
-                    w_bf16.shape[1],
-                    packed.nbytes() // (1024 * 1024),
+                    n_rows,
+                    n_cols,
+                    packed.nbytes / (1024 * 1024),
                 ),
                 flush=True,
             )
@@ -374,8 +404,9 @@ def main():
                 for i, c in enumerate(cache):
                     if hasattr(c, "cache"):
                         st, cstab = lm.model.layers[i].linear_attn.last_tape
-                        c[1] = st[krow]
-                        c[0] = cstab[krow]
+                        # tape rows are B-squeezed: restore the B dim
+                        c[1] = st[krow].reshape((1,) + st[krow].shape)
+                        c[0] = cstab[krow].reshape((1,) + cstab[krow].shape)
                 for c in cache:
                     if isinstance(c, KVCache):
                         c.trim(3 - krow)
@@ -402,21 +433,40 @@ def main():
                         # is already in the leaves; no rebind, no trims.
                         l, h = l3, hidden[0, 3]
                     else:
-                        # draft3 rejected: commit row 2 (after D2).
-                        l, h = l2, hidden[0, 2]
+                        # draft3 rejected: commit row 2 (after D2), then
+                        # ONE S=1 forward of the correction (the accepted
+                        # prefix costs zero - tape commit).
                         commit(2)
-                        mtp_cache[0].trim(0)
+                        mtp_cache[0].trim(1)
+                        logits, hidden = lm(
+                            mx.array([[t4]]), cache=cache,
+                            return_hidden=True, return_prenorm=True
+                        )
+                        l, h = logits[0, 0], hidden[0, 0]
+                        out.append(t4)
+                        n_refwd += 1
                 else:
-                    # draft2 rejected: commit row 1 (after D1).
-                    l, h = l1, hidden[0, 1]
+                    # draft2 rejected: commit row 1 (after D1), forward t3.
                     commit(1)
-                    mtp_cache[0].trim(1)
+                    mtp_cache[0].trim(2)
+                    logits, hidden = lm(
+                        mx.array([[t3]]), cache=cache,
+                        return_hidden=True, return_prenorm=True
+                    )
+                    l, h = logits[0, 0], hidden[0, 0]
+                    out.append(t3)
+                    n_refwd += 1
             else:
-                # draft1 rejected: commit row 0 (after prev_token).
-                out.append(t2)
-                l, h = l0, hidden[0, 0]
+                # draft1 rejected: commit row 0 (after prev_token), forward t2.
                 commit(0)
-                mtp_cache[0].trim(2)
+                mtp_cache[0].trim(3)
+                logits, hidden = lm(
+                    mx.array([[t2]]), cache=cache,
+                    return_hidden=True, return_prenorm=True
+                )
+                l, h = logits[0, 0], hidden[0, 0]
+                out.append(t2)
+                n_refwd += 1
     dt = time.time() - t1
     n = len(out)
     d1pct = 100.0 * d1_acc / verifies if verifies else 0.0
