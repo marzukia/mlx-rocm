@@ -900,7 +900,12 @@ void RocmAllocator::decode_arena_reset() {
   decode_arena_.next_wrapper = 0;
   decode_arena_.overflowed = false;
   decode_slot3_cursor_ = 0;
-  idx_slot_armed_ = false;
+  // GD-idx (R4-fix): the in-step gather ordinal resets with the arena so
+  // capture and replay steps map gather k -> staging buffer k. The slot arm
+  // is NOT cleared here: it is set by the token Load in the previous step's
+  // tail (BEFORE this step's prepare) and must survive to the step's first
+  // single-row gather, which consumes it.
+  decode_idx_stage_seq_ = 0;
 }
 
 void RocmAllocator::decode_arena_freeze_floor() {
@@ -1061,42 +1066,78 @@ bool RocmAllocator::decode_idx_slot_take() {
   return v;
 }
 
-void RocmAllocator::decode_idx_set_src_va(void* va, size_t nbytes) {
+void RocmAllocator::decode_idx_stages_materialize() {
   std::lock_guard lock(mutex_);
-  decode_idx_src_va_ = va;
-  decode_idx_src_nbytes_ = nbytes;
+  for (int i = 0; i < 4; ++i) {
+    if (decode_idx_state_.src_dev[i] == nullptr) {
+      void* dev = nullptr;
+      hipError_t me = hipMalloc(&dev, 16);
+      if (me != hipSuccess || dev == nullptr) {
+        fprintf(stderr, "[gdidx] stage buffer %d FAIL hipMalloc=%d\n",
+                i, (int)me);
+        (void)hipGetLastError();
+      } else {
+        decode_idx_state_.src_dev[i] = dev;
+      }
+    }
+  }
 }
 
-void* RocmAllocator::decode_idx_src_va() {
+void* RocmAllocator::decode_idx_stage_src(int i) {
   std::lock_guard lock(mutex_);
-  return decode_idx_src_va_;
-}
-
-size_t RocmAllocator::decode_idx_src_nbytes() {
-  std::lock_guard lock(mutex_);
-  return decode_idx_src_nbytes_;
-}
-
-void* RocmAllocator::decode_idx_src_buffer() {
-  std::lock_guard lock(mutex_);
-  if (decode_idx_state_.src_dev == nullptr) {
+  if (i < 0 || i >= 4) {
+    return nullptr;
+  }
+  if (decode_idx_state_.src_dev[i] == nullptr) {
+    // Lazy materialization is safe only OUTSIDE a capture window (a hip*
+    // during a capture invalidates it on ROCm 10.1); inside the window an
+    // unmaterialized buffer skips the GD path (direct idx read) instead.
+    if (capture_stream() != nullptr) {
+      return nullptr;
+    }
     void* dev = nullptr;
     hipError_t me = hipMalloc(&dev, 16);
     if (me != hipSuccess || dev == nullptr) {
-      fprintf(stderr, "[gdidx] src buffer FAIL hipMalloc=%d\n", (int)me);
+      fprintf(stderr, "[gdidx] stage buffer %d FAIL hipMalloc=%d\n",
+              i, (int)me);
       (void)hipGetLastError();
       return nullptr;
     }
-    decode_idx_state_.src_dev = dev;
+    decode_idx_state_.src_dev[i] = dev;
   }
-  return decode_idx_state_.src_dev;
+  return decode_idx_state_.src_dev[i];
 }
 
-void RocmAllocator::decode_idx_reset_src() {
+bool RocmAllocator::decode_idx_stage_recorded(int i) {
   std::lock_guard lock(mutex_);
-  decode_idx_src_va_ = nullptr;
-  decode_idx_src_nbytes_ = 0;
-  idx_slot_armed_ = false;
+  return i >= 0 && i < 4 && decode_idx_state_.recorded[i];
+}
+
+void RocmAllocator::decode_idx_stage_record(int i, size_t nbytes) {
+  std::lock_guard lock(mutex_);
+  if (i < 0 || i >= 4) {
+    return;
+  }
+  decode_idx_state_.recorded[i] = true;
+  decode_idx_state_.src_nbytes[i] = nbytes;
+}
+
+void RocmAllocator::decode_idx_stage_reset() {
+  std::lock_guard lock(mutex_);
+  for (int i = 0; i < 4; ++i) {
+    decode_idx_state_.recorded[i] = false;
+    decode_idx_state_.src_nbytes[i] = 0;
+  }
+  // The buffers themselves persist (the VAs are baked into the execs);
+  // only the per-incarnation records are dropped (a fresh capture records
+  // fresh stage nodes). The slot arm is NOT cleared here: it was set by the
+  // token Load in the previous step's tail, before this fresh capture, and
+  // the step's first gather consumes it.
+}
+
+int RocmAllocator::decode_idx_stage_next() {
+  std::lock_guard lock(mutex_);
+  return decode_idx_stage_seq_++;
 }
 
 bool RocmAllocator::is_persistent_staging_host(const void* p) const {

@@ -2457,6 +2457,14 @@ void set_graph_decode_mode(bool v) {
   g_graph_decode_mode.store(v, std::memory_order_relaxed);
 }
 
+bool graph_decode_env_enabled() {
+  static const bool enabled = [] {
+    const char* e = std::getenv("MLX_GRAPH_DECODE");
+    return !(e && std::string(e) == "0");
+  }();
+  return enabled;
+}
+
 // GD-idx (R4): persistent post-arm token-delivery state for the Load small
 // path. The per-step token Load is evaluated in the previous step's tail
 // (after the argmax, before the arm and before the next step's first op),

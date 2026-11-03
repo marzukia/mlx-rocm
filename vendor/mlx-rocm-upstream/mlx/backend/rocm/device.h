@@ -483,6 +483,12 @@ bool graph_active();
 // disables. See device.cpp.
 bool graph_decode_mode();
 void set_graph_decode_mode(bool v);
+// GD-idx (R4-fix): the raw env enable (MLX_GRAPH_DECODE != 0), regardless of the
+// per-window staging/persistent state: the per-step token Load is evaluated in the
+// previous step's tail - before the pilot arms and before the next step's prepare -
+// so the delivery gate must be live before the window; the window/persistent state
+// only describes in-window staging.
+bool graph_decode_env_enabled();
 // GD-idx (R4): persistent post-arm state for the token Load small path (set at
 // arm / arena prepare, cleared on teardown + big/micro retract); see device.cpp.
 bool gd_idx_persistent();
