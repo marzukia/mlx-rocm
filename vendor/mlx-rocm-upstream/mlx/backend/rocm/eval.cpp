@@ -216,6 +216,11 @@ bool gd_step_prepare(GraphDecodePilot& p, Stream s) {
     (void)rocm::allocator().decode_value_slot(i);
   }
   (void)rocm::allocator().decode_zero_slot();
+  // GD-idx (t1099 R3): materialize the persistent idx slot BEFORE the window
+  // too: its lazy hipMalloc/hipHostMalloc would otherwise run inside the
+  // capture window on the first capture, and hip* during a capture
+  // invalidates it on ROCm 10.1 (same failure class as above).
+  (void)rocm::allocator().decode_idx_slot();
   // K3 (t1082): when the slots are CACHED (the arena already exists) the reserved 5 wrappers are not consumed by slot allocation, and the step re-allocations then start at 0x5000 — aliasing the slot wrappers (0x5000..0x9FFF): a step buffer clobbers a slot value (the gather idx / zero slot, the dyn copy offsets) in-graph, and the layout differs from the first capture step (slots fresh, starting at 0xA000). Reserve 5 more when the slots were cached — the step layout is then identical to the first capture's, and the VAs the graph baked in stay valid at replay.
   if (rocm::allocator().decode_arena_offset() == 5 * 4096) {
     rocm::allocator().decode_arena_reserve_wrappers(5);
@@ -488,6 +493,20 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
         "graph decode: armed (small steps %ld/%ld ops); capturing next",
         p.prev_small_ops,
         ops);
+    // GD-idx (t1099 R3): pre-activate the staging mode BEFORE the next
+    // step's token Load: that load is evaluated before the step's first
+    // op (i.e. before gd_begin_capture), so only a mode that is already
+    // set routes it through the persistent idx slot. The pre-window H2D
+    // lands eagerly, the gather (in-window) reads the slot via the arm,
+    // and no per-step idx buffer is allocated whose VA the capture would
+    // bake (the R2 value-staging gap). The slot's lazy hip* calls happen
+    // here, outside the capture window (a hip* during a capture
+    // invalidates it on ROCm 10.1). The materialization also covers the
+    // fallback where the next step's first op is not the embedding
+    // gather. If the next step turns out to be big/micro (Eager kind),
+    // gd_on_op retracts the mode (it is reset there).
+    rocm::set_graph_decode_mode(true);
+    (void)rocm::allocator().decode_idx_slot();
   }
   p.step_done();
 }
@@ -523,6 +542,13 @@ void gd_on_op(GraphDecodePilot& p, const array& arr, Stream s) {
     // Choose the step kind (the logic lives in the unit-tested GdPilotLogic base: T>1 eager, the replay arm with the embedding-lookup gate, the capture candidate match) and start the per-op tracking. Re-beginning per op would discard the partial capture on every op (decode_capture_begin's defensive end+discard) and the recorded step would end up 0 nodes.
     p.first_op(name, gd_step_is_big(arr),
                gd_step_is_embedding_lookup(arr));
+    if (p.step_kind == GdPilotLogic::Kind::Eager && rocm::graph_decode_mode()
+        && !p.active) {
+      // GD-idx (t1099 R3): big/micro step after an arming: retract the
+      // arm-time mode pre-activation (it was only meant for the next
+      // capture's token load, which this step is not).
+      rocm::set_graph_decode_mode(false);
+    }
     if (p.step_kind == GdPilotLogic::Kind::Replay) {
       gd_begin_replay(p, s);
     } else if (p.step_kind == GdPilotLogic::Kind::Capture) {

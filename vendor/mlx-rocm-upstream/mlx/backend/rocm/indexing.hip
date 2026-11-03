@@ -748,16 +748,23 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
         auto ixs = rocm::allocator().decode_idx_slot();
         if (ixs.data) {
           if (!rocm::allocator().decode_idx_slot_take()) {
-            // Fresh capture (the token load predates the mode flag): move the
-            // idx array into the slot on-stream. Wrapped: recorded at capture,
-            // suppressed at replay.
+            // Fresh capture (the token load predates the mode flag): move
+            // the idx array into the slot eagerly. The token load ran
+            // BEFORE the capture window opened, so its H2D already landed
+            // in the per-step buffer. A synchronous hipMemcpy on the
+            // default (implicit) stream executes NOW, outside the captured
+            // stream (a hipMemcpyAsync D2D on the captured stream is not
+            // capturable on ROCm 10.1 - it invalidates the capture). The
+            // callback wrapper keeps the replay semantics: suppressed at
+            // replay, where the load's direct pre-launch H2D delivers the
+            // fresh token to the slot instead.
             const void* src = gpu_ptr<void>(inputs[1]);
             encoder.launch_kernel(
-                [d = ixs.data, src](hipStream_t st) {
-                  hipError_t e = hipMemcpyAsync(
-                      d, src, 16, hipMemcpyDeviceToDevice, st);
+                [d = ixs.data, src](hipStream_t) {
+                  hipError_t e = hipMemcpy(
+                      d, src, 16, hipMemcpyDeviceToDevice);
                   rocm::g1_check_hip(
-                      "hipMemcpyAsync (gd-idx D2D stage)", e);
+                      "hipMemcpy (gd-idx D2D stage, eager)", e);
                 });
           }
           h_indices[0] = ixs.data;
