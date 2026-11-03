@@ -363,3 +363,36 @@ Branch `ar-step-change` (base 60ad8a7 = main). Canonical bench mtp-bench6.py
 - If probes show a WCOLS win → 3-run A/B on the winning config; else record
   the negative result and target the non-GEMM remainder (~launch/overhead:
   ~517 eager launches/token vs llama.cpp graph-captured).
+## Round 3 (done, 02:24Z) — final results
+- WCOLS=4 e2e: 74.39/74.47/75.19 → **median 74.47 — parity (−0.12%)**,
+  bit-identical (ALLTOKS md5 == A), FIRST20 anchor match.
+- WCOLS=16 e2e: 74.34/74.49/74.50 → **median 74.49 — parity (−0.09%)**,
+  bit-identical.
+- The per-op probe's 2–3% win did NOT transfer to e2e (probe eval-sync
+  misweighting). WCOLS kept as an inert opt-in knob.
+- rows-msg contract check (scripts/arstep_rowsmsg_check.py): wide vs
+  rows-msg M=1 = **1–2 ulp of fp32** (maxabs 1.0e-6…3.8e-6 over 11
+  production shapes) — NOT bit-identical under ROCm 10.1 / clang 23
+  (FMA codegen divergence); explains B2's token-32 divergence.
+
+## Final verdict (REPORT-ar-step-change.md)
+- A baseline: **74.56 t/s** (400-token window, 3-run median, FIRST20
+  anchor match; control on the patched wheel 74.55 → wheel clean).
+- **Negative result: B1 (−6.9%) and B2 (−7.4%) both regress; WCOLS
+  parity. The M=1 QMM morphology is exhausted at the canonical wide
+  default on this wheel/toolchain.** The k1-bench 1.05–1.33× (older
+  wheel, f32 x, standalone) does not transfer to the production bf16
+  wheel.
+- Gap decomposition: GEMM at the M=1 QMV floor (294 GB/s effective,
+  confirmed by 3 losing morphologies) + ~517 eager launches/token
+  overhead (llama.cpp: 1 graph launch) + clock-state dependence.
+- **MTP=4 guard: 38.93 t/s** — deterministic (1657 tokens, identical
+  acceptance signature to t1469's same-day baseline), in the documented
+  clock-limited band (t1463: 33–35 t/s; t1434: band NOT RECOVERED by
+  reboot, platform-level). venv-canon untouched by this task → unmodified
+  MTP path preserved by construction.
+- Deliverables: REPORT-ar-step-change.md, docs/ar-step-profile.md,
+  patches/ar-step-gates.diff, scripts/{apply-ar-step-patch,
+  arstep-ab-runner, arstep-round2, arstep-round3, arstep_qmm_probe,
+  arstep_rowsmsg_check}. vendor-canon reverted to qmm.hip.bak-ar.
+  venv-ar (patched wheel) retained on guest-a.
