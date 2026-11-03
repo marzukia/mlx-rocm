@@ -94,6 +94,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 # as-run canonical mtp-bench6.py loop with per-region perf_counter wraps);
 # keeps the canonical variable names (l/h/s) + percent formatting.
 "bench/mtp-bench6-phase.py" = ["E501", "E741", "UP031", "SIM102", "F841"]
+# mtp-traffic-audit.py = the traffic-audit measurement probe (t1582): mirrors the
+# canonical mtp-bench6.py loop + module byte inventory; keeps the canonical
+# variable names (l/h) + percent formatting.
+"bench/mtp-traffic-audit.py" = ["E501", "E741", "UP031", "F841"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
