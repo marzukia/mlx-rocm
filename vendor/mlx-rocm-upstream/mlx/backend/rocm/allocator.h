@@ -236,7 +236,7 @@ class RocmAllocator : public allocator::Allocator {
   DecodeValueSlotState decode_zero_state_;
   struct DecodeIdxSlotState {
     Buffer buf{nullptr};
-    void* host{nullptr};  // pinned, 16 B, persistent
+    int64_t* host{nullptr};  // pinned, 16 B, persistent
     void* data{nullptr};  // device, 4 KB, persistent
   };
   DecodeIdxSlotState decode_idx_state_;

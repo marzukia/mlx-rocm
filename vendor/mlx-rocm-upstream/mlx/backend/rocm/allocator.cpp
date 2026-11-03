@@ -1038,7 +1038,7 @@ RocmAllocator::decode_idx_slot() {
         reinterpret_cast<void*>(static_cast<uintptr_t>(1))};
     st.buf = Buffer{rb};
     st.data = dev;
-    st.host = host;
+    st.host = static_cast<int64_t*>(host);
   }
   return {st.buf, st.host, st.data};
 }
