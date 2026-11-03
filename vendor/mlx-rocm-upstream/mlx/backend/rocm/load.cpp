@@ -52,11 +52,22 @@ void Load::eval_gpu(const std::vector<array>& inputs, array& out) {
   // rewrote in place. A fresh capture's token load happens BEFORE the step's
   // first op (the mode flag is not set yet) — the embedding gather stages the
   // then-produced idx array into the slot with a D2D (recorded at capture,
-  // suppressed at replay, where this path delivers).
-  if (rocm::graph_decode_mode() && nbytes <= 16) {
+  // suppressed at replay, where this path delivers). GD-idx (R4): the gate is
+  // the PERSISTENT post-arm state, not the per-window staging mode: the
+  // per-step token Load is evaluated in the previous step's tail (after the
+  // argmax, before the arm and before this step's first op), so a
+  // mode-gated path never fired (the R3 dead leg). Delivery is dual: the
+  // slot write serves graphs without the staging node (a re-capture that
+  // consumed the Load records no node, so the slot must hold the new
+  // value), and the refresh of the recorded capture-time idx buffer VA (a
+  // stable arena input slot) makes the re-run in-graph staging node
+  // propagate the new value (that node re-copies the arena buffer into the
+  // slot on every launch, stream-after this H2D, and would otherwise
+  // clobber the slot write).
+  if (rocm::gd_idx_persistent() && nbytes <= 16) {
     auto sl = rocm::allocator().decode_idx_slot();
     fprintf(stderr,
-            "[gdidx] load: mode=1 nbytes=%zu sl.host=%p sl.data=%p\n",
+            "[gdidx] load: persist=1 nbytes=%zu sl.host=%p sl.data=%p\n",
             nbytes, sl.host, sl.data);
     if (sl.host && sl.data) {
       // Zero the full 16 B first: a 4 B (int32) load into an 8 B (int64)
@@ -83,6 +94,20 @@ void Load::eval_gpu(const std::vector<array>& inputs, array& out) {
           16,
           hipMemcpyHostToDevice,
           encoder.stream());
+      // GD-idx (R4): refresh the recorded capture-time idx buffer VA so the
+      // re-run staging node carries the new token (see gate comment). Guard:
+      // only a live arena VA (an arena reallocation, or the re-capture case
+      // where the recorded VA is the slot itself, leaves it dangling /
+      // out-of-arena).
+      void* src_va = rocm::allocator().decode_idx_src_va();
+      if (src_va != nullptr &&
+          rocm::allocator().decode_arena_active() &&
+          rocm::allocator().in_decode_arena(src_va)) {
+        size_t n2 =
+            std::min(nbytes, rocm::allocator().decode_idx_src_nbytes());
+        (void)hipMemcpyAsync(
+            src_va, sl.host, n2, hipMemcpyHostToDevice, encoder.stream());
+      }
       rocm::allocator().decode_idx_slot_arm();
       fprintf(stderr, "[gdidx] load: slot path taken, armed\n");
       return;

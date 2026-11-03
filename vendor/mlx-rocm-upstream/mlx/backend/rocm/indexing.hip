@@ -785,6 +785,10 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
             // whose VA the floor reset keeps stable) into the slot, and
             // zero-fills the slot's remaining bytes (the buffer is only
             // nbytes wide; a blind 16 B read would run off the buffer).
+            // GD-idx (R4): also record the source VA: at a replay step
+            // the pre-launch token Load refreshes this arena VA so the
+            // re-run node propagates the NEW token (the node re-copies
+            // whatever is in this buffer on every launch).
             dim3 cgrid(1);
             dim3 cblk(2);
             encoder.add_kernel_node(
@@ -792,6 +796,8 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
                 reinterpret_cast<int64_t*>(ixs.data),
                 reinterpret_cast<const int64_t*>(gpu_ptr<void>(inputs[1])),
                 (int)inputs[1].nbytes());
+            rocm::allocator().decode_idx_set_src_va(
+                gpu_ptr<void>(inputs[1]), inputs[1].nbytes());
           }
           h_indices[0] = ixs.data;
         }

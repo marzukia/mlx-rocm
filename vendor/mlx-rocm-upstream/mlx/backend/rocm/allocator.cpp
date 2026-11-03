@@ -1061,6 +1061,22 @@ bool RocmAllocator::decode_idx_slot_take() {
   return v;
 }
 
+void RocmAllocator::decode_idx_set_src_va(void* va, size_t nbytes) {
+  std::lock_guard lock(mutex_);
+  decode_idx_src_va_ = va;
+  decode_idx_src_nbytes_ = nbytes;
+}
+
+void* RocmAllocator::decode_idx_src_va() const {
+  std::lock_guard lock(mutex_);
+  return decode_idx_src_va_;
+}
+
+size_t RocmAllocator::decode_idx_src_nbytes() const {
+  std::lock_guard lock(mutex_);
+  return decode_idx_src_nbytes_;
+}
+
 bool RocmAllocator::is_persistent_staging_host(const void* p) const {
   for (int i = 0; i < 4; ++i) {
     if (decode_value_slot_state_[i].host == p) {

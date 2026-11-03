@@ -481,6 +481,10 @@ bool graph_active();
 // disables. See device.cpp.
 bool graph_decode_mode();
 void set_graph_decode_mode(bool v);
+// GD-idx (R4): persistent post-arm state for the token Load small path (set at
+// arm / arena prepare, cleared on teardown + big/micro retract); see device.cpp.
+bool gd_idx_persistent();
+void set_gd_idx_persistent(bool v);
 void flush_graph_deferred_frees();
 // Per-generation deferred-free lifetime: each graph chunk (commit) frees its
 // own buffers once its launch completes, instead of hoarding until synchronize.

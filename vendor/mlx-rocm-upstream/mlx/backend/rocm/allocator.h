@@ -169,6 +169,13 @@ class RocmAllocator : public allocator::Allocator {
   // Arm is set by the token staging (Load small path); consumed by the first single-row fast_rows gather of the step (the embedding). Other single-row gathers keep their own idx buffer. Cleared with the arena reset.
   void decode_idx_slot_arm();
   bool decode_idx_slot_take();
+  // GD-idx (R4): the capture-time token-idx buffer VA (the recorded stage-slot
+  // kernel node's source). On a replay step the pre-launch Load refreshes this
+  // VA so the re-run node propagates the NEW token into the slot; the VA is a
+  // stable arena input slot (preserved above the floor).
+  void decode_idx_set_src_va(void* va, size_t nbytes);
+  void* decode_idx_src_va() const;
+  size_t decode_idx_src_nbytes() const;
   // True iff p is one of the persistent staging host buffers (value slots 0-3 or the idx slot). Pre-launch re-delivery of a recorded in-graph H2D must skip any other (per-step) source: it is freed at step end, and copying from it is a UAF read of the stale capture-step value.
   bool is_persistent_staging_host(const void* p) const;
 
@@ -241,6 +248,8 @@ class RocmAllocator : public allocator::Allocator {
   };
   DecodeIdxSlotState decode_idx_state_;
   bool idx_slot_armed_{false};
+  void* decode_idx_src_va_{nullptr};
+  size_t decode_idx_src_nbytes_{0};
   size_t decode_slot3_cursor_{0};
 };
 

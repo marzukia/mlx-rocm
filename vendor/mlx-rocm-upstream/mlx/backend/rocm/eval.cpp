@@ -141,6 +141,7 @@ void gd_tear_down(GraphDecodePilot& p) {
   // graph may still be in flight, and destroying its exec / freeing its
   // arena base while it runs would read freed memory.
   rocm::set_graph_decode_mode(false);
+  rocm::set_gd_idx_persistent(false);
   p.arena_realloc = true;  // also ends an idle arena from a prior capture
 }
 
@@ -226,6 +227,12 @@ bool gd_step_prepare(GraphDecodePilot& p, Stream s) {
     rocm::allocator().decode_arena_reserve_wrappers(5);
   }
   rocm::set_graph_decode_mode(true);
+  // GD-idx (R4): the persistent token-delivery flag (the Load small path gate):
+  // the next step's token Load lands BEFORE this prepare (previous step's tail),
+  // but every LATER step's Load must fire regardless of the window mode; the
+  // arena is secured here so the flag is live for this and all following steps
+  // until a teardown/retract clears it.
+  rocm::set_gd_idx_persistent(true);
   if (std::getenv("MLX_G1Y_DEBUG") != nullptr) {
     auto& al = rocm::allocator();
     fprintf(stderr,
@@ -506,6 +513,7 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
     // gather. If the next step turns out to be big/micro (Eager kind),
     // gd_on_op retracts the mode (it is reset there).
     rocm::set_graph_decode_mode(true);
+    rocm::set_gd_idx_persistent(true);
     {
       auto iss = rocm::allocator().decode_idx_slot();
       fprintf(stderr, "[gdidx] arm: mode set; slot dev=%p host=%p\n",
@@ -552,6 +560,7 @@ void gd_on_op(GraphDecodePilot& p, const array& arr, Stream s) {
       // arm-time mode pre-activation (it was only meant for the next
       // capture's token load, which this step is not).
       rocm::set_graph_decode_mode(false);
+      rocm::set_gd_idx_persistent(false);
     }
     if (p.step_kind == GdPilotLogic::Kind::Replay) {
       gd_begin_replay(p, s);

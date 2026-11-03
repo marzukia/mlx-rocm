@@ -2435,6 +2435,25 @@ void set_graph_decode_mode(bool v) {
   g_graph_decode_mode.store(v, std::memory_order_relaxed);
 }
 
+// GD-idx (R4): persistent post-arm token-delivery state for the Load small
+// path. The per-step token Load is evaluated in the previous step's tail
+// (after the argmax, before the arm and before the next step's first op),
+// i.e. outside the per-window staging-mode window, so the Load path must gate
+// on a flag that survives between windows: set when the pilot arms (or a
+// capture/replay step's arena is prepared), cleared on teardown and on the
+// big/micro retract. True from the first arm until teardown.
+static std::atomic<bool> g_gd_idx_persistent{false};
+bool gd_idx_persistent() {
+  static const bool enabled = [] {
+    const char* e = std::getenv("MLX_GRAPH_DECODE");
+    return !(e && std::string(e) == "0");
+  }();
+  return enabled && g_gd_idx_persistent.load(std::memory_order_relaxed);
+}
+void set_gd_idx_persistent(bool v) {
+  g_gd_idx_persistent.store(v, std::memory_order_relaxed);
+}
+
 std::unordered_map<int, Device>& get_devices() {
   static std::unordered_map<int, Device> devices;
   return devices;
