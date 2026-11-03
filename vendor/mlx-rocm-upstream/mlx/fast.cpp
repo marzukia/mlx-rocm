@@ -1534,10 +1534,20 @@ std::vector<array> lm_head_int2(
     throw std::invalid_argument("lm_head_int2: scale/zs must be [N, K/128] "
                                 "and sx [K/128]");
   }
-  if (N % 64 != 0) {
+  if (N % 256 != 0) {
     throw std::invalid_argument(
-        "lm_head_int2: N must be a multiple of 64 (in-kernel candidate "
-        "selection is per 64-column block); got N=" + std::to_string(N));
+        "lm_head_int2: N must be a multiple of 256 (grid = "
+        "ceil(N/256) blocks of 256 threads; a partial block would run "
+        "the 8-round candidate selection over dead shared columns and "
+        "write past the [N/64, 8] candidate arrays); got N="
+        + std::to_string(N));
+  }
+  if (K % 512 != 0) {
+    throw std::invalid_argument(
+        "lm_head_int2: K must be a multiple of 512 (kernel GQ = "
+        "(K/4)>>7 truncates: a quarter whose length is not a multiple "
+        "of 128 elements drops the tail 128-group from the dot "
+        "product); got K=" + std::to_string(K));
   }
 
   auto fallback = [](std::vector<array> inputs) -> std::vector<array> {
