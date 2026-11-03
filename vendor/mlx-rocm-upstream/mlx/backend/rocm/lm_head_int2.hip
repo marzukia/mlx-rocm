@@ -1,27 +1,25 @@
 // Copyright © 2025 Apple Inc.
 //
-// lm_head_int2: int2 g128-asymmetric dequant GEMV (M=1) for the MTP draft
-// head. Replaces the full bf16 lm_head (248320 x 4096, 2.03 GiB of weight
-// traffic per draft call) with a 0.27 GiB int2 packed read.
+// lm_head_int2: int2 row-quarter-split g128-asymmetric dequant GEMV (M=1)
+// for the MTP draft head. Replaces the 4-bit lm_head (weight traffic per
+// draft call) with a K/4-byte packed read.
 //
-// Packing (quarter-split, ported from radiance): for a 128-group, byte j
-// holds four 2-bit planes for x indices j, j+Q, j+2Q, j+3Q (Q = K/4):
-//   v0 = b & 3 ; v1 = (b >> 2) & 3 ; v2 = (b >> 4) & 3 ; v3 = (b >> 6) & 3
-// Quantization: per-group asymmetric, s = max((hi-lo)/3, 1e-8),
-// z = clamp(round(-lo/s), 0, 3), q = clamp(round(w/s + z), 0, 3).
-// The op takes the PRE-MULTIPLIED per-group coefficients
-//   scale_g = 4*s,  zs_g = (4+z)*s
-// so the dequant algebra per group is
-//   out += dot_g * scale_g - sx_g * zs_g
-// where dot_g = sum_k x_k * q_k and sx_g = sum_k x_k (host-precomputed;
-// algebraically this equals sum_g s_g * sum_k x_k (q_k - z_g) exactly —
-// see REPORT-mtp-fix-round1.md for the derivation and rounding notes).
+// Packing (quarter-split, ported from radiance): for a row of K elements,
+// packed byte p = j (j in 0..K/4-1) holds four 2-bit planes for x indices
+// j, K/4+j, K/2+j, 3K/4+j. Element e lives in packed byte e mod (K/4),
+// plane e / (K/4). Group G (0..K/128-1) owns elements [G*128, (G+1)*128):
+// quarter q = G/8, local group gl = G%8, i.e. plane q of packed bytes
+// [gl*128, ... +128). Quantization: per-group asymmetric, s =
+// max((hi-lo)/3, 1e-8), z = clamp(round(-lo/s), 0, 3),
+// q = clamp(round(w/s + z), 0, 3). The op takes the per-group
+// coefficients scale_g = s, zs_g = z*s so the dequant
+// algebra per group is out += dot_g * scale_g - sx_g * zs_g where
+// dot_g = sum_k x_k * q_k and sx_g = sum_k x_k (host-precomputed).
 //
-// One thread per output column (N = 248320, 970 blocks of 256 threads).
-// After its column's logit, each 64-column subblock runs an 8-round
-// shared-memory max selection and emits the per-block top-8
-// (value, col) candidate pairs so the caller can re-rank the global
-// top-32 with the EXACT bf16 weights (bit-exact for those 32 columns).
+// One thread per output column (N = 248320). After its column's logit,
+// each 64-column subblock runs an 8-round shared-memory max selection
+// and emits the per-block top-8 (value, col) candidate pairs so the
+// caller can re-rank the global top-32 with the EXACT weights.
 //
 // The op is a plain add-on (no env gate needed for correctness; the MTP
 // draft bench is the only caller). CPU: use_fallback -> throw (no chain
@@ -34,12 +32,24 @@
 #include "mlx/fast_primitives.h"
 
 #include <hip/hip_runtime.h>
+#include <math.h>
 
 namespace mlx::core {
 namespace rocm {
 
+// u16 -> f32 (identical to the chain's bf2f; ROCm has no
+// __bfloat162float intrinsic).
+__device__ __forceinline__ float li2_bf2f16(unsigned short h) {
+  union {
+    unsigned short u;
+    __hip_bfloat16 b;
+  } c;
+  c.u = h;
+  return static_cast<float>(c.b);
+}
+
 __global__ void lm_head_int2_kernel(
-    const __nv_bfloat16* __restrict__ x,
+    const __hip_bfloat16* __restrict__ x,
     const uint8_t* __restrict__ wq,
     const float* __restrict__ scale,
     const float* __restrict__ zs,
@@ -53,40 +63,26 @@ __global__ void lm_head_int2_kernel(
   int col = blockIdx.x * blockDim.x + threadIdx.x;
   if (col >= N)
     return;
-  const int Q = K >> 2;
-  float out = 0.0f;
-  for (int g = 0; g < NG; ++g) {
-    const uint8_t* p = wq + (size_t)col * Q + (size_t)g * 32;
-    const __nv_bfloat16* xg = x + (size_t)g * 128;
-    float d = 0.0f;
-    #pragma unroll 8
-    for (int j = 0; j < 32; ++j) {
-      // Byte (j*4..j*4+3): plane q reads x index (j*4+q), j*4+Q, j*4+2Q,
-      // j*4+3Q of the group.
-      const int j0 = j * 4;
-      unsigned b0 = p[j0];
-      unsigned b1 = p[j0 + 1];
-      unsigned b2 = p[j0 + 2];
-      unsigned b3 = p[j0 + 3];
-      d += __bfloat162float(xg[j0 * 4 + 0]) * (float)(b0 & 3);
-      d += __bfloat162float(xg[j0 * 4 + 1]) * (float)((b0 >> 2) & 3);
-      d += __bfloat162float(xg[j0 * 4 + 2]) * (float)((b0 >> 4) & 3);
-      d += __bfloat162float(xg[j0 * 4 + 3]) * (float)((b0 >> 6) & 3);
-      d += __bfloat162float(xg[j0 * 4 + 0 + Q]) * (float)((b1) & 3);
-      d += __bfloat162float(xg[j0 * 4 + 1 + Q]) * (float)((b1 >> 2) & 3);
-      d += __bfloat162float(xg[j0 * 4 + 2 + Q]) * (float)((b1 >> 4) & 3);
-      d += __bfloat162float(xg[j0 * 4 + 3 + Q]) * (float)((b1 >> 6) & 3);
-      d += __bfloat162float(xg[j0 * 4 + 0 + 2 * Q]) * (float)(b2 & 3);
-      d += __bfloat162float(xg[j0 * 4 + 1 + 2 * Q]) * (float)((b2 >> 2) & 3);
-      d += __bfloat162float(xg[j0 * 4 + 2 + 2 * Q]) * (float)((b2 >> 4) & 3);
-      d += __bfloat162float(xg[j0 * 4 + 3 + 2 * Q]) * (float)((b2 >> 6) & 3);
-      d += __bfloat162float(xg[j0 * 4 + 0 + 3 * Q]) * (float)(b3 & 3);
-      d += __bfloat162float(xg[j0 * 4 + 1 + 3 * Q]) * (float)((b3 >> 2) & 3);
-      d += __bfloat162float(xg[j0 * 4 + 2 + 3 * Q]) * (float)((b3 >> 4) & 3);
-      d += __bfloat162float(xg[j0 * 4 + 3 + 3 * Q]) * (float)((b3 >> 6) & 3);
+  const int Q = K >> 2;      // quarter length in elements (K/4)
+  const int GQ = Q >> 7;    // 128-groups per quarter
+  float acc = 0.0f;
+  #pragma unroll
+  for (int q = 0; q < 4; ++q) {
+    for (int gl = 0; gl < GQ; ++gl) {
+      const int G = q * GQ + gl;
+      const uint8_t* p = wq + (size_t)col * Q + (size_t)gl * 128;
+      const __hip_bfloat16* xg = x + (size_t)q * Q + (size_t)gl * 128;
+      float d = 0.0f;
+      #pragma unroll 8
+      for (int j = 0; j < 128; ++j) {
+        unsigned b = p[j];
+        d += li2_bf2f16(reinterpret_cast<const unsigned short*>(xg)[j]) *
+             (float)((b >> (2 * q)) & 3);
+      }
+      acc += d * scale[(size_t)col * NG + G] - sx[G] * zs[(size_t)col * NG + G];
     }
-    out += d * scale[(size_t)col * NG + g] - sx[g] * zs[(size_t)col * NG + g];
   }
+  float out = acc;
   logits[col] = out;
 
   // ---- per-64-column top-8 selection (shared-memory max rounds) ----
@@ -158,7 +154,7 @@ int launch_lm_head_int2(
   dim3 block(256);
   dim3 grid((N + 255) / 256);
   rocm::lm_head_int2_kernel<<<grid, block, 0, stream>>>(
-      (const __nv_bfloat16*)x,
+      (const __hip_bfloat16*)x,
       (const uint8_t*)wq,
       (const float*)scale,
       (const float*)zs,
@@ -172,12 +168,13 @@ int launch_lm_head_int2(
   return (int)hipGetLastError();
 }
 
+}  // namespace rocm
 }  // namespace mlx::core
 
 // ---- eval_gpu implementation ----
 namespace mlx::core::fast {
 
-void LmHeadInt2::eval_gpu(
+void LMHeadInt2::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
   auto& s = stream();

@@ -87,6 +87,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 # R4 finding 1: reflowed prose in tests/test_gdn_fuse.py exceeds line-length by design; E501 ignored for it only.
 [tool.ruff.lint.per-file-ignores]
 "tests/test_gdn_fuse.py" = ["E501"]
+# mtp-bench6-phase.py = instrumented phase-timing diagnostic (a copy of the
+# as-run canonical mtp-bench6.py loop with per-region perf_counter wraps);
+# keeps the canonical variable names (l/h/s) + percent formatting.
+"bench/mtp-bench6-phase.py" = ["E501", "E741", "UP031", "SIM102", "F841"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
