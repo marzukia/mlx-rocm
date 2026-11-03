@@ -8,10 +8,12 @@ Applies three opt-in gates to the canonical qmm.hip:
 Plus a faithful port of the t1434 REFWD_M1 env (rows-aware, no-op with
 QMV_ROWS=1) so the standing config stays semantically identical.
 """
+
 import sys
 
 p = sys.argv[1]
-s = open(p).read()
+with open(p) as f:
+    s = f.read()
 orig = s
 
 # --- Block 1: LX gate + REFWD port + M1_LX + lx_cols guard ---
@@ -85,6 +87,7 @@ new3 = """    // AR-step-change B3 (DEFAULT 8 / 4 on low-CU iGPU): wide
 assert s.count(old3) == 1, "block3 anchor"
 s = s.replace(old3, new3)
 
-open(p, "w").write(s)
+with open(p, "w") as f:
+    f.write(s)
 assert s != orig
-print("PATCHED OK: %s" % p)
+print(f"PATCHED OK: {p}")

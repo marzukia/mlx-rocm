@@ -60,14 +60,14 @@ def probe(K, N, reps=REPS):
 
 # (K, N, count per token)
 SHAPES = [
-    (4096, 32, 48),      # in_proj a/b x 24 GDN layers
-    (4096, 1024, 16),    # k/v proj x 8 attn layers
-    (4096, 4096, 56),    # in_proj_z + out_proj (24) + o_proj (8)
-    (4096, 8192, 32),    # in_proj_qkv (24) + q_proj (8)
-    (4096, 12288, 48),   # gate/up (24x2)
-    (12288, 4096, 24),   # down_proj
-    (4096, 248320, 1),   # lm_head
+    (4096, 32, 48),  # in_proj a/b x 24 GDN layers
+    (4096, 1024, 16),  # k/v proj x 8 attn layers
+    (4096, 4096, 56),  # in_proj_z + out_proj (24) + o_proj (8)
+    (4096, 8192, 32),  # in_proj_qkv (24) + q_proj (8)
+    (4096, 12288, 48),  # gate/up (24x2)
+    (12288, 4096, 24),  # down_proj
+    (4096, 248320, 1),  # lm_head
 ]
-for K, N, cnt in SHAPES:
+for K, N, _cnt in SHAPES:
     probe(K, N, reps=30 if N >= 200000 else REPS)
 print("PROBE-DONE", flush=True)

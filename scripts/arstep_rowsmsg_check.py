@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 # Row-exact contract check at M=1: wide vs rows-msg (MLX_ROCM_M1_ROWSMSG).
 # One process per path (gate is static-init at first use).
-import os, sys
+import os
+import sys
+
 import numpy as np
+
 if sys.argv[1] == "rowsmsg":
     os.environ["MLX_ROCM_M1_ROWSMSG"] = "1"
 import mlx.core as mx
+
 mx.set_default_device(mx.gpu)
 mx.random.seed(123)
 gs = 64
