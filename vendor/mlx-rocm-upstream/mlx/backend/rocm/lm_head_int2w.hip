@@ -22,7 +22,7 @@
 namespace mlx::core {
 namespace rocm {
 
-__global__ __launch_bounds__(2048) lm_head_int2w_kernel(
+__global__ __launch_bounds__(2048) void lm_head_int2w_kernel(
     const __hip_bfloat16* __restrict__ x,
     const uint8_t* __restrict__ wq,
     const float* __restrict__ scale,
