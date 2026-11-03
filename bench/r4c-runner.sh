@@ -27,7 +27,7 @@ cd $W
 
 B6=$W/mtp-bench6.py
 B6P=$W/mtp-bench6-phase.py
-AR=$W/mtp-bench3-side.py
+AR=$W/mtp-bench3.py
 PROBE=$W/r4c_head_probe.py
 BASE="env MODELS=$MODELS LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libhsa-runtime64.so.1 HCC_AMDGPU_TARGET=gfx1201 MLX_MTP=4 MTP6_TAPE=hybrid GDN_FUSE=1 MLX_ROCM_QMV_ROWS=1 MLX_ROCM_QMV_ROWS_MIN_N=1 REFWD_M1=1"
 NOROWS="env MODELS=$MODELS LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libhsa-runtime64.so.1 HCC_AMDGPU_TARGET=gfx1201 MLX_MTP=4 MTP6_TAPE=hybrid GDN_FUSE=1 REFWD_M1=1"
@@ -40,6 +40,7 @@ log "PRE bench6-phase: $(md5sum $B6P | cut -d' ' -f1)"
 log "PRE probe: $(md5sum $PROBE | cut -d' ' -f1)"
 log "PRE AR: $(md5sum $AR | cut -d' ' -f1)"
 log "PRE SBCAR: $(md5sum $MODELS/qwen3-9b-mlx/model-mtp.safetensors | cut -d' ' -f1)"
+[ -f $MODELS/qwen3-9b-mlx/model-mtp.safetensors ] || { log "FATAL: model-mtp.safetensors sidecar missing"; exit 1; }
 log "PRE OFF libmlx: $(md5sum $(dirname $OFF_PY)/../lib/python3.14/site-packages/mlx/lib/libmlx.so | cut -d' ' -f1)"
 log "PRE ON  libmlx: $(md5sum $(dirname $ON_PY)/../lib/python3.14/site-packages/mlx/lib/libmlx.so | cut -d' ' -f1)"
 

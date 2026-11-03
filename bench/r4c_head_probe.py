@@ -61,8 +61,8 @@ def main():
     is_q = type(_h).__name__ == "QuantizedLinear"
     print(f"HEAD type={type(_h).__name__}", flush=True)
 
-    gen = mx.random.RandomState(0)
-    x = gen.uniform(0.0, 1.0, (N_TEST, K)).astype(mx.bfloat16)
+    mx.random.seed(0)
+    x = mx.random.uniform(0.0, 1.0, (N_TEST, K)).astype(mx.bfloat16)
     x1 = x[:1]
 
     def timeit(fn):
