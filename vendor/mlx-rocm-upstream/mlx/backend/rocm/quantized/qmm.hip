@@ -4127,10 +4127,7 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     if (host_warp != 32) {
       // fall through to tiled / warp-shared
     } else {
-      // Multi-row wide (M<=4): one shared weight-tile read for up to 4 rows (levers
-      // 1+2+3: shared weight tile, x staged in LDS once per block, 16
-      // cols/block). Bit-identical per row to qmv_wide_kernel (same tile
-      // order). Opt out: MLX_QMV_NO_MR; cols: MLX_QMV_MR_COLS.
+      // Multi-row wide (M<=4): one shared weight-tile read for up to 4 rows (levers 1+2+3: shared weight tile, x staged in LDS once per block, 16 cols/block). Bit-identical per row to qmv_wide_kernel (same tile order). Opt out: MLX_QMV_NO_MR; cols: MLX_QMV_MR_COLS.
       static bool use_mr_qmv = (std::getenv("MLX_QMV_NO_MR") == nullptr);
 
       static int mr_cols_env = parse_non_negative_int_env("MLX_QMV_MR_COLS", 0);
