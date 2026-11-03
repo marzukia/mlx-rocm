@@ -1,13 +1,22 @@
 #!/bin/bash
-# R4b: fused S=4 verify lever A/B. Lever = wheel (bias-free M=2..4 wide/multi-row
-# QMV dispatch). OFF = the canonical baseline venv (expected ~46.49 t/s class);
-# ON = the lever venv (canonical wheel + the gate fix; MLX_ROCM_QMV_ROWS=1 routes
-# the bias-free M=4 GEMMs to the shared-weight-pass rows/mr paths).
-# Identical env for both arms (config identity; MLX_ROCM_QMV_ROWS is inert in the
-# canonical wheel - every linear in the model is bias-free).
+# R4b: fused S=4 verify lever A/B (mtp-r4b-fused-verify).
+#
+# Lever: multi-row QMV (one weight pass for all M=4 verify rows). Probe
+# findings that shaped the matrix:
+#   - the python layer always passes the quantize bias, so the op sees
+#     has_bias=1 even for bias=False layers -> the wheel's wide/multi-row
+#     branch is reachable without the wheel gate fix;
+#   - the multi-row (rows-msg) path is env-gated: MLX_ROCM_QMV_ROWS (the
+#     task config line's "QMV_ROWS=1" is an inert misspelling);
+#   - standing wheel, rows env ON: bias-free M4 = 1.46-2.0x M1 (fused);
+#     rows env OFF: 2.2-3.9x (per-row, the R4a 46.49 t/s class).
+# Arms:
+#   OFF: OFF wheel (canon) + task env (rows off)  -> reproduces ~46.49 t/s
+#   ON : ON  wheel (canon + gate fix) + task env + MLX_ROCM_QMV_ROWS=1
+#   CROSS: OFF wheel + task env + rows env (attribution: if CROSS == ON the
+#   wheel delta is inert and the lever is the env gate)
 # 25 s idle before the first run and between runs; all under gpu-bench.lock.
-# Host-specific paths (venvs, model dir, lock) come from the environment:
-#   OFF_PY / ON_PY / MODELS / LOCK
+# Host paths come from the environment: OFF_PY / ON_PY / MODELS / LOCK
 set -u
 W=$(dirname "$0")
 mkdir -p $W
@@ -16,7 +25,8 @@ cd $W
 B6=$W/mtp-bench6.py
 B6P=$W/mtp-bench6-phase.py
 PROBE=$W/r4b_qmm_probe.py
-ENV="env MODELS=$MODELS LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libhsa-runtime64.so.1 HCC_AMDGPU_TARGET=gfx1201 MLX_MTP=4 MTP6_TAPE=hybrid GDN_FUSE=1 QMV_ROWS=1 QMV_ROWS_MIN_N=1 REFWD_M1=1 MLX_ROCM_QMV_ROWS=1 MLX_ROCM_QMV_ROWS_MIN_N=1"
+BASE="env MODELS=$MODELS LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libhsa-runtime64.so.1 HCC_AMDGPU_TARGET=gfx1201 MLX_MTP=4 MTP6_TAPE=hybrid GDN_FUSE=1 QMV_ROWS=1 QMV_ROWS_MIN_N=1 REFWD_M1=1"
+ROWSON="MLX_ROCM_QMV_ROWS=1 MLX_ROCM_QMV_ROWS_MIN_N=1"
 
 log(){ echo "[$(date -u +%H:%M:%S)] $*" | tee -a $W/runner.log; }
 
@@ -31,39 +41,38 @@ log "PRE ON  libmlx: $(md5sum $(dirname $ON_PY)/../lib/python3.14/site-packages/
 run(){ # $1 = tag, $2 = python, $3 = bench, $4 = iterations, $5 = extra env
   sleep 25
   log "RUN $1 ($4-iter) starting"
-  $ENV $5 MTP_MAX_TOKENS=$4 $2 $3 > $W/$1.log 2>&1
+  $BASE $5 MTP_MAX_TOKENS=$4 $2 $3 > $W/$1.log 2>&1
   local rc=$?
   log "RUN $1 rc=$rc"
   grep -E "TOKS_S|TOKS=|PHASE ms|INFO|FIRST20" $W/$1.log | tail -8 | tee -a $W/runner.log
 }
 
-probe(){ # $1 = tag, $2 = python, $3 = env (default ENV; pass a stripped env for the rows-unset variant)
-  local e=${3:-$ENV}
+probe(){ # $1 = tag, $2 = python, $3 = extra env
   sleep 25
   log "PROBE $1 starting"
-  $e $2 $PROBE > $W/probe_$1.log 2>&1
+  $BASE $3 $2 $PROBE > $W/probe_$1.log 2>&1
   log "PROBE $1 rc=$?"
   grep -E "M1=|probe env" $W/probe_$1.log | tee -a $W/runner.log
 }
-ENVNOROWS="env MODELS=$MODELS LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libhsa-runtime64.so.1 HCC_AMDGPU_TARGET=gfx1201 MLX_MTP=4 MTP6_TAPE=hybrid GDN_FUSE=1 REFWD_M1=1"
 
-# ---- probe (verify what the probe measures): rows set + rows unset ----
-probe canon $OFF_PY $ENVNOROWS
-probe r4b   $ON_PY  $ENVNOROWS
-probe canonR $OFF_PY
-probe r4bR   $ON_PY
+# ---- probe (rows off / rows on, both wheels) ----
+probe off   $OFF_PY ""
+probe on    $ON_PY  ""
+probe offR  $OFF_PY "$ROWSON"
+probe onR   $ON_PY  "$ROWSON"
 
 # ---- anchor protocol (322 iterations = 161 verifies / ~510 tokens) ----
 for i in 1 2 3; do
   run O$i $OFF_PY $B6 322 ""
-  run N$i $ON_PY  $B6 322 ""
+  run N$i $ON_PY  $B6 322 "$ROWSON"
+  run X$i $OFF_PY $B6 322 "$ROWSON"
 done
 # ---- phase decomposition (MTP6_MTPTRIM=1): 128 (64v) and 1024 (512v) ----
 for i in 1 2 3; do
-  run P64O$i $OFF_PY $B6P 128 "MTP6_MTPTRIM=1"
-  run P64N$i $ON_PY  $B6P 128 "MTP6_MTPTRIM=1"
+  run P64O$i $OFF_PY $B6P 128  "MTP6_MTPTRIM=1"
+  run P64N$i $ON_PY  $B6P 128  "MTP6_MTPTRIM=1 $ROWSON"
   run P512O$i $OFF_PY $B6P 1024 "MTP6_MTPTRIM=1"
-  run P512N$i $ON_PY  $B6P 1024 "MTP6_MTPTRIM=1"
+  run P512N$i $ON_PY  $B6P 1024 "MTP6_MTPTRIM=1 $ROWSON"
 done
 
 sleep 25
