@@ -67,9 +67,7 @@ __device__ __forceinline__ T tile_reduce_max_32(T val) {
   return val;
 }
 
-// Single-pass SDPA kernel for short sequences (m8: runtime causal mask -
-// single template instantiation per (dtype, D) so rows are T-invariant)
-// Uses 32-thread tiles for consistent behavior across architectures
+// Single-pass SDPA kernel for short sequences (m8: runtime causal mask - single template instantiation per (dtype, D) so rows are T-invariant) Uses 32-thread tiles for consistent behavior across architectures
 template <typename T, int D>
 __global__ void kernel_sdpav_1pass(
     const T* Q,
@@ -207,11 +205,7 @@ __global__ void kernel_sdpav_1pass(
 
 } // namespace rocm
 
-// Forward declarations
-// verify-attention: the S=4 (qL == 4, K=3 spec-decode verify batch)
-// extension to the 1-pass vector kernel. DEFAULT OFF - engages only under
-// MLX_ROCM_SDPA_S4VA=1; with the env unset the gate is the stock
-// `query_sequence_length < 4` exactly.
+// Forward declarations verify-attention: the S=4 (qL == 4, K=3 spec-decode verify batch) extension to the 1-pass vector kernel. DEFAULT OFF - engages only under MLX_ROCM_SDPA_S4VA=1; with the env unset the gate is the stock `query_sequence_length < 4` exactly.
 bool s4va_enabled() {
   static const bool en = [] {
     const char* e = std::getenv("MLX_ROCM_SDPA_S4VA");
@@ -264,15 +258,7 @@ bool supports_sdpa_vector(
       (query_head_dim == 64 || query_head_dim == 96 || query_head_dim == 128 ||
        query_head_dim == 256);
 
-  // verify-attention: the 1-pass kernel is row-independent (grid (H, qL, B))
-  // and is T-invariant per row under the runtime-causal mask (m8 single-
-  // instantiation), so it can take qL == 4 (the K=3 spec-decode verify
-  // batch) instead of falling through to the scalar flash (prefill)
-  // kernel, which serializes the key scan into a handful of threads per
-  // head. DEFAULT OFF: the extension engages only under
-  // MLX_ROCM_SDPA_S4VA=1 (qL == 4 rows go to the vector kernel); with the
-  // env unset the gate is the stock `query_sequence_length < 4` exactly,
-  // so the no-graft behavior is bit-identical.
+  // verify-attention: the 1-pass kernel is row-independent (grid (H, qL, B)) and is T-invariant per row under the runtime-causal mask (m8 single- instantiation), so it can take qL == 4 (the K=3 spec-decode verify batch) instead of falling through to the scalar flash (prefill) kernel, which serializes the key scan into a handful of threads per head. DEFAULT OFF: the extension engages only under MLX_ROCM_SDPA_S4VA=1 (qL == 4 rows go to the vector kernel); with the env unset the gate is the stock `query_sequence_length < 4` exactly, so the no-graft behavior is bit-identical.
 const bool supported_vector_config =
       sdpa_supported_head_dim &&
       (query_sequence_length < 4 ||
@@ -340,9 +326,7 @@ void sdpa_vector(
     dim3 grid_dim(H, qL, B);
     dim3 block_dim(1024, 1, 1); // 32 tiles * 32 threads = 1024
 
-    // m8: single runtime-mask kernel (no compile-time causal split) so the
-    // S=2 causal row 1 (all keys visible) and the S=1 no-mask row (all keys
-    // visible) use the same compiled code and are bit-identical per row.
+    // m8: single runtime-mask kernel (no compile-time causal split) so the S=2 causal row 1 (all keys visible) and the S=1 no-mask row (all keys visible) use the same compiled code and are bit-identical per row.
     auto launch_kernel = [&](auto type_tag, auto headdim_tag) {
       using DataType = decltype(type_tag);
       constexpr int headdim = decltype(headdim_tag)::value;

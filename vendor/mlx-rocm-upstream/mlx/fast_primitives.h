@@ -588,11 +588,7 @@ class GdnFusedStepTape : public Custom {
   float eps_;
   float norm_eps_;
 };
-// LMHeadInt2: int2 g128-asymmetric dequant GEMV (M=1) + in-kernel
-// per-64-column top-8 candidate emission (see backend/rocm/lm_head_int2.hip).
-// Inputs: x [M, K] bf16, wq [N, K/4] u8, scale [N, NG] f32 (per-group s),
-// zs [N, NG] f32 (z*s), sx [NG] f32 (sum of x per 128-group).
-// Outputs: logits [N] f32, cand_val [N/64, 8] f32, cand_col [N/64, 8] i32.
+// LMHeadInt2: int2 g128-asymmetric dequant GEMV (M=1) + in-kernel per-64-column top-8 candidate emission (see backend/rocm/lm_head_int2.hip). Inputs: x [M, K] bf16, wq [N, K/4] u8, scale [N, NG] f32 (per-group s), zs [N, NG] f32 (z*s), sx [NG] f32 (sum of x per 128-group). Outputs: logits [N] f32, cand_val [N/64, 8] f32, cand_col [N/64, 8] i32.
 class LMHeadInt2 : public Custom {
  public:
   LMHeadInt2(

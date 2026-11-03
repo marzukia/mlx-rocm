@@ -1,18 +1,10 @@
 // Copyright © 2025 Apple Inc.
 //
-// Tail fusion (Lever 2): fuse the per-token GDN tail (conv1d + silu + q/k
-// norm + beta + g, and the final norm_gated = rms_norm + precise_swiglu)
-// into the fewest kernels the bit-exact constraint allows.
+// Tail fusion (Lever 2): fuse the per-token GDN tail (conv1d + silu + q/k norm + beta + g, and the final norm_gated = rms_norm + precise_swiglu) into the fewest kernels the bit-exact constraint allows.
 //
 // Three kernels replace the ~14-16 separate tail launches per GDN layer:
-//   1. gdn_prep_kernel:     conv1d + silu + beta + g
-//   2. gdn_qk_norm_kernel:  q_norm + k_norm (32 rms_norms, weight=None)
-//   3. gdn_norm_gated_kernel: rms_norm + precise_swiglu (32 heads)
 //
-// Bit-exactness: the elementwise ops reuse the exact Op structs (Sigmoid,
-// Exp, LogAddExp, Multiply) the unfused kernels use; the conv1d keeps the
-// 4-value sequential k-order sum; the rms_norm keeps the exact 256-thread
-// block reduction from rms_norm_row.
+// Bit-exactness: the elementwise ops reuse the exact Op structs (Sigmoid, Exp, LogAddExp, Multiply) the unfused kernels use; the conv1d keeps the 4-value sequential k-order sum; the rms_norm keeps the exact 256-thread block reduction from rms_norm_row.
 
 #include "mlx/backend/rocm/device.h"
 #include "mlx/backend/rocm/allocator.h"
@@ -36,9 +28,7 @@ __device__ float warp_reduce_sum_rms(float val) {
   return val;
 }
 
-// ---- rms_norm row body (copied verbatim from rms_norm.hip) ----
-// `out` must be block-wide visible (shared or global); the caller is
-// responsible for a __syncthreads() before reading it if it is shared.
+// ---- rms_norm row body (copied verbatim from rms_norm.hip) ---- `out` must be block-wide visible (shared or global); the caller is responsible for a __syncthreads() before reading it if it is shared.
 template <typename T, int BLOCK_DIM, int N_READS = 4>
 __device__ void gdn_rms_norm_row(
     const T* x,
@@ -86,11 +76,7 @@ __device__ void gdn_rms_norm_row(
   }
 }
 
-// ---- Kernel 1: conv1d + silu + beta + g ----
-// conv1d: 4-value sequential k-order sum (matches depthwise_conv1d_kernel),
-// cast to T, then silu = T * sigmoid(T) (Multiply + Sigmoid structs).
-// beta = sigmoid(b); g = exp(-exp(A_log) * logaddexp(a+dt_bias, 0)) in f32,
-// cast to T (matches compute_g + the astype in fast.cpp).
+// ---- Kernel 1: conv1d + silu + beta + g ---- conv1d: 4-value sequential k-order sum (matches depthwise_conv1d_kernel), cast to T, then silu = T * sigmoid(T) (Multiply + Sigmoid structs). beta = sigmoid(b); g = exp(-exp(A_log) * logaddexp(a+dt_bias, 0)) in f32, cast to T (matches compute_g + the astype in fast.cpp).
 template <typename T>
 __global__ void gdn_prep_kernel(
     const T* __restrict__ q_raw,
@@ -143,14 +129,7 @@ __global__ void gdn_prep_kernel(
     int t = threadIdx.x;
     if (t < value_dim / 128) {  // num_v_heads
       beta_out[t] = Sigmoid{}(b[t]);
-      // Bit-exact compute_g chain (every intermediate rounding matches the
-      // unfused op sequence):
-      //   sum_bf = (bf16)(f32(a) + f32(dt_bias))            [Add bf16]
-      //   sp_bf  = (bf16)(max + log1p(exp(min - max)))     [LogAddExp bf16]
-      //   e_al   = expf(A_log)                             [Exp f32]
-      //   g      = expf(-(e_al * f32(sp_bf)))             [f32; stays f32]
-      // g stays f32: the GDN recurrent kernel reads it as u16 pairs, exactly
-      // as the unfused path feeds it (f32 g, no astype).
+      // Bit-exact compute_g chain (every intermediate rounding matches the unfused op sequence): sum_bf = (bf16)(f32(a) + f32(dt_bias))            [Add bf16] sp_bf  = (bf16)(max + log1p(exp(min - max)))     [LogAddExp bf16] e_al   = expf(A_log)                             [Exp f32] g      = expf(-(e_al * f32(sp_bf)))             [f32; stays f32] g stays f32: the GDN recurrent kernel reads it as u16 pairs, exactly as the unfused path feeds it (f32 g, no astype).
       T sum_bf = static_cast<T>(static_cast<float>(a[t]) +
                                static_cast<float>(dt_bias[t]));
       float fx = static_cast<float>(sum_bf);
@@ -165,10 +144,7 @@ __global__ void gdn_prep_kernel(
   }
 }
 
-// ---- Kernel 2: q_norm + k_norm (32 rms_norms, weight=None) ----
-// Block 0..Hk-1: q head; block Hk..2*Hk-1: k head. Each block does one
-// rms_norm (exact block reduction, w=1) into shared, then the scalar
-// multiply (inv_scale**2 for q, inv_scale for k) in f32, cast to T.
+// ---- Kernel 2: q_norm + k_norm (32 rms_norms, weight=None) ---- Block 0..Hk-1: q head; block Hk..2*Hk-1: k head. Each block does one rms_norm (exact block reduction, w=1) into shared, then the scalar multiply (inv_scale**2 for q, inv_scale for k) in f32, cast to T.
 template <typename T>
 __global__ void gdn_qk_norm_kernel(
     const T* __restrict__ q_conv,
@@ -190,9 +166,7 @@ __global__ void gdn_qk_norm_kernel(
   T* out = is_q ? (q_normed + (int64_t)head * head_dim)
                : (k_normed + (int64_t)head * head_dim);
   float scale = is_q ? (inv_scale * inv_scale) : inv_scale;
-  // The unfused path scales with a python float * bf16 array: the scalar is
-  // cast to bf16 first, then the multiply is (bf16)(f32 * f32). Pre-round
-  // the scale to bf16 to match bit-exactly (inv_scale is not exact in bf16).
+  // The unfused path scales with a python float * bf16 array: the scalar is cast to bf16 first, then the multiply is (bf16)(f32 * f32). Pre-round the scale to bf16 to match bit-exactly (inv_scale is not exact in bf16).
   float scale_f = static_cast<float>(static_cast<T>(scale));
   T one = static_cast<T>(1.0f);
   T* w = &one;  // weight=None -> w[0]=1, w_stride=0
@@ -205,11 +179,7 @@ __global__ void gdn_qk_norm_kernel(
   }
 }
 
-// ---- Kernel 3: norm_gated = rms_norm + precise_swiglu (32 heads) ----
-// Each block (one v head): rms_norm over 128 (with weight, exact block
-// reduction) into shared -> x_normed (T); then precise_swiglu:
-//   gate = silu(z.astype(f32)) in f32; x = x_normed.astype(f32);
-//   result = (gate * x).astype(T).
+// ---- Kernel 3: norm_gated = rms_norm + precise_swiglu (32 heads) ---- Each block (one v head): rms_norm over 128 (with weight, exact block reduction) into shared -> x_normed (T); then precise_swiglu: gate = silu(z.astype(f32)) in f32; x = x_normed.astype(f32); result = (gate * x).astype(T).
 template <typename T>
 __global__ void gdn_norm_gated_kernel(
     const T* __restrict__ out,

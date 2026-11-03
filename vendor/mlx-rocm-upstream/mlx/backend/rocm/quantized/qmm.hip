@@ -4104,12 +4104,7 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   // (opt out with MLX_QMV_NO_WIDE): +14-20% on dense decode, never regresses.
   // Replaces qmv_tiled for decode; ~175 vs ~108 GB/s.
   static bool use_wide_qmv = (std::getenv("MLX_QMV_NO_WIDE") == nullptr);
-  // t1558 R4b: the wide/multi-row branch (rows/mr2/mr share one weight
-  // pass across M rows) was gated on has_bias, so bias-free M=2..4 (the
-  // S=4 verify GEMMs) fell to the per-row warp path (grid Y = M, each
-  // output row re-reads the weights). The sub-kernels all take has_bias
-  // and handle the no-bias case; open it for bias-free M=2..4 (M=1 and
-  // M=5..8 dispatch unchanged; per-row outputs stay row-exact).
+  // t1558 R4b: the wide/multi-row branch (rows/mr2/mr share one weight pass across M rows) was gated on has_bias, so bias-free M=2..4 (the S=4 verify GEMMs) fell to the per-row warp path (grid Y = M, each output row re-reads the weights). The sub-kernels all take has_bias and handle the no-bias case; open it for bias-free M=2..4 (M=1 and M=5..8 dispatch unchanged; per-row outputs stay row-exact).
   bool wide_ok = use_wide_qmv && (bits_ == 4 || bits_ == 8) &&
       mode_ == QuantizationMode::Affine &&
       (has_bias || (M >= 2 && M <= 4)) && transpose_ && batch_count == 1 &&
@@ -4143,36 +4138,14 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
       // 0 = run-825 path — the same kernel without the in-k barrier).
       static int mr_lx_env = parse_non_negative_int_env("MLX_QMV_MR_LX", 1);
       int mcols = (mr_cols_env >= 8) ? mr_cols_env : 16;
-      // 2-byte-typed staging: the old MR kernel is bf16/f16-only; f32 x must
-      // not reach it (4B elements overflow the 2B vector loads).
+      // 2-byte-typed staging: the old MR kernel is bf16/f16-only; f32 x must not reach it (4B elements overflow the 2B vector loads).
       size_t mr_lds = (size_t)std::min(4, M) * (size_t)K * 2;
       if (x.dtype() == float32)
         mr_lds = (size_t)-1;  // force per-row for f32
-      // t1251: mr2 — vectorized-LDS, K/4 chunked-staging MR (4-bit, M = 2..4,
-      // large N). Covers K = 8192 / 12288 (16 / 24 KB staging, M = 4) which
-      // the full-staging MR cannot (64 KB + 1 KB > 64 KB per-block limit),
-      // and is 6-9% faster than the full-staging MR at K = 4096 (lab
-      // 2026-11-01, gfx1201: lm_head N = 248320 M = 4, 2.59 vs 2.79 ms,
-      // per-row 4.00 ms; bit-identical to per-row, maxdiff 0.0). Large-N
-      // only (N >= 16384): below that the per-row wide kernel wins on
-      // block count (lab gate_up N = 12288: mr2 0.138 vs per-row 0.131;
-      // down N = 4096: mr2 0.154 vs per-row 0.123). Opt out:
-      // MLX_QMV_NO_MR (shared); threshold: MLX_QMV_MR2_MIN_N.
+      // t1251: mr2 — vectorized-LDS, K/4 chunked-staging MR (4-bit, M = 2..4, large N). Covers K = 8192 / 12288 (16 / 24 KB staging, M = 4) which the full-staging MR cannot (64 KB + 1 KB > 64 KB per-block limit), and is 6-9% faster than the full-staging MR at K = 4096 (lab 2026-11-01, gfx1201: lm_head N = 248320 M = 4, 2.59 vs 2.79 ms, per-row 4.00 ms; bit-identical to per-row, maxdiff 0.0). Large-N only (N >= 16384): below that the per-row wide kernel wins on block count (lab gate_up N = 12288: mr2 0.138 vs per-row 0.131; down N = 4096: mr2 0.154 vs per-row 0.123). Opt out: MLX_QMV_NO_MR (shared); threshold: MLX_QMV_MR2_MIN_N.
       static int mr2_min_n_env = parse_non_negative_int_env("MLX_QMV_MR2_MIN_N", 0);
       int mr2_min_n = (mr2_min_n_env > 0) ? mr2_min_n_env : 16384;
-      // t1253: rows-msg — multi-row QMV with shared weight decode (the
-      // MTPLX msg morphology ported to gfx1201/HIP; see
-      // qmv_rows_msg_kernel.hip + docs/qmv-rows-msg.md). One workgroup =
-      // 6 waves, each wave owns BN=4 columns and all M rows in a 16-
-      // accumulator array; full-K lane-strided over 128-bit pack-
-      // interleaved weight loads; each 4/8-bit weight tile is decoded
-      // once and MAC'd against all rows (one weight pass regardless of
-      // M). No LDS, no barriers. Per-row math transcribes qmv_wide
-      // verbatim (row-exact contract: output row r ==
-      // quantized_matmul(x[r:r+1]) bit for bit). Large-N band (N >=
-      // rows_min_n). OPT-IN ONLY: MLX_ROCM_QMV_ROWS=1 (DEFAULT OFF —
-      // zero behavior change when unset); band floor:
-      // MLX_ROCM_QMV_ROWS_MIN_N (default 16384).
+      // t1253: rows-msg — multi-row QMV with shared weight decode (the MTPLX msg morphology ported to gfx1201/HIP; see qmv_rows_msg_kernel.hip + docs/qmv-rows-msg.md). One workgroup = 6 waves, each wave owns BN=4 columns and all M rows in a 16- accumulator array; full-K lane-strided over 128-bit pack- interleaved weight loads; each 4/8-bit weight tile is decoded once and MAC'd against all rows (one weight pass regardless of M). No LDS, no barriers. Per-row math transcribes qmv_wide verbatim (row-exact contract: output row r == quantized_matmul(x[r:r+1]) bit for bit). Large-N band (N >= rows_min_n). OPT-IN ONLY: MLX_ROCM_QMV_ROWS=1 (DEFAULT OFF — zero behavior change when unset); band floor: MLX_ROCM_QMV_ROWS_MIN_N (default 16384).
       static bool use_rows_qmv = (std::getenv("MLX_ROCM_QMV_ROWS") != nullptr);
       static bool use_hoist =
           (std::getenv("MLX_ROCM_QMV_ROWS_HOIST") != nullptr);
@@ -4221,12 +4194,10 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 #undef LAUNCH_QMV_ROWS_MSG
         return;
       }
-      // x staging is T-sized: f32 x (the op promotes bf16 x when scales are
-      // f32) needs 4 bytes/element, not 2.
+      // x staging is T-sized: f32 x (the op promotes bf16 x when scales are f32) needs 4 bytes/element, not 2.
       const size_t tbytes = (x.dtype() == float32) ? 4 : 2;
       size_t mr2_lds = (size_t)std::min(4, M) * (size_t)(K / 4) * tbytes;
-      // f32 x: per-row wide measured faster than mr2 on gfx1201 (4.03 vs 9.68ms
-      // at N=248320 K=4096 M=4); mr2 f32 is opt-in only.
+      // f32 x: per-row wide measured faster than mr2 on gfx1201 (4.03 vs 9.68ms at N=248320 K=4096 M=4); mr2 f32 is opt-in only.
       const bool mr2_f32_ok =
           (std::getenv("MLX_QMV_MR2_F32") != nullptr) ||
           (x.dtype() != float32);
@@ -4253,12 +4224,7 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 #undef LAUNCH_QMV_WIDE_MR2
         return;
       }
-      // M>=2: the multi-row kernel batches up to 4 rows per block to share one weight pass.
-      // At M=1 (eager decode) three of the four rows are padding: no bandwidth win, plus
-      // LDS staging + sync overhead. Measured on gfx1201 bare metal 2026-11-01: M=1 AR
-      // 77.39 tok/s with MR on vs 80.94 with MLX_QMV_NO_MR=1 (-4.5% eager tax). The
-      // multi-row win is real at M=2..4 (MTP verify / batch decode), where the shared
-      // weight pass is fully utilized, so gate on M instead of defaulting off.
+      // M>=2: the multi-row kernel batches up to 4 rows per block to share one weight pass. At M=1 (eager decode) three of the four rows are padding: no bandwidth win, plus LDS staging + sync overhead. Measured on gfx1201 bare metal 2026-11-01: M=1 AR 77.39 tok/s with MR on vs 80.94 with MLX_QMV_NO_MR=1 (-4.5% eager tax). The multi-row win is real at M=2..4 (MTP verify / batch decode), where the shared weight pass is fully utilized, so gate on M instead of defaulting off.
       bool mr_ok = use_mr_qmv && (M <= 4) && (M >= 2) && (mr_lds <= 32768) &&
           (N >= mr2_min_n);  // t1251: small-N per-row wins (lab 2026-11-01)
       // run-852: the MR kernel's in-k-loop __syncthreads (LX hoist) requires

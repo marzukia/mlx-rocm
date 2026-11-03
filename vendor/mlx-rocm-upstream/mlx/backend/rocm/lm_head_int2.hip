@@ -1,29 +1,12 @@
 // Copyright © 2025 Apple Inc.
 //
-// lm_head_int2: int2 row-quarter-split g128-asymmetric dequant GEMV (M=1)
-// for the MTP draft head. Replaces the 4-bit lm_head (weight traffic per
-// draft call) with a K/4-byte packed read.
+// lm_head_int2: int2 row-quarter-split g128-asymmetric dequant GEMV (M=1) for the MTP draft head. Replaces the 4-bit lm_head (weight traffic per draft call) with a K/4-byte packed read.
 //
-// Packing (quarter-split, ported from radiance): for a row of K elements,
-// packed byte p = j (j in 0..K/4-1) holds four 2-bit planes for x indices
-// j, K/4+j, K/2+j, 3K/4+j. Element e lives in packed byte e mod (K/4),
-// plane e / (K/4). Group G (0..K/128-1) owns elements [G*128, (G+1)*128):
-// quarter q = G/8, local group gl = G%8, i.e. plane q of packed bytes
-// [gl*128, ... +128). Quantization: per-group asymmetric, s =
-// max((hi-lo)/3, 1e-8), z = clamp(round(-lo/s), 0, 3),
-// q = clamp(round(w/s + z), 0, 3). The op takes the per-group
-// coefficients scale_g = s, zs_g = z*s so the dequant
-// algebra per group is out += dot_g * scale_g - sx_g * zs_g where
-// dot_g = sum_k x_k * q_k and sx_g = sum_k x_k (host-precomputed).
+// Packing (quarter-split, ported from radiance): for a row of K elements, packed byte p = j (j in 0..K/4-1) holds four 2-bit planes for x indices j, K/4+j, K/2+j, 3K/4+j. Element e lives in packed byte e mod (K/4), plane e / (K/4). Group G (0..K/128-1) owns elements [G*128, (G+1)*128): quarter q = G/8, local group gl = G%8, i.e. plane q of packed bytes [gl*128, ... +128). Quantization: per-group asymmetric, s = max((hi-lo)/3, 1e-8), z = clamp(round(-lo/s), 0, 3), q = clamp(round(w/s + z), 0, 3). The op takes the per-group coefficients scale_g = s, zs_g = z*s so the dequant algebra per group is out += dot_g * scale_g - sx_g * zs_g where dot_g = sum_k x_k * q_k and sx_g = sum_k x_k (host-precomputed).
 //
-// One thread per output column (N = 248320). After its column's logit,
-// each 64-column subblock runs an 8-round shared-memory max selection
-// and emits the per-block top-8 (value, col) candidate pairs so the
-// caller can re-rank the global top-32 with the EXACT weights.
+// One thread per output column (N = 248320). After its column's logit, each 64-column subblock runs an 8-round shared-memory max selection and emits the per-block top-8 (value, col) candidate pairs so the caller can re-rank the global top-32 with the EXACT weights.
 //
-// The op is a plain add-on (no env gate needed for correctness; the MTP
-// draft bench is the only caller). CPU: use_fallback -> throw (no chain
-// fallback: the int2 packed weights only exist on the caller side).
+// The op is a plain add-on (no env gate needed for correctness; the MTP draft bench is the only caller). CPU: use_fallback -> throw (no chain fallback: the int2 packed weights only exist on the caller side).
 
 #include "mlx/backend/rocm/allocator.h"
 #include "mlx/backend/rocm/device.h"
@@ -37,8 +20,7 @@
 namespace mlx::core {
 namespace rocm {
 
-// u16 -> f32 (identical to the chain's bf2f; ROCm has no
-// __bfloat162float intrinsic).
+// u16 -> f32 (identical to the chain's bf2f; ROCm has no __bfloat162float intrinsic).
 __device__ __forceinline__ float li2_bf2f16(unsigned short h) {
   union {
     unsigned short u;

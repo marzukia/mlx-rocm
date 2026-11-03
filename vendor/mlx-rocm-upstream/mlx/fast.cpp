@@ -1175,8 +1175,7 @@ array scaled_dot_product_attention(
 
 namespace {
 
-// Non-row-contiguous inputs get a row-contiguous copy (same helper as
-// gdu.cpp); already-contiguous inputs pass through unchanged.
+// Non-row-contiguous inputs get a row-contiguous copy (same helper as gdu.cpp); already-contiguous inputs pass through unchanged.
 static array gdnf_make_row_contiguous(const array& a, const Stream& s) {
   if (a.flags().row_contiguous) {
     return a;
@@ -1211,9 +1210,7 @@ bool GdnFusedStep::use_fallback(
   if (B != 1 || T > 4) {
     return true;
   }
-  // NOTE: MLX_ROCM_GDN_FUSE_T2=0 no longer routes T=2 to the 4-op chain
-  // (that chain is 1-D-only in gdn_prep and faults on the GPU for T>1).
-  // Lossless A/B is done with MLX_ROCM_GDN_FUSE=0 vs =1.
+  // NOTE: MLX_ROCM_GDN_FUSE_T2=0 no longer routes T=2 to the 4-op chain (that chain is 1-D-only in gdn_prep and faults on the GPU for T>1). Lossless A/B is done with MLX_ROCM_GDN_FUSE=0 vs =1.
   if (Dk != 128 || Dv != 128) {
     return true;
   }
@@ -1344,10 +1341,7 @@ std::vector<array> gdn_fused_step(
 
   auto fallback = [B, T, Hk, Hv, s, inv_scale, prep_eps, norm_eps](
                       std::vector<array> inputs) {
-    // The default 4-op chain, bit-identical to the model's default path
-    // (gdn_prep conv+silu+beta+g -> gdn_prep qk_norm -> r4d recurrent state
-    // update -> gdn_norm_gated). The conv-cache update is model-side either
-    // way, so it is not part of this op.
+    // The default 4-op chain, bit-identical to the model's default path (gdn_prep conv+silu+beta+g -> gdn_prep qk_norm -> r4d recurrent state update -> gdn_norm_gated). The conv-cache update is model-side either way, so it is not part of this op.
     auto q = inputs[0];
     auto k = inputs[1];
     auto v = inputs[2];
@@ -1390,9 +1384,7 @@ std::vector<array> gdn_fused_step(
             s, fallback, inv_scale, prep_eps, norm_eps),
         inputs);
   }
-  // The 4-op fallback chain is unsafe for T>1: gdn_prep is 1-D-only and
-  // misinterprets multi-row inputs (out-of-bounds reads, GPU fault). Throw
-  // instead so A/B gating degrades to a clear error, not a hang.
+  // The 4-op fallback chain is unsafe for T>1: gdn_prep is 1-D-only and misinterprets multi-row inputs (out-of-bounds reads, GPU fault). Throw instead so A/B gating degrades to a clear error, not a hang.
   throw std::invalid_argument(
       "gdn_fused_step: fallback disabled for this shape (the 4-op chain is "
       "1-D-only in gdn_prep and unsafe for T>1); use the model default "
@@ -1408,9 +1400,7 @@ bool GdnFusedStepTape::use_fallback(
     int Hk,
     int kernel_size,
     Stream s) {
-  // MLX_ROCM_GDN_TAPE=1 (DEFAULT OFF: the op is unreachable without it, so
-  // MLX_ROCM_GDN_TAPE=0/unset is a zero-behavior-change path). Same shape
-  // gate as GdnFusedStep (B=1, T<=4, Dk=Dv=128, kernel_size=4, GPU).
+  // MLX_ROCM_GDN_TAPE=1 (DEFAULT OFF: the op is unreachable without it, so MLX_ROCM_GDN_TAPE=0/unset is a zero-behavior-change path). Same shape gate as GdnFusedStep (B=1, T<=4, Dk=Dv=128, kernel_size=4, GPU).
   if (s.device == Device::cpu) {
     return true;
   }
@@ -1472,10 +1462,7 @@ std::vector<array> gdn_fused_step_tape(
   int kernel_size = (int)cw.shape(1);
 
   auto fallback = [](std::vector<array> inputs) -> std::vector<array> {
-    // There is NO chain fallback: the per-row state tapes are emitted by
-    // the fused recurrence kernel only. The use_fallback gate (env +
-    // shape) makes the op unreachable when the tape is off/disabled, so
-    // this only fires on a direct call with the gate bypassed.
+    // There is NO chain fallback: the per-row state tapes are emitted by the fused recurrence kernel only. The use_fallback gate (env + shape) makes the op unreachable when the tape is off/disabled, so this only fires on a direct call with the gate bypassed.
     throw std::runtime_error(
         "gdn_fused_step_tape: no fallback (the 4-op chain emits no "
         "per-row state tapes); require MLX_ROCM_GDN_TAPE=1 on the ROCm "
@@ -1505,9 +1492,7 @@ std::vector<array> gdn_fused_step_tape(
 }
 
 bool LMHeadInt2::use_fallback(Stream s) {
-  // The int2 packed weights only exist on the caller side (the MTP draft
-  // bench quantizes the bf16 head itself); there is no chain fallback.
-  // GPU-only by construction; CPU throws.
+  // The int2 packed weights only exist on the caller side (the MTP draft bench quantizes the bf16 head itself); there is no chain fallback. GPU-only by construction; CPU throws.
   return s.device == Device::cpu;
 }
 

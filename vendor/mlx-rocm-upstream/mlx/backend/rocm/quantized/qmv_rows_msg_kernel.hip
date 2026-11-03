@@ -1,59 +1,14 @@
-// t1253: multi-row verify QMV — the MTPLX "msg" morphology ported from
-// Apple Metal (mtplx verify_kernels) to gfx1201/HIP.
+// t1253: multi-row verify QMV — the MTPLX "msg" morphology ported from Apple Metal (mtplx verify_kernels) to gfx1201/HIP.
 //
-// Metal -> HIP mapping (full doc: docs/qmv-rows-msg.md):
-//   Metal simdgroup (32 threads, SIMD32)  -> HIP wave32 (32-thread wave)
-//   Metal threadgroup (6 simdgroups)      -> HIP workgroup (6 waves, 192 threads)
-//   threadgroup memory / barriers         -> NONE: the msg morphology carries
-//                                           no shared memory and no barriers;
-//                                           each wave is fully independent
-//   pack-interleaved 32-bit weight loads  -> uint4 (128-bit) loads, lane-strided
+// Metal -> HIP mapping (full doc: docs/qmv-rows-msg.md): Metal simdgroup (32 threads, SIMD32)  -> HIP wave32 (32-thread wave) Metal threadgroup (6 simdgroups)      -> HIP workgroup (6 waves, 192 threads) threadgroup memory / barriers         -> NONE: the msg morphology carries no shared memory and no barriers; each wave is fully independent pack-interleaved 32-bit weight loads  -> uint4 (128-bit) loads, lane-strided
 //
 // Morphology:
-//   * Grid (ceil(N / 24), 1); block 192 threads = 6 waves. Each wave owns
-//     BN = 4 consecutive output columns; the block covers 24 columns. The
-//     waves share nothing — they ride in one workgroup purely to give the
-//     scheduler fewer, heavier units (the reference's own note).
-//   * Each wave computes ALL M rows (M <= 4) in an explicit MAXM x BN
-//     accumulator array (16 accumulators at M = 4, under the 24-
-//     accumulator/thread register ceiling recorded in the reference).
-//   * Full-K reduction, lane-strided: k = lane*WPER stepping 32*WPER, with
-//     128-bit (uint4 = 32 nibbles) pack-interleaved weight loads — 512 B
-//     coalesced per wave-instruction (the load-bearing coalescing note).
-//   * Each 4/8-bit weight tile (32 / 16 values) is decoded ONCE per
-//     (column, k-tile) and MAC'd against ALL M rows: the weight stream is
-//     read exactly once regardless of M (M = 4 costs one pass + activation
-//     overhead, not four passes).
-//   * Scales/biases: per-column scalar loads per k-tile (L1-served, exactly
-//     as in the per-row qmv_wide path).
-//   * x (M x K; 32 KB bf16 at M = 4, K = 4096) is read with 128-bit vector
-//     loads per (row, k-tile); the buffer is L2-resident across blocks.
 //
-// Row-exact contract (oMLX row_exact_qmv; t1253 steal #2): the per-row
-// arithmetic transcribes the one-row qmv_wide_kernel traversal verbatim —
-// per (row m, k-tile): la = 0; lx = 0; for q: for j: la += xn[j] *
-// wn[q*V + j] (same q-major, j-minor FMA order, same int->float
-// conversions, same `acc += s*la + b*lx` update), then the same 5-stage
-// __shfl_down reduction and the same T cast. Only the weight decode is
-// shared across rows (bit-identical values: same shift+mask+cvt chain), so
-// row r of the output equals quantized_matmul(x[r:r+1]) bit for bit while
-// each weight block is decoded once. Test: one-row reference diff (RUN
-// card, probe 2). When !has_bias, b == 0.0f and 0.0f * (finite lx chain)
-// == 0.0f == the unaccumulated lx of the per-row kernel — bit-identical
-// in both cases (same argument as the run-852 LX hoist).
+// Row-exact contract (oMLX row_exact_qmv; t1253 steal #2): the per-row arithmetic transcribes the one-row qmv_wide_kernel traversal verbatim — per (row m, k-tile): la = 0; lx = 0; for q: for j: la += xn[j] * wn[q*V + j] (same q-major, j-minor FMA order, same int->float conversions, same `acc += s*la + b*lx` update), then the same 5-stage __shfl_down reduction and the same T cast. Only the weight decode is shared across rows (bit-identical values: same shift+mask+cvt chain), so row r of the output equals quantized_matmul(x[r:r+1]) bit for bit while each weight block is decoded once. Test: one-row reference diff (RUN card, probe 2). When !has_bias, b == 0.0f and 0.0f * (finite lx chain) == 0.0f == the unaccumulated lx of the per-row kernel — bit-identical in both cases (same argument as the run-852 LX hoist).
 //
-// Register estimate (RDNA4 / gfx1201, 256 VGPR per thread):
-//   acc[16] + xn[32] + wn[8] + v4[4] (transient) + pointers/addresses (~20)
-//   ~= 100 VGPRs -> full occupancy headroom; 192-thread block = 6 waves,
-//   0 LDS, 8 wave slots per CU.
+// Register estimate (RDNA4 / gfx1201, 256 VGPR per thread): acc[16] + xn[32] + wn[8] + v4[4] (transient) + pointers/addresses (~20) ~= 100 VGPRs -> full occupancy headroom; 192-thread block = 6 waves, 0 LDS, 8 wave slots per CU.
 //
-// Dispatch (qmm.hip, inside the wave32 wide_ok branch): 4/8-bit affine with
-// bias, transposed, non-batched, M = 2..4, N >= 16384 (the large-N band;
-// below it the per-row path wins on block count — lab data in the docs),
-// K % 32 == 0, GROUP_SIZE in {32,64,128}, bf16/fp16 x, wave32. Opt-in:
-// MLX_ROCM_QMV_ROWS=1 (DEFAULT OFF — zero behavior change when unset);
-// band floor: MLX_ROCM_QMV_ROWS_MIN_N (default 16384). M = 1 (eager
-// decode) and M = 5..8 keep the per-row qmv_wide path.
+// Dispatch (qmm.hip, inside the wave32 wide_ok branch): 4/8-bit affine with bias, transposed, non-batched, M = 2..4, N >= 16384 (the large-N band; below it the per-row path wins on block count — lab data in the docs), K % 32 == 0, GROUP_SIZE in {32,64,128}, bf16/fp16 x, wave32. Opt-in: MLX_ROCM_QMV_ROWS=1 (DEFAULT OFF — zero behavior change when unset); band floor: MLX_ROCM_QMV_ROWS_MIN_N (default 16384). M = 1 (eager decode) and M = 5..8 keep the per-row qmv_wide path.
 namespace mlx::core::rocm {
 
 template <typename T, typename ScaleT, int GROUP_SIZE, int BITS>
@@ -94,18 +49,14 @@ qmv_rows_msg_kernel(
 
   for (int k = lane * WPER; k < K; k += 32 * WPER) {
     const int g = k / GROUP_SIZE;
-    // Row-major: the row's x-tile is loaded ONCE per k-tile and MAC'd
-    // against all BN columns (shared x, same values as the per-row scalar
-    // reads; FMA order preserved — see the row-exact note above).
+    // Row-major: the row's x-tile is loaded ONCE per k-tile and MAC'd against all BN columns (shared x, same values as the per-row scalar reads; FMA order preserved — see the row-exact note above).
     for (int m = 0; m < MAXM; ++m) {
       if (m >= M)
         break;
       float xn[WPER];
       {
         const T* xp = &x[static_cast<size_t>(m) * K + k];
-        // Type-generic x-tile load: NLOAD 16B uint4 loads covering WPER
-        // elements of any 2/4-byte T (f16/bf16: 8 elems/load; f32: 4).
-        // 2-byte path is bit-identical to the original (EPU=8, NLOAD=WPER/8).
+        // Type-generic x-tile load: NLOAD 16B uint4 loads covering WPER elements of any 2/4-byte T (f16/bf16: 8 elems/load; f32: 4). 2-byte path is bit-identical to the original (EPU=8, NLOAD=WPER/8).
         uint4 v4[8];
 #pragma unroll
         for (int q = 0; q < NLOAD; ++q)
@@ -115,9 +66,7 @@ qmv_rows_msg_kernel(
         for (int j = 0; j < WPER; ++j)
           xn[j] = static_cast<float>(px[j]);
       }
-      // Per-row x-chunk sum: the qmv_wide_kernel lx chain (q-major,
-      // j-minor, same values). Accumulated unconditionally; when !has_bias
-      // the consumer multiplies by b == 0.0f (bit-identical, see header).
+      // Per-row x-chunk sum: the qmv_wide_kernel lx chain (q-major, j-minor, same values). Accumulated unconditionally; when !has_bias the consumer multiplies by b == 0.0f (bit-identical, see header).
       float lx = 0.0f;
 #pragma unroll
       for (int j = 0; j < WPER; ++j)
@@ -131,32 +80,16 @@ qmv_rows_msg_kernel(
         const float b = has_bias
             ? static_cast<float>(biases[static_cast<size_t>(col) * ng + g])
             : 0.0f;
-        // 128-bit pack-interleaved weight load (coalescing is load-bearing:
-        // adjacent lanes read adjacent 16B chunks).
+        // 128-bit pack-interleaved weight load (coalescing is load-bearing: adjacent lanes read adjacent 16B chunks).
         const uint4 wv = *reinterpret_cast<const uint4*>(
             &w[static_cast<size_t>(col) * row_bytes + (k * BITS) / 8]);
         const uint32_t* wp = reinterpret_cast<const uint32_t*>(&wv);
-        // Weight words: keep the four 32-bit pack-interleaved words in a
-        // 4-element array (ws) instead of a 32-element decoded float
-        // array (wn[V]), and run the identical shift+mask+cvt chain
-        // inline in the MAC loop. The decoded values are bit-identical
-        // to a standalone decode (same int->float conversion, same order)
-        // and the FMA order is unchanged (q-major, j-minor). The 4-element
-        // form is required to dodge a codegen defect in the ROCm 10.0 /
-        // clang 23.0.0rocm7.14 toolchain: the 32-element wn[V] array in
-        // this position qnan-poisons the acc initialization and deletes
-        // the entire k-loop body (all 18 instantiations compile to a no-op
-        // storing qnan). Probe matrix (t1281): 1-word/8-value and
-        // 2-word/16-value decode arrays survive at -O3; the 32-element
-        // 4-word form degenerates regardless of 16B vs 4B weight load
-        // and regardless of whether xn is an array or scalar loads.
+        // Weight words: keep the four 32-bit pack-interleaved words in a 4-element array (ws) instead of a 32-element decoded float array (wn[V]), and run the identical shift+mask+cvt chain inline in the MAC loop. The decoded values are bit-identical to a standalone decode (same int->float conversion, same order) and the FMA order is unchanged (q-major, j-minor). The 4-element form is required to dodge a codegen defect in the ROCm 10.0 / clang 23.0.0rocm7.14 toolchain: the 32-element wn[V] array in this position qnan-poisons the acc initialization and deletes the entire k-loop body (all 18 instantiations compile to a no-op storing qnan). Probe matrix (t1281): 1-word/8-value and 2-word/16-value decode arrays survive at -O3; the 32-element 4-word form degenerates regardless of 16B vs 4B weight load and regardless of whether xn is an array or scalar loads.
         uint32_t ws[4];
 #pragma unroll
         for (int q = 0; q < 4; ++q)
           ws[q] = wp[q];
-        // Per-row math: the qmv_wide_kernel inner loop, verbatim order
-        // (inline decode == same cvt chain as the shared decode; FMA
-        // order q-major, j-minor, identical values).
+        // Per-row math: the qmv_wide_kernel inner loop, verbatim order (inline decode == same cvt chain as the shared decode; FMA order q-major, j-minor, identical values).
         float la = 0.0f;
         if constexpr (BITS == 4) {
 #pragma unroll
@@ -194,17 +127,7 @@ qmv_rows_msg_kernel(
 }
 
 
-// t1334: decode-hoist M<=4 verify QMV — same msg morphology / row-exact
-// contract as qmv_rows_msg_kernel, but the per-column 4/8-bit weight tile
-// is decoded ONCE per (column, k-tile) and shared across all M rows
-// (column-outer, row-inner). The base kernel re-decodes the weight tile
-// once per (row, column) — 4x redundant across rows; here the decode is
-// ~3x the FMA, so hoisting removes ~3/4 of the weight-decode ALU. The
-// x-tile is re-read per column (M=4: 4x, L2-resident, 32 KB buffer);
-// the decode is the load-bearing ALU save. Row-exact: per-row math is the
-// same q-major/j-minor FMA order over the same decoded values, so output
-// row r == quantized_matmul(x[r:r+1]) to rounding. OPT-IN ONLY:
-// MLX_ROCM_QMV_ROWS_HOIST=1 (DEFAULT OFF; base kernel unchanged when unset).
+// t1334: decode-hoist M<=4 verify QMV — same msg morphology / row-exact contract as qmv_rows_msg_kernel, but the per-column 4/8-bit weight tile is decoded ONCE per (column, k-tile) and shared across all M rows (column-outer, row-inner). The base kernel re-decodes the weight tile once per (row, column) — 4x redundant across rows; here the decode is ~3x the FMA, so hoisting removes ~3/4 of the weight-decode ALU. The x-tile is re-read per column (M=4: 4x, L2-resident, 32 KB buffer); the decode is the load-bearing ALU save. Row-exact: per-row math is the same q-major/j-minor FMA order over the same decoded values, so output row r == quantized_matmul(x[r:r+1]) to rounding. OPT-IN ONLY: MLX_ROCM_QMV_ROWS_HOIST=1 (DEFAULT OFF; base kernel unchanged when unset).
 template <typename T, typename ScaleT, int GROUP_SIZE, int BITS>
 __global__ void __launch_bounds__(192)
 qmv_rows_msg_hoist_kernel(
@@ -245,10 +168,7 @@ qmv_rows_msg_hoist_kernel(
       const uint4 wv = *reinterpret_cast<const uint4*>(
           &w[static_cast<size_t>(col) * row_bytes + (k * BITS) / 8]);
       const uint32_t* wp = reinterpret_cast<const uint32_t*>(&wv);
-      // Decode this column's weight tile ONCE (shared across all rows).
-      // 32-element decoded array: the same int->float cvt chain the base
-      // kernel runs inline, materialized here so the per-row FMA does 32
-      // FMA with no cvt (the ~3x-decode ALU save).
+      // Decode this column's weight tile ONCE (shared across all rows). 32-element decoded array: the same int->float cvt chain the base kernel runs inline, materialized here so the per-row FMA does 32 FMA with no cvt (the ~3x-decode ALU save).
       float wdec[WPER];
       if constexpr (BITS == 4) {
 #pragma unroll

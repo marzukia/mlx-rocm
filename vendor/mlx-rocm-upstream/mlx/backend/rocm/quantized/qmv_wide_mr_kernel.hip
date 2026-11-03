@@ -269,23 +269,7 @@ __global__ void __launch_bounds__(1024) qmv_wide_mr_kernel(
 namespace mlx::core::rocm {
 // t1251: mr2 — vectorized-LDS, chunked-staging MR variant (4-bit, M = 2..4).
 //
-// Same structure as qmv_wide_mr_kernel (run-852) with two changes:
-//  (1) the per-k-tile x reads of sx are 16B uint4 vector loads (4 x 8 bf16)
-//      in BOTH the lx-hoist and the per-row la MAC loops, instead of 32/8
-//      scalar 2B LDS reads; the FMA order is unchanged (q-major, j-minor,
-//      same values), so outputs stay bit-identical to the per-row kernel.
-//  (2) x staging is chunked: KCHUNKS sequential k-chunks, each staged,
-//      synchronized, and consumed, instead of one full-K staging pass.
-//      The chunked order keeps k ascending (chunk c = k in [c*Kc, (c+1)*Kc)),
-//      so the k-summation order is unchanged and outputs stay bit-identical.
-//      LDS = min(4, M) * (K / KCHUNKS) * sizeof(T) bytes: K = 8192 needs
-//      16 KB and K = 12288 needs 24 KB (M = 4), both + 1 KB s_lx inside the
-//      64 KB per-block limit, where the full-staging MR (64 KB + 1 KB) does
-//      not fit.
-// KCHUNKS must divide K, K / KCHUNKS must be a multiple of 256 (4-bit
-// hoist barrier uniformity: K % 1024 == 0 at KCHUNKS = 4) and a multiple of
-// 16 / sizeof(T) (vector staging). 4-bit only (the weight tile decode is
-// the 4-bit path); 8-bit keeps qmv_wide_mr_kernel.
+// Same structure as qmv_wide_mr_kernel (run-852) with two changes: (1) the per-k-tile x reads of sx are 16B uint4 vector loads (4 x 8 bf16) in BOTH the lx-hoist and the per-row la MAC loops, instead of 32/8 scalar 2B LDS reads; the FMA order is unchanged (q-major, j-minor, same values), so outputs stay bit-identical to the per-row kernel. (2) x staging is chunked: KCHUNKS sequential k-chunks, each staged, synchronized, and consumed, instead of one full-K staging pass. The chunked order keeps k ascending (chunk c = k in [c*Kc, (c+1)*Kc)), so the k-summation order is unchanged and outputs stay bit-identical. LDS = min(4, M) * (K / KCHUNKS) * sizeof(T) bytes: K = 8192 needs 16 KB and K = 12288 needs 24 KB (M = 4), both + 1 KB s_lx inside the 64 KB per-block limit, where the full-staging MR (64 KB + 1 KB) does not fit. KCHUNKS must divide K, K / KCHUNKS must be a multiple of 256 (4-bit hoist barrier uniformity: K % 1024 == 0 at KCHUNKS = 4) and a multiple of 16 / sizeof(T) (vector staging). 4-bit only (the weight tile decode is the 4-bit path); 8-bit keeps qmv_wide_mr_kernel.
 template <typename T, typename ScaleT, int GROUP_SIZE, int KCHUNKS>
 __global__ void __launch_bounds__(1024) qmv_wide_mr2_kernel(
     const T* __restrict__ x,
