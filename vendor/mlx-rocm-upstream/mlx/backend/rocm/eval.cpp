@@ -222,6 +222,10 @@ bool gd_step_prepare(GraphDecodePilot& p, Stream s) {
   // capture window on the first capture, and hip* during a capture
   // invalidates it on ROCm 10.1 (same failure class as above).
   (void)rocm::allocator().decode_idx_slot();
+  // GD-idx (R4): same pre-window materialization for the token staging
+  // source buffer: the captured staging node bakes its VA, and a lazy
+  // hipMalloc inside the capture window would invalidate it (same class).
+  (void)rocm::allocator().decode_idx_src_buffer();
   // K3 (t1082): when the slots are CACHED (the arena already exists) the reserved 5 wrappers are not consumed by slot allocation, and the step re-allocations then start at 0x5000 — aliasing the slot wrappers (0x5000..0x9FFF): a step buffer clobbers a slot value (the gather idx / zero slot, the dyn copy offsets) in-graph, and the layout differs from the first capture step (slots fresh, starting at 0xA000). Reserve 5 more when the slots were cached — the step layout is then identical to the first capture's, and the VAs the graph baked in stay valid at replay.
   if (rocm::allocator().decode_arena_offset() == 5 * 4096) {
     rocm::allocator().decode_arena_reserve_wrappers(5);
@@ -264,6 +268,11 @@ void gd_begin_capture(GraphDecodePilot& p, Stream s) {
   if (!gd_step_prepare(p, s)) {
     return;
   }
+  // GD-idx (R4): a fresh capture records a FRESH staging node in THIS
+  // window; drop the previous incarnation's recorded source (gd_step_prepare
+  // re-secures the persistent flag and re-materialized the buffers) so the
+  // embedding gather's fresh-capture branch re-stages and re-records.
+  rocm::allocator().decode_idx_reset_src();
   auto& enc = rocm::get_command_encoder(s);
   if (!enc.decode_capture_begin(p.step_seq & 1)) {
     p.log("graph decode: capture begin failed; staying eager");
@@ -516,6 +525,11 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
     rocm::set_gd_idx_persistent(true);
     {
       auto iss = rocm::allocator().decode_idx_slot();
+      // GD-idx (R4): the token staging source buffer too — the token Load
+      // that fires in the previous step's tail (before the next step's
+      // prepare) refreshes it, and the next capture's staging node bakes
+      // its VA; both need it outside any capture window.
+      (void)rocm::allocator().decode_idx_src_buffer();
       fprintf(stderr, "[gdidx] arm: mode set; slot dev=%p host=%p\n",
               iss.data, iss.host);
     }

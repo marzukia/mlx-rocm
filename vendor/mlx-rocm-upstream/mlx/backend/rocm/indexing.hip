@@ -751,55 +751,91 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   {
     if (fast_rows) {
-      // GD-idx (t1099 R3): the per-step token idx arrives at a persistent
+      // GD-idx (R4): the per-step token idx arrives at a persistent
       // fixed-VA slot (allocator::decode_idx_slot): its device VA is stable
       // across steps and arena incarnations, so the capture can bake it into
       // the embedding gather and the replay reads the NEW token (the R2
       // collapse: the per-step re-allocation moved the idx buffer under the
       // baked pointer; the K3 zero-slot redirect read the always-zero slot
-      // instead -> row 0 -> the 271 attractor). Replay: the token load
-      // staged the slot (armed) before the step's first op; fresh capture:
-      // the load happened before the mode flag was set, so stage the idx
-      // array into the slot with a D2D — recorded at capture (delivers the
-      // capture step's token when the graph launches), suppressed at replay
-      // (the load's direct H2D delivers there; the stale re-delivery of the
-      // old per-step H2D is filtered by the persistent-host check). MLX_GD_K3OFF=1 or MLX_GD_K3IDXOFF=1 restores the original idx buffer read.
+      // instead -> row 0 -> the 271 attractor). Token delivery: a captured
+      // staging node (allocator::decode_idx_src_buffer -> the slot, recorded
+      // once at the capture) re-runs at every graph launch; the node's
+      // source is a fixed-VA staging buffer rewritten in place every step
+      // (the pinned-shadow H2D below, or the token Load's refresh in
+      // load.cpp). The per-step idx buffer's VA cannot be the node source:
+      // at the capture step it is a plain-malloc buffer (the arena only
+      // activates in the first op's prepare) that the host frees after the
+      // step, while at replay steps it lands in the arena at the step-end
+      // offset — two different VAs (the R3/R4 264 attractor: the re-run
+      // node read the freed capture-time buffer, i.e. the capture step's
+      // token, on every replay). MLX_GD_K3OFF=1 or MLX_GD_K3IDXOFF=1
+      // restores the original idx buffer read.
       int64_t n_rows = total / (int64_t)slice_size;
       if (rocm::graph_decode_mode() && !rocm::gd_k3_off() && !rocm::gd_k3_idxoff() &&
           n_rows == 1) {
         auto ixs = rocm::allocator().decode_idx_slot();
         if (ixs.data) {
           bool took = rocm::allocator().decode_idx_slot_take();
-          fprintf(stderr, "[gdidx] gather: take()=%d ixs.data=%p\n",
-                  (int)took, ixs.data);
-          if (!took) {
-            // Fresh capture (the token array predates the mode flag):
-            // stage the per-step idx buffer into the slot as a graph
-            // KERNEL node. A memcpy D2D is not capturable on ROCm 10.1
-            // (a legacy-stream hipMemcpy fails 906 "legacy stream depend
-            // on a capturing blocking stream"; a captured-stream
-            // hipMemcpyAsync D2D is likewise not recorded). A kernel
-            // node is recorded at capture and re-run by the graph launch
-            // at replay, where it moves the new token (written by
-            // mx.array's host copy into the arena-pinned per-step buffer,
-            // whose VA the floor reset keeps stable) into the slot, and
-            // zero-fills the slot's remaining bytes (the buffer is only
-            // nbytes wide; a blind 16 B read would run off the buffer).
-            // GD-idx (R4): also record the source VA: at a replay step
-            // the pre-launch token Load refreshes this arena VA so the
-            // re-run node propagates the NEW token (the node re-copies
-            // whatever is in this buffer on every launch).
-            dim3 cgrid(1);
-            dim3 cblk(2);
-            encoder.add_kernel_node(
-                (&rocm::stage_slot16_kernel), cgrid, cblk, 0,
-                reinterpret_cast<int64_t*>(ixs.data),
-                reinterpret_cast<const int64_t*>(gpu_ptr<void>(inputs[1])),
-                (int)inputs[1].nbytes());
-            rocm::allocator().decode_idx_set_src_va(
-                gpu_ptr<void>(inputs[1]), inputs[1].nbytes());
+          void* src = rocm::allocator().decode_idx_src_buffer();
+          if (std::getenv("MLX_G1Y_DEBUG") != nullptr) {
+            fprintf(stderr, "[gdidx] gather: took=%d ixs.data=%p src=%p\n",
+                    (int)took, ixs.data, src);
           }
-          h_indices[0] = ixs.data;
+          if (src != nullptr) {
+            // The per-step idx buffer's pinned host shadow holds the token
+            // in both delivery flows (the mx.array flush path — the bench
+            // flow, where the H2D into the per-step idx buffer already ran
+            // in the gpu_ptr flush above — and the token Load path, which
+            // stages the same value). It is the source of every write
+            // below.
+            auto* ib =
+                static_cast<const RocmBuffer*>(inputs[1].buffer().ptr());
+            const void* shadow = (ib != nullptr) ? ib->host_shadow : nullptr;
+            bool fresh = (rocm::allocator().decode_idx_src_va() == 0);
+            size_t sn = std::min<size_t>(16, inputs[1].nbytes());
+            if ((fresh || !took) && shadow != nullptr) {
+              // Capture (fresh): stage the token into the stable source —
+              // an H2D from the pinned shadow, the same copy class as the
+              // flush that just ran in-window without the 906 the D2D
+              // staging memcpy hit. Replay (and no Load this step):
+              // refresh the source with the new token; the re-run staging
+              // node (source -> slot, recorded at the capture) delivers it
+              // at the step-end graph launch. A Load-delivered step (took)
+              // already refreshed the source in load.cpp.
+              (void)hipMemcpy(src, shadow, sn, hipMemcpyHostToDevice);
+            }
+            if (fresh && shadow != nullptr) {
+              // Record the staging node ONCE, at the capture: dst is the
+              // persistent idx slot (baked into the embedding gather
+              // below), src is the persistent staging source (baked VA,
+              // rewritten in place every step — the H2D above). The node
+              // re-copies whatever is in the source at every launch, and
+              // zero-fills the slot's remaining bytes (a blind 16 B read
+              // would run off the nbytes-wide token). Not recorded when
+              // the shadow is null (no valid source this step; a
+              // Load-delivered capture reads the slot the Load wrote).
+              dim3 cgrid(1);
+              dim3 cblk(2);
+              encoder.add_kernel_node(
+                  (&rocm::stage_slot16_kernel), cgrid, cblk, 0,
+                  reinterpret_cast<int64_t*>(ixs.data),
+                  reinterpret_cast<const int64_t*>(src),
+                  (int)inputs[1].nbytes());
+              rocm::allocator().decode_idx_set_src_va(src, inputs[1].nbytes());
+              if (std::getenv("MLX_G1Y_DEBUG") != nullptr) {
+                fprintf(stderr, "[gdidx] gather: staged node recorded, src=%p\n",
+                        src);
+              }
+            }
+            if (shadow != nullptr || took) {
+              // Slot read: the staging node (recorded/refreshed above) or
+              // this step's Load delivers the token. Otherwise (no shadow,
+              // no Load) h_indices[0] keeps the idx device VA from the
+              // fill loop above (best effort — nothing delivered the
+              // token to the device this step).
+              h_indices[0] = ixs.data;
+            }
+          }
         }
       }
       dim3 grid((unsigned int)n_rows);

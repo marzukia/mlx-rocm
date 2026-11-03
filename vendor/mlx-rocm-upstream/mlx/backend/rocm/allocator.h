@@ -176,6 +176,17 @@ class RocmAllocator : public allocator::Allocator {
   void decode_idx_set_src_va(void* va, size_t nbytes);
   void* decode_idx_src_va() const;
   size_t decode_idx_src_nbytes() const;
+  // GD-idx (R4): the persistent staging source buffer (lazy hipMalloc; the
+  // pilot materializes it BEFORE the capture window — a hip* during a
+  // capture invalidates it on ROCm 10.1). Never freed: the VA is baked
+  // into every exec that references it (the slot's device buffer follows
+  // the same rule).
+  void* decode_idx_src_buffer();
+  // GD-idx (R4): drop the recorded source (a fresh capture records a fresh
+  // staging node; the buffer itself persists — only the record is
+  // per-incarnation). Also disarms the slot (the old incarnation's arm is
+  // stale).
+  void decode_idx_reset_src();
   // True iff p is one of the persistent staging host buffers (value slots 0-3 or the idx slot). Pre-launch re-delivery of a recorded in-graph H2D must skip any other (per-step) source: it is freed at step end, and copying from it is a UAF read of the stale capture-step value.
   bool is_persistent_staging_host(const void* p) const;
 
@@ -245,6 +256,19 @@ class RocmAllocator : public allocator::Allocator {
     Buffer buf{nullptr};
     int64_t* host{nullptr};  // pinned, 16 B, persistent
     void* data{nullptr};  // device, 4 KB, persistent
+    // GD-idx (R4): the staging node's SOURCE — a 16 B device buffer with a
+    // process-lifetime fixed VA (like the slot's device buffer). The
+    // captured node (source -> slot) bakes this VA; every step's token
+    // writer (the embedding gather's pinned-shadow H2D, or the token Load's
+    // refresh) rewrites it in place, so the re-run node at the step-end
+    // launch always carries the NEW token. The per-step idx buffer's VA
+    // cannot be the node source: at the capture step the idx is a
+    // plain-malloc buffer (the arena only activates in the first op's
+    // prepare) that the host frees after the step, while at replay steps
+    // the idx lands in the arena at the step-end offset — two different
+    // VAs, so the re-run node read freed capture-time memory (the 264
+    // attractor that survived R3).
+    void* src_dev{nullptr};
   };
   DecodeIdxSlotState decode_idx_state_;
   bool idx_slot_armed_{false};

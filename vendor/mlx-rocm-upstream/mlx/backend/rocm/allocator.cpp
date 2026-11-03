@@ -1077,6 +1077,28 @@ size_t RocmAllocator::decode_idx_src_nbytes() const {
   return decode_idx_src_nbytes_;
 }
 
+void* RocmAllocator::decode_idx_src_buffer() {
+  std::lock_guard lock(mutex_);
+  if (decode_idx_state_.src_dev == nullptr) {
+    void* dev = nullptr;
+    hipError_t me = hipMalloc(&dev, 16);
+    if (me != hipSuccess || dev == nullptr) {
+      fprintf(stderr, "[gdidx] src buffer FAIL hipMalloc=%d\n", (int)me);
+      (void)hipGetLastError();
+      return nullptr;
+    }
+    decode_idx_state_.src_dev = dev;
+  }
+  return decode_idx_state_.src_dev;
+}
+
+void RocmAllocator::decode_idx_reset_src() {
+  std::lock_guard lock(mutex_);
+  decode_idx_src_va_ = nullptr;
+  decode_idx_src_nbytes_ = 0;
+  idx_slot_armed_ = false;
+}
+
 bool RocmAllocator::is_persistent_staging_host(const void* p) const {
   for (int i = 0; i < 4; ++i) {
     if (decode_value_slot_state_[i].host == p) {

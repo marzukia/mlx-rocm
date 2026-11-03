@@ -50,9 +50,11 @@ void Load::eval_gpu(const std::vector<array>& inputs, array& out) {
   // stream-ordered before the graph), and the pre-launch re-delivery sources
   // the persistent pinned buffer, which the current step's reader just
   // rewrote in place. A fresh capture's token load happens BEFORE the step's
-  // first op (the mode flag is not set yet) — the embedding gather stages the
-  // then-produced idx array into the slot with a D2D (recorded at capture,
-  // suppressed at replay, where this path delivers). GD-idx (R4): the gate is
+  // first op (the mode flag is not set yet) — the embedding gather stages
+  // the then-produced token into the persistent staging source (a pinned-
+  // shadow H2D, recorded at capture as the source -> slot node, re-run at
+  // every launch; at replay this path's refresh and the gather's H2D both
+  // rewrite the same source). GD-idx (R4): the gate is
   // the PERSISTENT post-arm state, not the per-window staging mode: the
   // per-step token Load is evaluated in the previous step's tail (after the
   // argmax, before the arm and before this step's first op), so a
@@ -94,15 +96,15 @@ void Load::eval_gpu(const std::vector<array>& inputs, array& out) {
           16,
           hipMemcpyHostToDevice,
           encoder.stream());
-      // GD-idx (R4): refresh the recorded capture-time idx buffer VA so the
-      // re-run staging node carries the new token (see gate comment). Guard:
-      // only a live arena VA (an arena reallocation, or the re-capture case
-      // where the recorded VA is the slot itself, leaves it dangling /
-      // out-of-arena).
+      // GD-idx (R4): refresh the persistent staging source buffer so the
+      // re-run staging node carries the new token (see gate comment).
+      // The recorded source is the allocator's staging buffer (a fixed-
+      // VA hipMalloc, valid for the process lifetime) — guard on identity
+      // with it, not on arena membership (the capture step's idx is a
+      // plain-malloc buffer, never in the arena).
       void* src_va = rocm::allocator().decode_idx_src_va();
       if (src_va != nullptr &&
-          rocm::allocator().decode_arena_active() &&
-          rocm::allocator().in_decode_arena(src_va)) {
+          rocm::allocator().decode_idx_src_buffer() == src_va) {
         size_t n2 =
             std::min(nbytes, rocm::allocator().decode_idx_src_nbytes());
         (void)hipMemcpyAsync(
