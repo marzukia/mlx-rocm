@@ -4,12 +4,9 @@ Anchor protocol: `bench/mtp-bench6.py` (md5 700f1810207ccf8837be58f81c5eb944), `
 
 ## Lever and wheels
 
-- OFF: the standing canonical wheel (venv-canon, libmlx md5
-  b1de59fda0e4fc607d620e287deeaaf8) + canonical env (multi-row QMV **off**).
-- ON: the R4b wheel (built on neon from the vendor pin + the one-lever
-  change in `mlx/backend/rocm/quantized/qmm.hip`, `wide_ok` no longer requires `has_bias` for 2 <= M <= 4; wheel `mlx-0.32.3.dev20261103+6f410ed`, libmlx md5 3d19e4f3420b3b067abaeec6ae971dac) + canonical env + `MLX_ROCM_QMV_ROWS=1 MLX_ROCM_QMV_ROWS_MIN_N=1`.
-- CROSS (attribution control): the canonical wheel + canonical env +
-  `MLX_ROCM_QMV_ROWS=1`.
+- OFF: the standing canonical wheel (venv-canon, libmlx md5 b1de59fda0e4fc607d620e287deeaaf8) + canonical env (multi-row QMV **off**).
+- ON: the R4b wheel (built on neon from the vendor pin + the one-lever change in `mlx/backend/rocm/quantized/qmm.hip`, `wide_ok` no longer requires `has_bias` for 2 <= M <= 4; wheel `mlx-0.32.3.dev20261103+6f410ed`, libmlx md5 3d19e4f3420b3b067abaeec6ae971dac) + canonical env + `MLX_ROCM_QMV_ROWS=1 MLX_ROCM_QMV_ROWS_MIN_N=1`.
+- CROSS (attribution control): the canonical wheel + canonical env + `MLX_ROCM_QMV_ROWS=1`.
 
 ## Probe (bias-free nn.QuantizedLinear, task env vs rows env)
 
@@ -20,7 +17,7 @@ Anchor protocol: `bench/mtp-bench6.py` (md5 700f1810207ccf8837be58f81c5eb944), `
 | down 12288 x 4096 | 2.18x | 2.25x | 2.35x | 2.35x | 1.4e-04 |
 | lm_head 4096 x 248320 | 3.88x | 3.87x | 1.45x | 1.46x | 1.2e-04 |
 
-Wheels behave identically in all four probe configurations: with the rows env off, bias-free M=4 is per-row (2.2-3.9x M1); with the rows env on, it is one weight pass (1.4-2.4x M1, i.e. below the per-position cost — fused). rows-on output differs from per-row by <=1.4e-4 (bf16).
+Wheels behave identically in all four probe configurations: with the rows env off, bias-free M=4 is per-row (2.2-3.9x M1); with the rows env on, it takes the shared-weight multi-row path (probe 1.4-2.4x M1, i.e. below the per-position cost). rows-on output differs from per-row by <=1.4e-4 (bf16).
 
 ## Bench matrix (median of 3)
 
@@ -32,7 +29,7 @@ Wheels behave identically in all four probe configurations: with the rows env of
 
 Per-run values: anchor OFF 46.44/46.07/46.03 (t1541 OFF arm 46.49 — reproduced within 0.9%); ON 48.34/48.93/48.94; CROSS 48.98/48.78/48.92. FIRST20 is identical across all three repeats of every arm and equal across arms: `271 1919 369 264 15352 11 70042 29006 314 1204 264 6278 20853 5568 13 357 20853 369 34383 279`.
 
-Acceptance (the measured FP-order tradeoff — the rows kernel is bit-exact per probe but the reduced FMA tree shifts the 4-bit rounding decisions, so acceptance moves; reported per task instruction, not as a quality signal):
+Acceptance (the measured FP-order tradeoff — the rows kernel output differs from per-row by <=1.4e-4 (bf16) per probe, and the reduced FMA tree shifts the 4-bit rounding decisions, so acceptance moves; reported per task instruction, not as a quality signal):
 
 | protocol | arm | D1PCT | D2PCT | D3PCT | tok/step |
 |---|---|---|---|---|---|
@@ -61,14 +58,10 @@ The lever lands in **commit** (30.2 -> 26.7 ms/step at 64v, -11.6%; 53.5 -> 49.1
 
 ## Findings (probe-first, per protocol)
 
-1. **The committed gate fix is empirically inert for
-   `nn.QuantizedLinear` layers.** The python layer always passes the quantize bias array as a fourth op input (`biases=self.get("biases")`, a zero array even when `bias=False`), so the C++ op sees `has_bias=1` (input-count based) on every call. The `wide_ok` `has_bias` gate therefore never blocks these layers; with rows env on, the standing wheel already fuses bias-free M=4 (probe 1.45x). The committed change remains correct and is belt-and-braces for genuinely bias-free op calls (e.g. direct `mx.quantized_matmul` with 3 inputs).
-2. **The effective lever is `MLX_ROCM_QMV_ROWS`** (the canonical env
-   name; the task config line's `QMV_ROWS=1` is a misspelling the wheel ignores — this is also why R4a's `QMV_ROWS=1` was inert). CROSS == ON (48.92 vs 48.93) attributes the entire gain to the env gate, not the wheel delta.
-3. The rows kernel is one weight pass for all 4 verify rows
-   (llama.cpp-class weight traffic): probe M4/M1 3.88x -> 1.45x on lm_head, bit-level maxdiff 1.2e-4 (bf16).
-4. FP-order/health: FIRST20 identical per arm and across arms;
-   per-run t/s spread <=1.2% (anchor), 0.5% (64v), 0.5% (512v); acceptance drift is the expected FP-order effect (section above).
+1. **The committed gate fix is empirically inert for `nn.QuantizedLinear` layers.** The python layer always passes the quantize bias array as a fourth op input (`biases=self.get("biases")`, a zero array even when `bias=False`), so the C++ op sees `has_bias=1` (input-count based) on every call. The `wide_ok` `has_bias` gate therefore never blocks these layers; with rows env on, the standing wheel already fuses bias-free M=4 (probe 1.45x). The committed change remains correct and is belt-and-braces for genuinely bias-free op calls (e.g. direct `mx.quantized_matmul` with 3 inputs).
+2. **The effective lever is `MLX_ROCM_QMV_ROWS`** (the canonical env name; the task config line's `QMV_ROWS=1` is a misspelling the wheel ignores — this is also why R4a's `QMV_ROWS=1` was inert). CROSS == ON (48.92 vs 48.93) attributes the entire gain to the env gate, not the wheel delta.
+3. The rows kernel shares one weight read across all 4 verify rows (llama.cpp-class weight traffic per the probe): probe M4/M1 3.88x -> 1.45x on lm_head, maxdiff vs per-row 1.2e-4 (bf16, not bit-identical).
+4. FP-order/health: FIRST20 identical per arm and across arms; per-run t/s spread <=1.2% (anchor), 0.5% (64v), 0.5% (512v); acceptance drift is the expected FP-order effect (section above).
 
 ## Verdict
 

@@ -1,6 +1,6 @@
 // t1253: multi-row verify QMV — the MTPLX "msg" morphology ported from Apple Metal (mtplx verify_kernels) to gfx1201/HIP.
 //
-// Metal -> HIP mapping (full doc: docs/qmv-rows-msg.md): Metal simdgroup (32 threads, SIMD32)  -> HIP wave32 (32-thread wave) Metal threadgroup (6 simdgroups)      -> HIP workgroup (6 waves, 192 threads) threadgroup memory / barriers         -> NONE: the msg morphology carries no shared memory and no barriers; each wave is fully independent pack-interleaved 32-bit weight loads  -> uint4 (128-bit) loads, lane-strided
+// Metal -> HIP mapping: Metal simdgroup (32 threads, SIMD32)  -> HIP wave32 (32-thread wave) Metal threadgroup (6 simdgroups)      -> HIP workgroup (6 waves, 192 threads) threadgroup memory / barriers         -> NONE: the msg morphology carries no shared memory and no barriers; each wave is fully independent pack-interleaved 32-bit weight loads  -> uint4 (128-bit) loads, lane-strided
 //
 // Morphology:
 //
