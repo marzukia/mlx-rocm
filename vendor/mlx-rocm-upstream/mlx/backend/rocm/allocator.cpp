@@ -1017,41 +1017,101 @@ RocmAllocator::decode_idx_slot() {
   std::lock_guard lock(mutex_);
   DecodeIdxSlotState& st = decode_idx_state_;
   if (!st.host) {
-    void* dev = nullptr;
-    void* host = nullptr;
-    hipError_t me1 = hipMalloc(&dev, 4096);
-    if (me1 != hipSuccess || dev == nullptr) {
-      fprintf(stderr, "[gdidx] slot mat FAIL hipMalloc=%d dev=%p\n",
-              (int)me1, dev);
-      (void)hipGetLastError();
-      return {Buffer{nullptr}, nullptr, nullptr};
-    }
-    hipError_t me2 = hipHostMalloc(&host, 16, hipHostMallocDefault);
-    if (me2 != hipSuccess || host == nullptr) {
-      fprintf(stderr, "[gdidx] slot mat FAIL hipHostMalloc=%d host=%p\n",
-              (int)me2, host);
-      (void)hipGetLastError();
-      (void)hipFree(dev);
-      return {Buffer{nullptr}, nullptr, nullptr};
-    }
-    fprintf(stderr, "[gdidx] slot mat OK dev=%p host=%p\n", dev, host);
-    // Shell-only Buffer (the alien sentinel, exactly as make_buffer builds it;
-    // make_buffer itself takes mutex_ and cannot be called here): free()
-    // deletes the shell and never hipFrees the 4 KB device buffer, which must
-    // stay mapped for the lifetime of the process (the graph bakes its VA).
-    auto* rb = new RocmBuffer{
-        dev,
-        16,
-        /*is_managed=*/true,
-        /*device=*/-1,
-        nullptr,
-        false,
-        reinterpret_cast<void*>(static_cast<uintptr_t>(1))};
-    st.buf = Buffer{rb};
-    st.data = dev;
-    st.host = static_cast<int64_t*>(host);
+    decode_idx_slot_locked_materialize();
   }
   return {st.buf, st.host, st.data};
+}
+
+// (internal) materialize the 4 KB slot buffer pair; caller holds mutex_
+// and is OUTSIDE any capture window (checked by the public accessors).
+bool RocmAllocator::decode_idx_slot_locked_materialize() {
+  if (decode_idx_state_.data != nullptr) {
+    return true;
+  }
+  void* dev = nullptr;
+  void* host = nullptr;
+  hipError_t me1 = hipMalloc(&dev, 4096);
+  if (me1 != hipSuccess || dev == nullptr) {
+    fprintf(stderr, "[gdidx] slot mat FAIL hipMalloc=%d dev=%p\n",
+            (int)me1, dev);
+    (void)hipGetLastError();
+    return false;
+  }
+  hipError_t me2 = hipHostMalloc(&host, 4096, hipHostMallocDefault);
+  if (me2 != hipSuccess || host == nullptr) {
+    fprintf(stderr, "[gdidx] slot mat FAIL hipHostMalloc=%d host=%p\n",
+            (int)me2, host);
+    (void)hipGetLastError();
+    (void)hipFree(dev);
+    return false;
+  }
+  fprintf(stderr, "[gdidx] slot mat OK dev=%p host=%p\n", dev, host);
+  // Shell-only Buffer (the alien sentinel, exactly as make_buffer builds it;
+  // make_buffer itself takes mutex_ and cannot be called here): free()
+  // deletes the shell and never hipFrees the 4 KB device buffer, which must
+  // stay mapped for the lifetime of the process (the graph bakes its VA).
+  auto* rb = new RocmBuffer{
+      dev,
+      16,
+      /*is_managed=*/true,
+      /*device=*/-1,
+      nullptr,
+      false,
+      reinterpret_cast<void*>(static_cast<uintptr_t>(1))};
+  decode_idx_state_.buf = Buffer{rb};
+  decode_idx_state_.data = dev;
+  decode_idx_state_.host = static_cast<int64_t*>(host);
+  decode_idx_ptrs_init_locked();
+  return true;
+}
+
+void RocmAllocator::decode_idx_ptrs_init_locked() {
+  // The 4 per-gather pointer pairs live in words 1..4 of the persistent
+  // 4 KB device buffer and its 4 KB pinned host twin (word 0 is the token
+  // slot/shadow). They are fixed offsets into the persistent buffers —
+  // nothing to allocate; the device slots are NEVER freed (their VAs are
+  // baked into every graph exec that references them).
+}
+
+void RocmAllocator::decode_idx_ptrs_materialize() {
+  std::lock_guard lock(mutex_);
+  // The arm and the prepare call this BEFORE the capture window; a hip*
+  // during a capture window would invalidate the exec on ROCm 10.1.
+  if (capture_stream() != nullptr) {
+    return;
+  }
+  decode_idx_slot_locked_materialize();
+}
+
+void* RocmAllocator::decode_idx_ptr_slot(int i) {
+  std::lock_guard lock(mutex_);
+  if (i < 0 || i >= 4) {
+    return nullptr;
+  }
+  if (decode_idx_state_.data == nullptr) {
+    // Lazy materialization is safe only OUTSIDE a capture window (a hip*
+    // during a capture invalidates it on ROCm 10.1); inside the window the
+    // caller's gather falls back to the direct per-step idx read.
+    if (capture_stream() != nullptr) {
+      return nullptr;
+    }
+    decode_idx_slot_locked_materialize();
+  }
+  return static_cast<int64_t*>(decode_idx_state_.data) + 1 + i;
+}
+
+uint64_t* RocmAllocator::decode_idx_ptr_host(int i) {
+  std::lock_guard lock(mutex_);
+  if (i < 0 || i >= 4) {
+    return nullptr;
+  }
+  if (decode_idx_state_.host == nullptr) {
+    if (capture_stream() != nullptr) {
+      return nullptr;
+    }
+    decode_idx_slot_locked_materialize();
+  }
+  return reinterpret_cast<uint64_t*>(decode_idx_state_.host + 1 + i);
 }
 
 void RocmAllocator::decode_idx_slot_arm() {
@@ -1064,75 +1124,6 @@ bool RocmAllocator::decode_idx_slot_take() {
   bool v = idx_slot_armed_;
   idx_slot_armed_ = false;
   return v;
-}
-
-void RocmAllocator::decode_idx_stages_materialize() {
-  std::lock_guard lock(mutex_);
-  for (int i = 0; i < 4; ++i) {
-    if (decode_idx_state_.src_dev[i] == nullptr) {
-      void* dev = nullptr;
-      hipError_t me = hipMalloc(&dev, 16);
-      if (me != hipSuccess || dev == nullptr) {
-        fprintf(stderr, "[gdidx] stage buffer %d FAIL hipMalloc=%d\n",
-                i, (int)me);
-        (void)hipGetLastError();
-      } else {
-        decode_idx_state_.src_dev[i] = dev;
-      }
-    }
-  }
-}
-
-void* RocmAllocator::decode_idx_stage_src(int i) {
-  std::lock_guard lock(mutex_);
-  if (i < 0 || i >= 4) {
-    return nullptr;
-  }
-  if (decode_idx_state_.src_dev[i] == nullptr) {
-    // Lazy materialization is safe only OUTSIDE a capture window (a hip*
-    // during a capture invalidates it on ROCm 10.1); inside the window an
-    // unmaterialized buffer skips the GD path (direct idx read) instead.
-    if (capture_stream() != nullptr) {
-      return nullptr;
-    }
-    void* dev = nullptr;
-    hipError_t me = hipMalloc(&dev, 16);
-    if (me != hipSuccess || dev == nullptr) {
-      fprintf(stderr, "[gdidx] stage buffer %d FAIL hipMalloc=%d\n",
-              i, (int)me);
-      (void)hipGetLastError();
-      return nullptr;
-    }
-    decode_idx_state_.src_dev[i] = dev;
-  }
-  return decode_idx_state_.src_dev[i];
-}
-
-bool RocmAllocator::decode_idx_stage_recorded(int i) {
-  std::lock_guard lock(mutex_);
-  return i >= 0 && i < 4 && decode_idx_state_.recorded[i];
-}
-
-void RocmAllocator::decode_idx_stage_record(int i, size_t nbytes) {
-  std::lock_guard lock(mutex_);
-  if (i < 0 || i >= 4) {
-    return;
-  }
-  decode_idx_state_.recorded[i] = true;
-  decode_idx_state_.src_nbytes[i] = nbytes;
-}
-
-void RocmAllocator::decode_idx_stage_reset() {
-  std::lock_guard lock(mutex_);
-  for (int i = 0; i < 4; ++i) {
-    decode_idx_state_.recorded[i] = false;
-    decode_idx_state_.src_nbytes[i] = 0;
-  }
-  // The buffers themselves persist (the VAs are baked into the execs);
-  // only the per-incarnation records are dropped (a fresh capture records
-  // fresh stage nodes). The slot arm is NOT cleared here: it was set by the
-  // token Load in the previous step's tail, before this fresh capture, and
-  // the step's first gather consumes it.
 }
 
 int RocmAllocator::decode_idx_stage_next() {

@@ -166,27 +166,37 @@ class RocmAllocator : public allocator::Allocator {
   size_t decode_value_slot3_cursor(size_t size);
   // GD-idx (t1099 R3): the per-step token-idx staging slot. A 4 KB device buffer on its OWN hipMalloc (not arena: the token array is evaluated when its python object is created — before the step's first op, when a fresh capture's arena is not yet active) + a 16 B pinned host. Its device VA is stable across steps AND arena incarnations, so the capture can bake it into the embedding gather; the token H2D re-executes before every graph launch (eval-time copy + pre-launch re-delivery, both sourced from the persistent pinned buffer, which the neutralized in-graph node pattern keeps current). The per-step re-allocation of the old per-step pinned path moved the out VA under the baked pointer, so the replayed graph read the capture step's value (the R2 collapse).
   DecodeValueSlot decode_idx_slot();
-  // Arm is set by the token staging (Load small path); consumed by the first single-row fast_rows gather of the step (the embedding). Other single-row gathers keep their own idx buffer. Cleared with the arena reset.
+  // Arm is set by the token staging (Load small path, previous step's tail); consumed by the first single-row fast_rows gather of the step (the embedding). NOT cleared with the arena reset or by any per-capture reset (it must survive to the step's first gather, which comes after both).
   void decode_idx_slot_arm();
   bool decode_idx_slot_take();
-  // GD-idx (R4-fix): per-gather token staging. A decode step can hold up to
-  // four single-row fast_rows gathers (the in-window seed gathers); each owns
-  // a 16 B staging buffer with a process-lifetime fixed VA plus a
-  // per-incarnation record of the stage node it staged. Lifecycle: buffers
-  // materialized at arm / prepare (decode_idx_stages_materialize, BEFORE the
-  // capture window — a hip* during a capture invalidates it on ROCm 10.1),
-  // NEVER freed (the captured stage node bakes each VA into the exec, the
-  // same never-free rule as the slot's device buffer), records reset at each
-  // fresh capture (decode_idx_stage_reset, called from gd_begin_capture), and
-  // the in-step gather ordinal reset with the arena (decode_arena_reset) so
-  // capture and replay steps map gather k -> buffer k. Count bounded by the
-  // 4-buffer array (the K=4 value-slot convention).
-  void decode_idx_stages_materialize();
-  void* decode_idx_stage_src(int i);
-  bool decode_idx_stage_recorded(int i);
-  void decode_idx_stage_record(int i, size_t nbytes);
-  void decode_idx_stage_reset();
+  // GD-idx (R4-fix v2): per-gather indirect-idx delivery. The per-step idx
+  // buffer (the bench makes a FRESH per-step mx.array; its device VA is
+  // never stable and the Load path does not see it in MTP=0 decode) is
+  // reached by the gather kernel through an INDIRECTION. Each in-step
+  // single-row gather k (the in-step ordinal resets with the arena, so
+  // capture and replay steps map identically) owns: an 8 B PINNED host
+  // buffer holding the current per-step idx buffer's device VA (the
+  // gather op rewrites it IN PLACE every step — no hip call) plus an 8 B
+  // persistent device pointer slot. The slot is written by an async H2D
+  // (pinned source, no allocation, no blocking copy) which is
+  // capture-safe and, when recorded, re-executes at every graph launch
+  // re-reading the CURRENT pinned host contents (the persistent
+  // re-delivery pattern). The gather kernel dereferences the slot and
+  // reads the live per-step idx buffer — neither the token nor its
+  // buffer's VA is baked into the recorded kernel, a recorded node only
+  // ever reads a STABLE VA, and NO blocking hip* exists on this path (the
+  // R4 first-capture crash class is out by construction). Count bounded by
+  // the 4-pair array (the K=4 value-slot convention); >4 in-step
+  // single-row gathers fall back to the direct per-step idx read. Pairs
+  // materialized at arm / prepare (decode_idx_ptrs_materialize, BEFORE the
+  // capture window — a hip* during a capture invalidates it on ROCm
+  // 10.1) and NEVER freed (each VA is baked into every exec that
+  // references it, the same never-free rule as the slot's device buffer).
+  void decode_idx_ptrs_materialize();
+  void* decode_idx_ptr_slot(int i);
+  uint64_t* decode_idx_ptr_host(int i);
   int decode_idx_stage_next();
+  bool decode_idx_slot_locked_materialize();  // caller holds mutex_ + outside the capture window
   // True iff p is one of the persistent staging host buffers (value slots 0-3 or the idx slot). Pre-launch re-delivery of a recorded in-graph H2D must skip any other (per-step) source: it is freed at step end, and copying from it is a UAF read of the stale capture-step value.
   bool is_persistent_staging_host(const void* p) const;
 
@@ -254,27 +264,13 @@ class RocmAllocator : public allocator::Allocator {
   DecodeValueSlotState decode_zero_state_;
   struct DecodeIdxSlotState {
     Buffer buf{nullptr};
-    int64_t* host{nullptr};  // pinned, 16 B, persistent
-    void* data{nullptr};  // device, 4 KB, persistent
-    // GD-idx (R4-fix): the per-gather staging SOURCES — 16 B device buffers
-    // with process-lifetime fixed VAs (never freed; the captured stage node
-    // (source -> slot) bakes each VA into the exec). Each in-step single-row
-    // gather owns one (gather k -> buffer k, the in-step ordinal reset with
-    // the arena so capture and replay steps map identically); every step's
-    // token writer (the recorded seed copy, the Load's refresh, or the
-    // out-of-window replay D2D) rewrites its buffer in place, so the re-run
-    // node at the step-end launch always carries the NEW token. The per-step
-    // idx buffer's VA cannot be a node source: at the capture step it is a
-    // plain-malloc buffer (the arena only activates in the first op's
-    // prepare) that the host frees after the step, while at replay steps it
-    // lands in the arena at the step-end offset — two different VAs.
-    void* src_dev[4]{nullptr, nullptr, nullptr, nullptr};
-    bool recorded[4]{false, false, false, false};
-    size_t src_nbytes[4]{0, 0, 0, 0};
+    int64_t* host{nullptr};  // pinned, 4 KB, persistent: word 0 = the token shadow (the Load path's host source), words 1..4 = the per-gather pointer shadows (the H2D host sources, rewritten in place by the gather op every step)
+    void* data{nullptr};  // device, 4 KB, persistent: word 0 = the token slot, words 1..4 = the per-gather pointer slots
   };
   DecodeIdxSlotState decode_idx_state_;
-  bool idx_slot_armed_{false};  // set by the token Load (previous step's tail, before the arm/prepare), consumed by the step's first single-row gather; NOT cleared by the arena reset or the per-capture record reset, so it survives to the step's first gather
+  bool idx_slot_armed_{false};  // set by the token Load (previous step's tail, before the arm/prepare), consumed by the step's first single-row gather; NOT cleared by the arena reset, so it survives to the step's first gather
   int decode_idx_stage_seq_{0};  // in-step gather ordinal (reset with the arena)
+  void decode_idx_ptrs_init_locked();  // materialize the 4 pointer pairs (caller holds mutex_)
   size_t decode_slot3_cursor_{0};
 };
 

@@ -222,11 +222,12 @@ bool gd_step_prepare(GraphDecodePilot& p, Stream s) {
   // capture window on the first capture, and hip* during a capture
   // invalidates it on ROCm 10.1 (same failure class as above).
   (void)rocm::allocator().decode_idx_slot();
-  // GD-idx (R4-fix): same pre-window materialization for the per-gather
-  // token staging source buffers (4 x 16 B): the captured staging nodes
-  // bake their VAs, and a lazy hipMalloc inside the capture window would
-  // invalidate it (same class).
-  rocm::allocator().decode_idx_stages_materialize();
+  // GD-idx (R4-fix v2): same pre-window materialization for the per-gather
+  // indirect-idx pointer pairs (4 x 8 B device slots + their pinned host
+  // shadows): the captured H2D nodes bake the slot VAs, and a lazy
+  // hipMalloc inside the capture window would invalidate them (same
+  // class).
+  rocm::allocator().decode_idx_ptrs_materialize();
   // K3 (t1082): when the slots are CACHED (the arena already exists) the reserved 5 wrappers are not consumed by slot allocation, and the step re-allocations then start at 0x5000 — aliasing the slot wrappers (0x5000..0x9FFF): a step buffer clobbers a slot value (the gather idx / zero slot, the dyn copy offsets) in-graph, and the layout differs from the first capture step (slots fresh, starting at 0xA000). Reserve 5 more when the slots were cached — the step layout is then identical to the first capture's, and the VAs the graph baked in stay valid at replay.
   if (rocm::allocator().decode_arena_offset() == 5 * 4096) {
     rocm::allocator().decode_arena_reserve_wrappers(5);
@@ -269,12 +270,10 @@ void gd_begin_capture(GraphDecodePilot& p, Stream s) {
   if (!gd_step_prepare(p, s)) {
     return;
   }
-  // GD-idx (R4-fix): a fresh capture records FRESH stage nodes in THIS
-  // window (one per in-step single-row gather, per-gather staging); drop
-  // the previous incarnation's recorded sources (gd_step_prepare
-  // re-secures the persistent flag and re-materialized the buffers) so the
-  // gathers' fresh-capture branch re-stages and re-records.
-  rocm::allocator().decode_idx_stage_reset();
+  // GD-idx (R4-fix v2): a fresh capture records FRESH H2D + indirect-gather
+  // nodes in this window; there is no per-incarnation state to reset (the
+  // pointer pairs are persistent and their pinned host shadows are
+  // rewritten in place by every step's gather op).
   auto& enc = rocm::get_command_encoder(s);
   if (!enc.decode_capture_begin(p.step_seq & 1)) {
     p.log("graph decode: capture begin failed; staying eager");
@@ -527,12 +526,11 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
     rocm::set_gd_idx_persistent(true);
     {
       auto iss = rocm::allocator().decode_idx_slot();
-      // GD-idx (R4-fix): the per-gather token staging source buffers too —
-      // the token Load that fires in the previous step's tail (before the
-      // next step's prepare) refreshes them, and the next capture's
-      // staging nodes bake their VAs; both need them outside any capture
-      // window.
-      rocm::allocator().decode_idx_stages_materialize();
+      // GD-idx (R4-fix v2): the per-gather indirect-idx pointer pairs too —
+      // the gather ops of every later step stream the current per-step idx
+      // buffer's VA through them, and the capture's H2D nodes bake the
+      // slot VAs; both need the pairs outside any capture window.
+      rocm::allocator().decode_idx_ptrs_materialize();
       fprintf(stderr, "[gdidx] arm: mode set; slot dev=%p host=%p\n",
               iss.data, iss.host);
     }

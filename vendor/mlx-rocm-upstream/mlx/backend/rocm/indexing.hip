@@ -155,6 +155,36 @@ __global__ void gather_rows_kernel(
   }
 }
 
+// GD-idx (R4-fix v2): the indirect-idx gather. The per-step idx buffer's
+// device VA arrives at a PERSISTENT 8 B pointer slot (dind holds the
+// IdxT* of the live per-step idx buffer); the kernel dereferences it, so
+// the recorded kernel bakes only the STABLE slot VA — never the per-step
+// idx buffer VA (the R3/R4 264 attractor: a node re-reading a freed
+// per-step buffer on every replay).
+template <typename T, typename IdxT>
+__global__ void gather_rows_ind_kernel(
+    const T* src,
+    const void* dind,  // device: 8 B holding the IdxT* of the live idx buffer
+    T* out,
+    int64_t n_rows,
+    uint32_t row_size,
+    int32_t src_dim0) {
+  int64_t row = blockIdx.x;
+  if (row >= n_rows) {
+    return;
+  }
+  const IdxT* idx = *reinterpret_cast<const IdxT* const*>(dind);
+  int64_t r = static_cast<int64_t>(idx[row]);
+  if (r < 0) {
+    r += src_dim0;
+  }
+  const T* srow = src + r * static_cast<int64_t>(row_size);
+  T* orow = out + row * static_cast<int64_t>(row_size);
+  for (uint32_t e = threadIdx.x; e < row_size; e += blockDim.x) {
+    orow[e] = srow[e];
+  }
+}
+
 // Simple gather kernel for axis-based gather (for contiguous arrays)
 template <typename T, typename IdxT, int NDIM, bool SrcC, bool IdxC>
 __global__ void gather_axis_kernel(
@@ -751,144 +781,91 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   {
     if (fast_rows) {
-      // GD-idx (R4-fix): the per-step token idx arrives at a persistent
-      // fixed-VA slot (allocator::decode_idx_slot): its device VA is stable
-      // across steps and arena incarnations, so the capture can bake it into
-      // the embedding gather and the replay reads the NEW token (the R2
-      // collapse: the per-step re-allocation moved the idx buffer under the
-      // baked pointer; the K3 zero-slot redirect read the always-zero slot
-      // instead -> row 0 -> the 271 attractor). Token delivery: PER-GATHER
-      // staging — each in-step single-row fast_rows gather (up to the 4-buffer
-      // bound; gather k -> buffer k, the in-step ordinal resets with the arena
-      // so capture and replay steps map identically) owns a fixed-VA 16 B
-      // staging buffer and records its OWN stage node (source -> the shared
-      // slot, once per capture incarnation). The nodes run in recorded order:
-      // gather k's node refreshes the slot immediately before gather k's
-      // kernel reads it, so the shared slot never serves a stale neighbor's
-      // token. Each buffer is rewritten in place by its step's token writer
-      // (the recorded seed copy at the capture, the token Load's refresh in
-      // load.cpp, or the out-of-window blocking D2D replay refresh below).
-      // The per-step idx buffer's VA cannot be a node source: at the capture
-      // step it is a plain-malloc buffer (the arena only activates in the
-      // first op's prepare) that the host frees after the step, while at
-      // replay steps it lands in the arena at the step-end offset — two
-      // different VAs (the R3/R4 264 attractor: the re-run node read the
-      // freed capture-time buffer, i.e. the capture step's token, on every
-      // replay). MLX_GD_K3OFF=1 or MLX_GD_K3IDXOFF=1 restores the original
-      // idx buffer read.
+      // GD-idx (R4-fix v2): per-gather indirect-idx delivery. The bench
+      // makes a FRESH per-step idx array (a plain-malloc buffer; its
+      // device VA is never stable across steps, and the Load path does
+      // not see it in MTP=0 decode — the per-step idx is a plain
+      // mx.array, not a Load), so the per-step idx buffer's VA can be
+      // baked into neither the gather kernel nor any recorded node source
+      // (the R3/R4 264 attractor: a re-run node re-read the freed
+      // per-step buffer on every replay). Instead: the current per-step
+      // idx buffer's device VA is written IN PLACE into this gather's
+      // own 8 B pinned host buffer (per-gather pair k; the in-step
+      // ordinal resets with the arena so capture and replay steps map
+      // identically — the second in-window gather takes its OWN pair,
+      // there is no shared staging flag and no shared source, so it
+      // cannot hit a blocking copy or a neighbor's value), streamed to a
+      // persistent 8 B device pointer slot by an async H2D (pinned
+      // source, no allocation, NO blocking copy — the R4 first-capture
+      // crash class is out by construction; a recorded node only ever
+      // reads a STABLE VA). When recorded, the H2D re-executes at every
+      // graph launch re-reading the CURRENT pinned host contents (the
+      // persistent re-delivery pattern), so at replay the slot holds
+      // THIS step's idx buffer VA and the indirect kernel dereferences
+      // it to read the live per-step idx buffer. >4 in-step single-row
+      // gathers fall through to the direct per-step idx read (MLX_GD_K3OFF=1
+      // or MLX_GD_K3IDXOFF=1 restores the original idx buffer read for
+      // the whole fast_rows path).
       int64_t n_rows = total / (int64_t)slice_size;
+      bool gd_launched = false;
       if (rocm::graph_decode_mode() && !rocm::gd_k3_off() && !rocm::gd_k3_idxoff() &&
           n_rows == 1) {
-        auto ixs = rocm::allocator().decode_idx_slot();
-        if (ixs.data) {
-          const int k = rocm::allocator().decode_idx_stage_next();
-          if (k < 4) {
-            bool took = rocm::allocator().decode_idx_slot_take();
-            void* src = rocm::allocator().decode_idx_stage_src(k);
-            if (std::getenv("MLX_G1Y_DEBUG") != nullptr) {
-              fprintf(stderr,
-                      "[gdidx] gather: k=%d took=%d ixs.data=%p src=%p\n",
-                      k, (int)took, ixs.data, src);
-            }
-            if (src != nullptr) {
-              auto* ib =
-                  static_cast<const rocm::RocmBuffer*>(
-                      inputs[1].buffer().ptr());
-              const void* shadow = (ib != nullptr) ? ib->host_shadow : nullptr;
-              // This in-step gather's own staging buffer (per-gather, not a
-              // single global flag): the second in-window seed gather is
-              // `fresh` for ITS buffer and takes the staging path below,
-              // never the blocking-replay path inside the window.
-              const bool fresh =
-                  !rocm::allocator().decode_idx_stage_recorded(k);
-              // The window test, explicit via the capture-stream accessor
-              // (set at BeginCapture, cleared at EndCapture): non-null ==
-              // inside a capture window.
-              const bool inwin = (rocm::capture_stream() != nullptr);
-              if (!fresh && !took && !inwin) {
-                // OUT-OF-WINDOW replay refresh: the blocking D2D (staging
-                // source <- per-step idx buffer, whose device value is
-                // authoritative — the step's buffer-creation H2D already
-                // ran; the pinned-shadow refresh the R3 design used cannot
-                // work here because the bench creates a FRESH per-step idx
-                // array whose lazy shadow is null) runs only for genuinely
-                // outside-window replays (replay steps are not captured):
-                // a blocking hipMemcpy lands on the legacy stream and 906s
-                // inside a capture window (the R4 re-capture crash). It
-                // completes before the step-end graph launch is issued, and
-                // the re-run staging node (source -> slot, recorded at the
-                // capture) delivers the new token. A Load-delivered step
-                // (took) already refreshed the source in load.cpp.
-                (void)hipMemcpy(
-                    src, gpu_ptr<void>(inputs[1]),
-                    std::min<size_t>(16, inputs[1].nbytes()),
-                    hipMemcpyDeviceToDevice);
-              }
-              if (fresh) {
-                // Capture (or eager fallback): record THIS gather's stage
-                // node once per incarnation. Order in the window matters:
-                // the staging-source SEED is an async memcpy on the
-                // capture stream (captured; re-executes at every graph
-                // launch) recorded BEFORE the stage node, so at launch #1
-                // the seed (H2D from the buffer's pinned shadow when it
-                // exists — the gpu_ptr flush above is now recorded the same
-                // way, the fill-loop flush 906ed on the re-capture where
-                // the shadow exists — else D2D from the per-step idx
-                // buffer's device VA, which the recorded buffer-creation
-                // H2D precedes in stream order) fills the source BEFORE the
-                // stage node copies it into the slot. NO blocking copy in
-                // this window. The node re-copies whatever is in the
-                // source at every launch and zero-fills the slot's
-                // remaining bytes (a blind 16 B read would run off the
-                // nbytes-wide token).
-                hipStream_t cs = rocm::capture_stream();
-                hipError_t sm = hipMemcpyAsync(
-                    src,
-                    (shadow != nullptr) ? shadow
-                                      : gpu_ptr<void>(inputs[1]),
-                    std::min<size_t>(16, inputs[1].nbytes()),
-                    (shadow != nullptr) ? hipMemcpyHostToDevice
-                                      : hipMemcpyDeviceToDevice,
-                    (cs != nullptr) ? cs : 0);
-                dim3 cgrid(1);
-                dim3 cblk(2);
-                encoder.add_kernel_node(
-                    (&rocm::stage_slot16_kernel), cgrid, cblk, 0,
-                    reinterpret_cast<int64_t*>(ixs.data),
-                    reinterpret_cast<const int64_t*>(src),
-                    (int)inputs[1].nbytes());
-                rocm::allocator().decode_idx_stage_record(
-                    k, inputs[1].nbytes());
-                if (std::getenv("MLX_G1Y_DEBUG") != nullptr) {
-                  fprintf(stderr,
-                          "[gdidx] gather: k=%d staged node recorded, src=%p "
-                          "seed=%p kind=%d stream=%p mc=%d\n",
-                          k, src,
-                          (shadow != nullptr) ? shadow
-                                            : gpu_ptr<void>(inputs[1]),
-                          (shadow != nullptr) ? 1 : 2, cs, (int)sm);
-                }
-                // Slot read: this gather's staging node (recorded above,
-                // seeded) delivers the capture step's token immediately
-                // before this kernel; a Load-delivered capture (took) wrote
-                // the slot directly.
-                h_indices[0] = ixs.data;
-              } else {
-                // Slot read: out-of-window replay (the staging node, source
-                // refreshed above or by the Load, delivers the token), or
-                // a recorded-but-in-window state (the node was recorded
-                // earlier in this window and refreshes the slot before this
-                // kernel) — never the blocking-replay path inside the
-                // window.
-                h_indices[0] = ixs.data;
-              }
-            }
+        const int k = rocm::allocator().decode_idx_stage_next();
+        void* dind = (k < 4) ? rocm::allocator().decode_idx_ptr_slot(k)
+                            : nullptr;
+        uint64_t* hptr = (k < 4) ? rocm::allocator().decode_idx_ptr_host(k)
+                                : nullptr;
+        if (dind != nullptr && hptr != nullptr) {
+          // Write the current per-step idx buffer's device VA (the
+          // gpu_ptr flush is a no-op here: the per-step array's H2D ran
+          // eagerly in the previous step's tail; when it does flush it is
+          // stream-ordered on the encoder, never blocking in-window).
+          *hptr = (uint64_t)gpu_ptr<void>(inputs[1]);
+          (void)hipMemcpyAsync(
+              dind, hptr, 8, hipMemcpyHostToDevice, encoder.stream());
+          if (std::getenv("MLX_G1Y_DEBUG") != nullptr) {
+            fprintf(stderr,
+                    "[gdidx] gather: k=%d ind slot=%p host=%p va=%p "
+                    "inwin=%d\n",
+                    k, dind, hptr, (void*)(uint64_t)gpu_ptr<void>(inputs[1]),
+                    (int)(rocm::capture_stream() != nullptr));
           }
-          // k >= 4 (more single-row gathers than the 4-buffer bound): fall
-          // through to the direct per-step idx buffer read (h_indices[0]
-          // default).
+          dim3 gind((unsigned int)n_rows);
+          dim3 bind(256);
+          Dtype it = inputs[1].dtype();
+          int32_t src_dim0 = (int32_t)src.shape(0);
+          #define LAUNCH_ROWIND(T, IdxT) \
+            encoder.add_kernel_node((&rocm::gather_rows_ind_kernel<T, IdxT>), gind, bind, 0, \
+                gpu_ptr<T>(src), \
+                dind, gpu_ptr<T>(out), \
+                n_rows, slice_size, src_dim0)
+          #define ROWIND_BY_T(IdxT) \
+            switch (out.dtype()) { \
+              case float32: LAUNCH_ROWIND(float, IdxT); break; \
+              case float16: LAUNCH_ROWIND(__half, IdxT); break; \
+              case bfloat16: LAUNCH_ROWIND(hip_bfloat16, IdxT); break; \
+              case int32: LAUNCH_ROWIND(int32_t, IdxT); break; \
+              case int64: LAUNCH_ROWIND(int64_t, IdxT); break; \
+              case uint32: LAUNCH_ROWIND(uint32_t, IdxT); break; \
+              case uint64: LAUNCH_ROWIND(uint64_t, IdxT); break; \
+              case int8: LAUNCH_ROWIND(int8_t, IdxT); break; \
+              case int16: LAUNCH_ROWIND(int16_t, IdxT); break; \
+              case uint8: LAUNCH_ROWIND(uint8_t, IdxT); break; \
+              case uint16: LAUNCH_ROWIND(uint16_t, IdxT); break; \
+              case bool_: LAUNCH_ROWIND(bool, IdxT); break; \
+              default: throw std::runtime_error("Unsupported dtype for Gather"); \
+            }
+          if (it == int32 || it == uint32) {
+            ROWIND_BY_T(int32_t);
+          } else {
+            ROWIND_BY_T(int64_t);
+          }
+          #undef ROWIND_BY_T
+          #undef LAUNCH_ROWIND
+          gd_launched = true;
         }
       }
+      if (!gd_launched) {
       dim3 grid((unsigned int)n_rows);
       dim3 blk(256);
       Dtype it = inputs[1].dtype();
@@ -921,6 +898,7 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
       }
       #undef ROWS_BY_T
       #undef LAUNCH_ROWS
+      }
       return;
     }
     // Dispatch based on dtype and number of indices

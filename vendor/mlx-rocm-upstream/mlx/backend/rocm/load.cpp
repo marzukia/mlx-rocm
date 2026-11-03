@@ -49,18 +49,15 @@ void Load::eval_gpu(const std::vector<array>& inputs, array& out) {
   // direct copy here is not launch_kernel-wrapped, so it runs at replay too,
   // stream-ordered before the graph), and the pre-launch re-delivery sources
   // the persistent pinned buffer, which the current step's reader just
-  // rewrote in place. GD-idx (R4-fix): the gate is the RAW ENV ENABLE
-  // (MLX_GRAPH_DECODE != 0), not the per-window staging-mode or the
-  // post-arm persistent flag: the per-step token Load is evaluated in the
-  // previous step's tail (after the argmax, BEFORE the arm and before this
-  // step's first op), so any window/persistent-gated path fired 0 times
-  // (the R3/R4 reachability gap). Delivery is dual: the slot write serves
-  // graphs without the staging node (a re-capture that consumed the Load
-  // records no node, so the slot must hold the new value), and the refresh
-  // of the per-gather staging sources makes the re-run in-graph staging
-  // nodes propagate the new value (each node re-copies its source into the
-  // slot on every launch, stream-after this H2D, and would otherwise
-  // clobber the slot write).
+  // rewrote in place. GD-idx (R4-fix v2): the gate is the RAW ENV ENABLE
+  // (graph_decode_env_enabled, MLX_GRAPH_DECODE != 0), not the per-window
+  // staging-mode or the post-arm persistent flag: the per-step token Load
+  // is evaluated in the previous step's tail (after the argmax, BEFORE the
+  // arm and before this step's first op), so any window/persistent-gated
+  // path fired 0 times (the R3/R4 reachability gap). When this path fires,
+  // the per-step idx array is a VIEW of the persistent slot buffer, and
+  // the gather's indirect path reads the slot through the pointer slot —
+  // so writing the slot (the 16 B H2D below) IS the per-step delivery.
   if (rocm::graph_decode_env_enabled() && nbytes <= 16) {
     auto sl = rocm::allocator().decode_idx_slot();
     fprintf(stderr,
@@ -91,22 +88,6 @@ void Load::eval_gpu(const std::vector<array>& inputs, array& out) {
           16,
           hipMemcpyHostToDevice,
           encoder.stream());
-      // GD-idx (R4-fix): refresh ALL per-gather staging sources (the 4
-      // bounded array, gather k -> buffer k) in place: each recorded stage
-      // node (source -> slot) re-runs at every graph launch and would
-      // otherwise clobber the slot write with the previous step's value.
-      // This Load lands in the previous step's tail (eager, outside any
-      // capture window), so the async H2Ds are stream-ordered ahead of the
-      // step-end graph launch.
-      for (int i = 0; i < 4; ++i) {
-        void* sv = rocm::allocator().decode_idx_stage_src(i);
-        if (sv == nullptr) {
-          continue;
-        }
-        (void)hipMemcpyAsync(
-            sv, sl.host, std::min<size_t>(16, nbytes),
-            hipMemcpyHostToDevice, encoder.stream());
-      }
       rocm::allocator().decode_idx_slot_arm();
       fprintf(stderr, "[gdidx] load: slot path taken, armed\n");
       return;
