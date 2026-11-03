@@ -146,8 +146,22 @@ def main():
         # FIX#1: GDN state-tape commit (the model's TAPE branch is gated
         # on these; S==4 forwards go through gdn_fused_step_tape in the
         # wheel model file; S=1 correction forwards use the fused op).
-        # MTP6_TAPE=0 -> savestate path (A/B: int2 + trim without tape).
-        if os.environ.get("MTP6_TAPE", "1") == "1":
+        # MTP6_TAPE=0      -> savestate: canonical save/restore GDN +
+        #                     re-forward of the accepted prefix (baseline).
+        # MTP6_TAPE=1      -> pure tape (round-1 measured, 39.16 class):
+        #                     tape commit + ONE S=1 correction forward
+        #                     (state advance), but l = the batched row
+        #                     logits and h = the batched S=4 row h (the
+        #                     next draft chain reuses the batched-row h;
+        #                     the correction token is emitted in the branch
+        #                     and re-emitted by the next argmax(l)).
+        # MTP6_TAPE=hybrid -> round-2 hybrid: tape commit + ONE S=1
+        #                     correction forward; l and h are the
+        #                     correction forward's own (S=1 sequential
+        #                     pre-norm h for the next draft chain).
+        tape_mode = os.environ.get("MTP6_TAPE", "1")
+        assert tape_mode in ("0", "1", "hybrid"), tape_mode
+        if tape_mode in ("1", "hybrid"):
             os.environ["MLX_ROCM_GDN_TAPE"] = "1"
         os.environ["MLX_ROCM_GDN_FUSE"] = "1"
     t0 = time.time()
@@ -386,12 +400,12 @@ def main():
             # (gdn_fused_step_tape: per-row state tapes).
             # FIX#1: commit = index select on the state tape + trims
             # (lazy cache-leaf rebind; NO save/restore, NO re-forward of
-            # accepted rows).
-            # FIX#3: mtp_cache trimmed to the accepted prefix.
+            # accepted rows). MTP6_TAPE=0 -> savestate (canonical
+            # restore + re-forward of the accepted prefix).
             d1, d2, d3 = draft1, draft2, draft3
             draft1 = draft2 = draft3 = None
             verifies += 1
-            if os.environ.get("MTP6_TAPE", "1") != "1":
+            if tape_mode == "0":
                 saved = save_gdn(cache)
             logits, hidden = lm(
                 mx.array([[prev_token, d1, d2, d3]]),
@@ -400,13 +414,16 @@ def main():
                 return_prenorm=True
             )
             l0, l1, l2, l3 = logits[0, 0], logits[0, 1], logits[0, 2], logits[0, 3]
+            # batched S=4 row pre-norm hiddens (pure tape reuses these
+            # for the next draft chain on rejected steps)
+            hb0, hb1, hb2, hb3 = hidden[0, 0], hidden[0, 1], hidden[0, 2], hidden[0, 3]
 
             def commit(krow, prefix):
                 # Select the per-row GDN state-tape row (the state AFTER
                 # row krow) and rebind the cache leaves to the tape slice
                 # (lazy; no copies, no sync). lengths is None in this
                 # model (advance() is a no-op), so no lengths fix-up.
-                tape_avail = os.environ.get("MTP6_TAPE", "1") == "1"
+                tape_avail = tape_mode in ("1", "hybrid")
                 if tape_avail:
                     try:
                         st0 = lm.model.layers[0].linear_attn.last_tape[0]
@@ -435,6 +452,34 @@ def main():
                     for pt in prefix:
                         lm(mx.array([[pt]]), cache=cache)
 
+            def reject(krow, lk, hb, ktrim, prefix, ctoken):
+                nonlocal l, h, n_refwd
+                # Rejected step: commit the tape row (or canonical
+                # restore + re-forward), trim mtp_cache to the accepted
+                # prefix, run ONE S=1 correction forward, then choose
+                # (l, h) for the next draft chain by mode:
+                #   pure (MTP6_TAPE=1): l = the batched row logits, h =
+                #       the batched S=4 row h (round-1 measured behavior;
+                #       argmax(l) re-emits the correction token next).
+                #   hybrid (MTP6_TAPE=hybrid): l = the correction
+                #       forward's logits, h = its S=1 sequential pre-norm
+                #       h (round-2 fix).
+                #   savestate (MTP6_TAPE=0): l = the correction forward's
+                #       logits (canonical re-forward leaves the same l).
+                commit(krow, prefix)
+                if os.environ.get("MTP6_MTPCACHE_TRIM", "1") == "1":
+                    mtp_cache[0].trim(ktrim)
+                logits, hidden = lm(
+                    mx.array([[ctoken]]), cache=cache,
+                    return_hidden=True, return_prenorm=True
+                )
+                if tape_mode == "1":
+                    l, h = lk, hb
+                else:
+                    l, h = logits[0, 0], hidden[0, 0]
+                out.append(ctoken)
+                n_refwd += 1
+
             t2 = int(mx.argmax(l0))
             if t2 == EOS:
                 break
@@ -455,42 +500,18 @@ def main():
                         out.append(t4)
                         # Full accept: model's state (after row 3)
                         # is already in the leaves; no rebind, no trims.
-                        l, h = l3, hidden[0, 3]
+                        l, h = l3, hb3
                     else:
                         # draft3 rejected: commit row 2 (after D2), then
                         # ONE S=1 forward of the correction (the accepted
                         # prefix costs zero - tape commit).
-                        commit(2, [prev_token, d1, d2])
-                        mtp_cache[0].trim(1)
-                        logits, hidden = lm(
-                            mx.array([[t4]]), cache=cache,
-                            return_hidden=True, return_prenorm=True
-                        )
-                        l, h = logits[0, 0], hidden[0, 0]
-                        out.append(t4)
-                        n_refwd += 1
+                        reject(2, l2, hb2, 1, [prev_token, d1, d2], t4)
                 else:
                     # draft2 rejected: commit row 1 (after D1), forward t3.
-                    commit(1, [prev_token, d1])
-                    mtp_cache[0].trim(2)
-                    logits, hidden = lm(
-                        mx.array([[t3]]), cache=cache,
-                        return_hidden=True, return_prenorm=True
-                    )
-                    l, h = logits[0, 0], hidden[0, 0]
-                    out.append(t3)
-                    n_refwd += 1
+                    reject(1, l1, hb1, 2, [prev_token, d1], t3)
             else:
                 # draft1 rejected: commit row 0 (after prev_token), forward t2.
-                commit(0, [prev_token])
-                mtp_cache[0].trim(3)
-                logits, hidden = lm(
-                    mx.array([[t2]]), cache=cache,
-                    return_hidden=True, return_prenorm=True
-                )
-                l, h = logits[0, 0], hidden[0, 0]
-                out.append(t2)
-                n_refwd += 1
+                reject(0, l0, hb0, 3, [prev_token], t2)
     dt = time.time() - t1
     n = len(out)
     d1pct = 100.0 * d1_acc / verifies if verifies else 0.0
@@ -500,7 +521,8 @@ def main():
     if mode == "4":
         import mlx_lm.models.qwen3_5 as _m5
         print(
-            "INFO REFWDS=%d GDN_TAPE_CALLS=%d INT2=%s" % (
+            "INFO TAPEMODE=%s REFWDS=%d GDN_TAPE_CALLS=%d INT2=%s" % (
+                os.environ.get("MTP6_TAPE", "1"),
                 n_refwd,
                 getattr(_m5, "GDN_TAPE_CALLS", -1),
                 "on" if qh is not None else "off",
