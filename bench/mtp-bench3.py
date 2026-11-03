@@ -1,32 +1,18 @@
 #!/usr/bin/env python3
 """K=1 MTP spec-decode BENCHMARK probe (9B work model, stdref fruits prompt).
 
-Copy of /tmp/mtp-probe2.py with MAX_TOKENS=1024 (stop at EOS) and a third
-mode:
+Copy of /tmp/mtp-probe2.py with MAX_TOKENS=1024 (stop at EOS) and a third mode:
 
 MLX_MTP=0 -> plain greedy (byte-identical path to the baseline).
-MLX_MTP=1 -> spec-decode, verify = two 1-token target forwards with GDN
-  save/restore mid-verify (the existing gate-probe form).
-MLX_MTP=2 -> spec-decode, verify = BATCHED: one target forward of
-  [prev_token, draft] (shape [1,2], S=2, cache advances 2) giving l0 (after
-  prev_token) and l1 (after draft) in a single call.
-    ACCEPT (t2==draft): state stays (S=2 forward already applied both),
-      emit 2 tokens (prev_token was emitted in the single-token step; emit
-      t2=draft).
-    REJECT: t2=argmax(l0); restore GDN state saved BEFORE the batched
-      forward; trim KV by 2 (removes prev_token AND draft); re-forward
-      [prev_token] then [t2] (S=1 each) to land the correct state - same
-      math as the mode-1 reject path.
+MLX_MTP=1 -> spec-decode, verify = two 1-token target forwards with GDN save/restore mid-verify (the existing gate-probe form).
+MLX_MTP=2 -> spec-decode, verify = BATCHED: one target forward of [prev_token, draft] (shape [1,2], S=2, cache advances 2) giving l0 (after prev_token) and l1 (after draft) in a single call.
+    ACCEPT (t2==draft): state stays (S=2 forward already applied both), emit 2 tokens (prev_token was emitted in the single-token step; emit t2=draft).
+    REJECT: t2=argmax(l0); restore GDN state saved BEFORE the batched forward; trim KV by 2 (removes prev_token AND draft); re-forward [prev_token] then [t2] (S=1 each) to land the correct state - same math as the mode-1 reject path.
 Draft step unchanged (MTP 1-layer, argmax). Greedy, deterministic.
 
-GDN state: the trunk GDN (gated delta net) recurrent state is saved/
-restored exactly like mtp-probe2.py (functional-new-arrays per forward,
-zero-copy save valid). For MLX_MTP=2 the save point is BEFORE the batched
-2-token forward.
+GDN state: the trunk GDN (gated delta net) recurrent state is saved/restored exactly like mtp-probe2.py (functional-new-arrays per forward, zero-copy save valid). For MLX_MTP=2 the save point is BEFORE the batched 2-token forward.
 
-MTP input hidden = target PRE-final-norm hidden (vLLM Qwen3-Next MTP
-dataflow: pre_fc_norm_hidden runs on it; feeding post-norm
-double-normalizes).
+MTP input hidden = target PRE-final-norm hidden (vLLM Qwen3-Next MTP dataflow: pre_fc_norm_hidden runs on it; feeding post-norm double-normalizes).
 
 Prints: TOKS, TOKS_S, ACCEPTED, verifies, stream.
 """
@@ -46,10 +32,7 @@ EOS = 248044
 
 
 def save_gdn(cache):
-    """Reference-save GDN states. gated_delta_update is functional (new
-    arrays), so the pre-forward states stay alive: zero copies. lengths
-    is per-layer ArraysCache state (advance(S) per forward); the conv
-    update positions off it, so it must be saved/restored too."""
+    """Reference-save GDN states. gated_delta_update is functional (new arrays), so the pre-forward states stay alive: zero copies. lengths is per-layer ArraysCache state (advance(S) per forward); the conv update positions off it, so it must be saved/restored too."""
     return [
         (i, c[0], c[1], c.lengths)
         for i, c in enumerate(cache)
@@ -65,14 +48,7 @@ def restore_gdn(cache, saved):
 
 
 def save_mtp(mtp_cache):
-    """m7: snapshot the MTP module's FULL state (keys, values, AND
-    offset). The MTP block is full-attention (no GDN state), so its
-    entire state is the KV cache. The offset is load-bearing: the
-    attention uses cache.offset for the RoPE position and the k/v
-    write slot. Restoring keys/values without the offset makes the
-    next MTP call run at the wrong RoPE position and attend over a
-    stale/zero slot (t14: 4096/4096 drift, maxabs 5.452e-01;
-    a5af599: full-state restore is bit-exact, n=0/4096)."""
+    """m7: snapshot the MTP module's FULL state (keys, values, AND offset). The MTP block is full-attention (no GDN state), so its entire state is the KV cache. The offset is load-bearing: the attention uses cache.offset for the RoPE position and the k/v write slot. Restoring keys/values without the offset makes the next MTP call run at the wrong RoPE position and attend over a stale/zero slot (t14: 4096/4096 drift, maxabs 5.452e-01; a5af599: full-state restore is bit-exact, n=0/4096)."""
     if mtp_cache is None or len(mtp_cache) == 0:
         return None
     c = mtp_cache[0]

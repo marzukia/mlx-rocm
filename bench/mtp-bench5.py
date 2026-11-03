@@ -15,11 +15,9 @@ K=2 draft chain (MTP module runs twice, own KV cache advances by 2):
     emb2 = embed(draft1)
     dh2  = mtp(dh1, emb2, mtp_cache)        # feed MTP's post-norm output back
     draft2 = argmax(lm_head(dh2))
-(vLLM Qwen3-Next MTP dataflow: the module's returned hidden is the
-hidden_states for the next draft step; pre_fc_norm_hidden is applied on top.)
+(vLLM Qwen3-Next MTP dataflow: the module's returned hidden is the hidden_states for the next draft step; pre_fc_norm_hidden is applied on top.)
 
-K=2 verify (from S_k, drafts D1, D2): ONE batched [1,3] forward of
-[prev_token, D1, D2]; S=3, cache advances 3.
+K=2 verify (from S_k, drafts D1, D2): ONE batched [1,3] forward of [prev_token, D1, D2]; S=3, cache advances 3.
     l0 (after prev_token), l1 (after D1), l2 (after D2)
     t2 = argmax(l0)  (true greedy token after prev_token)
     if t2 == EOS: break (lossless: EOS not appended, mirror plain mode)
@@ -27,18 +25,13 @@ K=2 verify (from S_k, drafts D1, D2): ONE batched [1,3] forward of
         emit D1; t3 = argmax(l1) (true greedy token after D1)
         if t3 == EOS: break (emit D1, stop, EOS not appended)
         if t3 == D2 (draft2 accepted): emit D2; state = after [prev,D1,D2]
-        else (draft2 rejected): emit t3; rollback S=3 (restore GDN to S_k,
-            trim KV by 3), re-forward [prev_token],[D1],[t3] (S=1 each)
-    else (draft1 rejected): emit t2; rollback S=3 (restore GDN to S_k,
-        trim KV by 3), re-forward [prev_token],[t2] (S=1 each)
+        else (draft2 rejected): emit t3; rollback S=3 (restore GDN to S_k, trim KV by 3), re-forward [prev_token],[D1],[t3] (S=1 each)
+    else (draft1 rejected): emit t2; rollback S=3 (restore GDN to S_k, trim KV by 3), re-forward [prev_token],[t2] (S=1 each)
 S=3 = T=3 <= 8 -> recurrent GDN kernel + QMV M=3 path (no C++ change).
 
-GDN state: save/restore exactly like mtp-bench3.py (functional-new-arrays,
-zero-copy save valid). For MLX_MTP=3 the save point is BEFORE the batched
-3-token forward.
+GDN state: save/restore exactly like mtp-bench3.py (functional-new-arrays, zero-copy save valid). For MLX_MTP=3 the save point is BEFORE the batched 3-token forward.
 
-Prints: TOKS, TOKS_S, ACCEPTED (draft1/draft2), verifies, D1ACC, D2ACC,
-TOK_PER_STEP, stream.
+Prints: TOKS, TOKS_S, ACCEPTED (draft1/draft2), verifies, D1ACC, D2ACC, TOK_PER_STEP, stream.
 """
 import os
 import time
