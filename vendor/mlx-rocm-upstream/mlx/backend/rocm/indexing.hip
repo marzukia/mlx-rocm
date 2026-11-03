@@ -824,11 +824,19 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
           (void)hipMemcpyAsync(
               dind, hptr, 8, hipMemcpyHostToDevice, encoder.stream());
           if (std::getenv("MLX_G1Y_DEBUG") != nullptr) {
+            int32_t ival = -1;
+            // The D2H read is blocking: it may only run OUTSIDE a capture
+            // window (a blocking hipMemcpy in-window is the 906 class).
+            if (rocm::capture_stream() == nullptr &&
+                inputs[1].nbytes() >= 4) {
+              (void)hipMemcpy(&ival, gpu_ptr<void>(inputs[1]), 4,
+                             hipMemcpyDeviceToHost);
+            }
             fprintf(stderr,
                     "[gdidx] gather: k=%d ind slot=%p host=%p va=%p "
-                    "inwin=%d\n",
+                    "inwin=%d idxval=%d\n",
                     k, dind, hptr, (void*)(uint64_t)gpu_ptr<void>(inputs[1]),
-                    (int)(rocm::capture_stream() != nullptr));
+                    (int)(rocm::capture_stream() != nullptr), ival);
           }
           dim3 gind((unsigned int)n_rows);
           dim3 bind(256);
