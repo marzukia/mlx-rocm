@@ -1,8 +1,7 @@
 --- a/mlx/backend/rocm/quantized/qmm.hip
 +++ b/mlx/backend/rocm/quantized/qmm.hip
 @@ -4050,14 +4051,38 @@
-   // 4/8-bit affine decode (M<=8); replaces the f32-FMA wide loop with
-   // in-block int8 quant + __builtin_amdgcn_sudot4 + LDS x.
+   // 4/8-bit affine decode (M<=8); replaces the f32-FMA wide loop with in-block int8 quant + __builtin_amdgcn_sudot4 + LDS x.
    static const char* lx_env = std::getenv("MLX_QMV_LX");
 -  if (lx_env != nullptr && (bits_ == 4 || bits_ == 8) &&
 +  // REFWD-M1 (default off): re-route ONLY the M=1 (decode / correction

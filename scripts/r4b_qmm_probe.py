@@ -69,9 +69,7 @@ def main() -> None:
         t_m1 = bench(lin_nb, x1)
         t_m4 = bench(lin_nb, x4)
         row = f"bias-free {name:12s} K={K:6d} N={N:6d}: M1={t_m1:8.3f} ms  M4={t_m4:8.3f} ms  M4/M1={t_m4 / t_m1:5.2f}x"
-        # per-row reference (one row at a time, same op). NOTE: mx.eval in this
-        # wheel returns None (side effect only) - use the lazy graph and force
-        # with float() on a reducing op.
+        # per-row reference (one row at a time, same op). NOTE: mx.eval in this wheel returns None (side effect only) - use the lazy graph and force with float() on a reducing op.
         refs = [lin_nb(x4[i : i + 1]) for i in range(4)]
         out4 = lin_nb(x4)
         maxdiff = 0.0

@@ -1,22 +1,7 @@
 #!/bin/bash
 # R4b: fused S=4 verify lever A/B (mtp-r4b-fused-verify).
 #
-# Lever: multi-row QMV (one weight pass for all M=4 verify rows). Probe
-# findings that shaped the matrix:
-#   - the python layer always passes the quantize bias, so the op sees
-#     has_bias=1 even for bias=False layers -> the wheel's wide/multi-row
-#     branch is reachable without the wheel gate fix;
-#   - the multi-row (rows-msg) path is env-gated: MLX_ROCM_QMV_ROWS (the
-#     task config line's "QMV_ROWS=1" is an inert misspelling);
-#   - standing wheel, rows env ON: bias-free M4 = 1.46-2.0x M1 (fused);
-#     rows env OFF: 2.2-3.9x (per-row, the R4a 46.49 t/s class).
-# Arms:
-#   OFF: OFF wheel (canon) + task env (rows off)  -> reproduces ~46.49 t/s
-#   ON : ON  wheel (canon + gate fix) + task env + MLX_ROCM_QMV_ROWS=1
-#   CROSS: OFF wheel + task env + rows env (attribution: if CROSS == ON the
-#   wheel delta is inert and the lever is the env gate)
-# 25 s idle before the first run and between runs; all under gpu-bench.lock.
-# Host paths come from the environment: OFF_PY / ON_PY / MODELS / LOCK
+# Lever: multi-row QMV (one weight pass for all M=4 verify rows). Probe findings that shaped the matrix:
 set -u
 W=$(dirname "$0")
 mkdir -p $W

@@ -120,9 +120,7 @@ def main():
     mode = os.environ.get("MLX_MTP", "0")
     assert mode in ("0", "1", "2", "3", "4"), mode
     mtp_on = mode in ("1", "2", "3", "4")
-    # MTP6_TAPE: 0=savestate (canonical), 1=pure tape (round-1 measured),
-    # hybrid (round-2: tape commit + S=1 correction forward, h from the
-    # correction forward). Legacy MTP6_ACCEPT alias: tape -> hybrid.
+    # MTP6_TAPE: 0=savestate (canonical), 1=pure tape (round-1 measured), hybrid (round-2: tape commit + S=1 correction forward, h from the correction forward). Legacy MTP6_ACCEPT alias: tape -> hybrid.
     tape_mode = os.environ.get("MTP6_TAPE", "")
     if not tape_mode:
         legacy = os.environ.get("MTP6_ACCEPT", "savestate")
@@ -361,10 +359,7 @@ def main():
                 n_refwd += 2
             acc("commit", time.perf_counter() - tc0)
         else:
-            # Verify step (from S_k, drafts D1, D2, D3). BATCHED S=4.
-            # MTP6_TAPE: 0=savestate (canonical), 1=pure tape (round-1
-            # measured: h from the batched S=4 row), hybrid (round-2: h
-            # from the S=1 correction forward).
+            # Verify step (from S_k, drafts D1, D2, D3). BATCHED S=4. MTP6_TAPE: 0=savestate (canonical), 1=pure tape (round-1 measured: h from the batched S=4 row), hybrid (round-2: h from the S=1 correction forward).
             d1, d2, d3 = draft1, draft2, draft3
             draft1 = draft2 = draft3 = None
             verifies += 1
@@ -382,8 +377,7 @@ def main():
             did_commit = False
 
             def commit(krow, prefix):
-                # tape: select the per-row GDN state-tape row and rebind
-                # the cache leaves (lazy). lengths is None in this model.
+                # tape: select the per-row GDN state-tape row and rebind the cache leaves (lazy). lengths is None in this model.
                 nonlocal n_tape
                 tape_avail = tape_mode in ("1", "hybrid")
                 if tape_avail:
@@ -412,11 +406,6 @@ def main():
 
             def reject(krow, lk, hb, ktrim, prefix, ctoken):
                 # Rejected step: commit the tape row (or canonical restore
-                # + re-forward of the accepted prefix), trim mtp_cache,
-                # run ONE S=1 correction forward, then choose (l, h) by
-                # mode: pure = batched row logits + batched S=4 row h;
-                # hybrid / savestate = the correction forward's own
-                # logits + S=1 sequential pre-norm h.
                 nonlocal l, h, n_refwd, did_commit
                 commit(krow, prefix)
                 mtp_cache[0].trim(ktrim)

@@ -125,8 +125,7 @@ def int2_argmax(x, qh):
     if "w" in qh:
         cols = mx.take(qh["w"], idx, 0)
     else:
-        # Re-dequantize exactly the 32 candidate rows (bit-exact vs the
-        # target's 4-bit head; avoids keeping a 2 GB bf16 copy).
+        # Re-dequantize exactly the 32 candidate rows (bit-exact vs the target's 4-bit head; avoids keeping a 2 GB bf16 copy).
         cols = mx.dequantize(
             mx.take(qh["wq"], idx, 0),
             mx.take(qh["s4"], idx, 0),
@@ -143,22 +142,7 @@ def main():
     assert mode in ("0", "1", "2", "3", "4"), mode
     mtp_on = mode in ("1", "2", "3", "4")
     if mode == "4":
-        # FIX#1: GDN state-tape commit (the model's TAPE branch is gated
-        # on these; S==4 forwards go through gdn_fused_step_tape in the
-        # wheel model file; S=1 correction forwards use the fused op).
-        # MTP6_TAPE=0      -> savestate: canonical save/restore GDN +
-        #                     re-forward of the accepted prefix (baseline).
-        # MTP6_TAPE=1      -> pure tape (round-1 measured, 39.16 class):
-        #                     tape commit + ONE S=1 correction forward
-        #                     (state advance), but l = the batched row
-        #                     logits and h = the batched S=4 row h (the
-        #                     next draft chain reuses the batched-row h;
-        #                     the correction token is emitted in the branch
-        #                     and re-emitted by the next argmax(l)).
-        # MTP6_TAPE=hybrid -> round-2 hybrid: tape commit + ONE S=1
-        #                     correction forward; l and h are the
-        #                     correction forward's own (S=1 sequential
-        #                     pre-norm h for the next draft chain).
+        # FIX#1: GDN state-tape commit (the model's TAPE branch is gated on these; S==4 forwards go through gdn_fused_step_tape in the wheel model file; S=1 correction forwards use the fused op). MTP6_TAPE=0      -> savestate: canonical save/restore GDN + re-forward of the accepted prefix (baseline). MTP6_TAPE=1      -> pure tape (round-1 measured, 39.16 class): tape commit + ONE S=1 correction forward (state advance), but l = the batched row logits and h = the batched S=4 row h (the next draft chain reuses the batched-row h; the correction token is emitted in the branch and re-emitted by the next argmax(l)). MTP6_TAPE=hybrid -> round-2 hybrid: tape commit + ONE S=1 correction forward; l and h are the correction forward's own (S=1 sequential pre-norm h for the next draft chain).
         tape_mode = os.environ.get("MTP6_TAPE", "1")
         assert tape_mode in ("0", "1", "hybrid"), tape_mode
         if tape_mode in ("1", "hybrid"):
@@ -174,8 +158,7 @@ def main():
         mtp_cache = [KVCache()]
     qh = None
     if mode == "4":
-        # FIX#2: int2 g128-asymmetric draft head (replaces the full bf16
-        # lm_head per draft; MTP6_DRAFT_HEAD=bf16 to A/B the old head).
+        # FIX#2: int2 g128-asymmetric draft head (replaces the full bf16 lm_head per draft; MTP6_DRAFT_HEAD=bf16 to A/B the old head).
         if os.environ.get("MTP6_DRAFT_HEAD", "int2") == "int2" and hasattr(
             mx.fast, "lm_head_int2"
         ):
@@ -191,8 +174,7 @@ def main():
             mx.eval(packed, scale, zs)
             n_rows, n_cols = w_bf16.shape
             if type(_h).__name__ == "QuantizedLinear":
-                # 16 GB card: do NOT keep the 2 GB bf16 copy; re-rank by
-                # re-dequantizing the 32 candidate rows.
+                # 16 GB card: do NOT keep the 2 GB bf16 copy; re-rank by re-dequantizing the 32 candidate rows.
                 del w_bf16
                 mx.clear_cache()
                 qh = {
@@ -396,12 +378,7 @@ def main():
                 )
                 l, h = logits[0, -1], hidden[0, -1]
         else:
-            # Verify step (from S_k, drafts D1, D2, D3). BATCHED S=4
-            # (gdn_fused_step_tape: per-row state tapes).
-            # FIX#1: commit = index select on the state tape + trims
-            # (lazy cache-leaf rebind; NO save/restore, NO re-forward of
-            # accepted rows). MTP6_TAPE=0 -> savestate (canonical
-            # restore + re-forward of the accepted prefix).
+            # Verify step (from S_k, drafts D1, D2, D3). BATCHED S=4 (gdn_fused_step_tape: per-row state tapes). FIX#1: commit = index select on the state tape + trims (lazy cache-leaf rebind; NO save/restore, NO re-forward of accepted rows). MTP6_TAPE=0 -> savestate (canonical restore + re-forward of the accepted prefix).
             d1, d2, d3 = draft1, draft2, draft3
             draft1 = draft2 = draft3 = None
             verifies += 1
@@ -414,15 +391,11 @@ def main():
                 return_prenorm=True
             )
             l0, l1, l2, l3 = logits[0, 0], logits[0, 1], logits[0, 2], logits[0, 3]
-            # batched S=4 row pre-norm hiddens (pure tape reuses these
-            # for the next draft chain on rejected steps)
+            # batched S=4 row pre-norm hiddens (pure tape reuses these for the next draft chain on rejected steps)
             hb0, hb1, hb2, hb3 = hidden[0, 0], hidden[0, 1], hidden[0, 2], hidden[0, 3]
 
             def commit(krow, prefix):
-                # Select the per-row GDN state-tape row (the state AFTER
-                # row krow) and rebind the cache leaves to the tape slice
-                # (lazy; no copies, no sync). lengths is None in this
-                # model (advance() is a no-op), so no lengths fix-up.
+                # Select the per-row GDN state-tape row (the state AFTER row krow) and rebind the cache leaves to the tape slice (lazy; no copies, no sync). lengths is None in this model (advance() is a no-op), so no lengths fix-up.
                 tape_avail = tape_mode in ("1", "hybrid")
                 if tape_avail:
                     try:
@@ -441,10 +414,7 @@ def main():
                         if isinstance(c, KVCache):
                             c.trim(3 - krow)
                 else:
-                    # savestate A/B (MTP6_TAPE=0): canonical restore +
-                    # trim ALL verify rows + re-forward of the accepted
-                    # prefix (the GDN restore makes the re-forward
-                    # mandatory, so the kept rows must be dropped).
+                    # savestate A/B (MTP6_TAPE=0): canonical restore + trim ALL verify rows + re-forward of the accepted prefix (the GDN restore makes the re-forward mandatory, so the kept rows must be dropped).
                     restore_gdn(cache, saved)
                     for c in cache:
                         if isinstance(c, KVCache):
@@ -454,18 +424,7 @@ def main():
 
             def reject(krow, lk, hb, ktrim, prefix, ctoken):
                 nonlocal l, h, n_refwd
-                # Rejected step: commit the tape row (or canonical
-                # restore + re-forward), trim mtp_cache to the accepted
-                # prefix, run ONE S=1 correction forward, then choose
-                # (l, h) for the next draft chain by mode:
-                #   pure (MTP6_TAPE=1): l = the batched row logits, h =
-                #       the batched S=4 row h (round-1 measured behavior;
-                #       argmax(l) re-emits the correction token next).
-                #   hybrid (MTP6_TAPE=hybrid): l = the correction
-                #       forward's logits, h = its S=1 sequential pre-norm
-                #       h (round-2 fix).
-                #   savestate (MTP6_TAPE=0): l = the correction forward's
-                #       logits (canonical re-forward leaves the same l).
+                # Rejected step: commit the tape row (or canonical restore + re-forward), trim mtp_cache to the accepted prefix, run ONE S=1 correction forward, then choose (l, h) for the next draft chain by mode: pure (MTP6_TAPE=1): l = the batched row logits, h = the batched S=4 row h (round-1 measured behavior; argmax(l) re-emits the correction token next). hybrid (MTP6_TAPE=hybrid): l = the correction forward's logits, h = its S=1 sequential pre-norm h (round-2 fix). savestate (MTP6_TAPE=0): l = the correction forward's logits (canonical re-forward leaves the same l).
                 commit(krow, prefix)
                 if os.environ.get("MTP6_MTPCACHE_TRIM", "1") == "1":
                     mtp_cache[0].trim(ktrim)
@@ -498,13 +457,10 @@ def main():
                     if t4 == d3:
                         d3_acc += 1
                         out.append(t4)
-                        # Full accept: model's state (after row 3)
-                        # is already in the leaves; no rebind, no trims.
+                        # Full accept: model's state (after row 3) is already in the leaves; no rebind, no trims.
                         l, h = l3, hb3
                     else:
-                        # draft3 rejected: commit row 2 (after D2), then
-                        # ONE S=1 forward of the correction (the accepted
-                        # prefix costs zero - tape commit).
+                        # draft3 rejected: commit row 2 (after D2), then ONE S=1 forward of the correction (the accepted prefix costs zero - tape commit).
                         reject(2, l2, hb2, 1, [prev_token, d1, d2], t4)
                 else:
                     # draft2 rejected: commit row 1 (after D1), forward t3.
