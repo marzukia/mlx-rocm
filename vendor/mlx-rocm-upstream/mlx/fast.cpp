@@ -2,6 +2,7 @@
 #include <cassert>
 #include <numeric>
 
+#include "mlx/backend/gpu/copy.h"
 #include "mlx/fast.h"
 #include "mlx/fast_primitives.h"
 #include "mlx/ops.h"
@@ -1170,6 +1171,337 @@ array scaled_dot_product_attention(
     }
   }
   return fallback(std::move(inputs))[0];
+}
+
+namespace {
+
+// Non-row-contiguous inputs get a row-contiguous copy (same helper as
+// gdu.cpp); already-contiguous inputs pass through unchanged.
+static array gdnf_make_row_contiguous(const array& a, const Stream& s) {
+  if (a.flags().row_contiguous) {
+    return a;
+  }
+  array out(a.shape(), a.dtype(), nullptr, {});
+  copy_gpu(a, out, CopyType::General, s);
+  return out;
+}
+
+}  // namespace
+
+bool GdnFusedStep::use_fallback(
+    int B,
+    int T,
+    int Dk,
+    int Dv,
+    int Hv,
+    int Hk,
+    int kernel_size,
+    Stream s) {
+  if (s.device == Device::cpu) {
+    return true;
+  }
+  const char* e = std::getenv("MLX_ROCM_GDN_FUSE");
+  if (e == nullptr || e[0] != '1') {
+    return true;
+  }
+  const char* f = std::getenv("MLX_ROCM_GDN_FALLBACK");
+  if (f != nullptr && f[0] == '1') {
+    return true;
+  }
+  if (B != 1 || T > 4) {
+    return true;
+  }
+  // NOTE: MLX_ROCM_GDN_FUSE_T2=0 no longer routes T=2 to the 4-op chain
+  // (that chain is 1-D-only in gdn_prep and faults on the GPU for T>1).
+  // Lossless A/B is done with MLX_ROCM_GDN_FUSE=0 vs =1.
+  if (Dk != 128 || Dv != 128) {
+    return true;
+  }
+  if (Hv % Hk != 0) {
+    return true;
+  }
+  if (kernel_size != 4) {
+    return true;
+  }
+  return false;
+}
+
+std::vector<array> gdn_prep(
+    const array& q_raw,
+    const array& k_raw,
+    const array& v_raw,
+    const array& b,
+    const array& a,
+    const array& A_log,
+    const array& dt_bias,
+    const array& conv_state,
+    const array& conv_weight,
+    float inv_scale,
+    float eps,
+    StreamOrDevice s_ /* = {} */) {
+  auto s = to_stream(s_);
+  auto q = astype(q_raw, bfloat16, s);
+  auto k = astype(k_raw, bfloat16, s);
+  auto v = astype(v_raw, bfloat16, s);
+  auto bb = astype(b, bfloat16, s);
+  auto aa = astype(a, bfloat16, s);
+  auto al = astype(A_log, float32, s);
+  auto db = astype(dt_bias, float32, s);
+  auto cs = astype(conv_state, bfloat16, s);
+  auto cw = astype(conv_weight, bfloat16, s);
+
+  int key_dim = (int)q.size();
+  int value_dim = (int)v.size();
+  int conv_dim = key_dim + (int)k.size() + value_dim;
+  int kernel_size = 4;
+
+  auto fallback = [](std::vector<array> inputs) -> std::vector<array> {
+    throw std::runtime_error("gdn_prep: fallback NYI (GPU only)");
+  };
+
+  return array::make_arrays(
+      /* output shapes */
+      {{key_dim}, {(int)k.size()}, {value_dim}, {(int)bb.size()}, {(int)aa.size()}},
+      /* dtypes */
+      {bfloat16, bfloat16, bfloat16, bfloat16, float32},
+      /* primitive */
+      std::make_shared<GdnPrep>(
+          s,
+          fallback,
+          key_dim,
+          value_dim,
+          conv_dim,
+          kernel_size,
+          inv_scale,
+          eps),
+      /* inputs */
+      {q, k, v, bb, aa, al, db, cs, cw});
+}
+
+std::vector<array> gdn_norm_gated(
+    const array& out,
+    const array& z,
+    const array& weight,
+    float eps,
+    StreamOrDevice s_ /* = {} */) {
+  auto s = to_stream(s_);
+  auto o = astype(out, bfloat16, s);
+  auto zg = astype(z, bfloat16, s);
+  auto w = astype(weight, bfloat16, s);
+
+  auto fallback = [](std::vector<array> inputs) -> std::vector<array> {
+    throw std::runtime_error("gdn_norm_gated: fallback NYI (GPU only)");
+  };
+
+  return array::make_arrays(
+      /* output shapes */
+      {o.shape()},
+      /* dtypes */
+      {bfloat16},
+      /* primitive */
+      std::make_shared<GdnNormGated>(s, fallback, eps),
+      /* inputs */
+      {o, zg, w});
+}
+
+std::vector<array> gdn_fused_step(
+    const array& q_raw,
+    const array& k_raw,
+    const array& v_raw,
+    const array& b,
+    const array& a,
+    const array& A_log,
+    const array& dt_bias,
+    const array& conv_state,
+    const array& conv_weight,
+    const array& z_raw,
+    const array& state_raw,
+    const array& norm_weight,
+    float inv_scale,
+    float prep_eps,
+    float norm_eps,
+    StreamOrDevice s_ /* = {} */) {
+  auto s = to_stream(s_);
+
+  auto q = gdnf_make_row_contiguous(astype(q_raw, bfloat16, s), s);
+  auto k = gdnf_make_row_contiguous(astype(k_raw, bfloat16, s), s);
+  auto v = gdnf_make_row_contiguous(astype(v_raw, bfloat16, s), s);
+  auto bb = gdnf_make_row_contiguous(astype(b, bfloat16, s), s);
+  auto aa = gdnf_make_row_contiguous(astype(a, bfloat16, s), s);
+  auto al = gdnf_make_row_contiguous(astype(A_log, float32, s), s);
+  auto db = gdnf_make_row_contiguous(astype(dt_bias, float32, s), s);
+  auto cs = gdnf_make_row_contiguous(astype(conv_state, bfloat16, s), s);
+  auto cw = gdnf_make_row_contiguous(astype(conv_weight, bfloat16, s), s);
+  auto zg = gdnf_make_row_contiguous(astype(z_raw, bfloat16, s), s);
+  auto st = gdnf_make_row_contiguous(astype(state_raw, float32, s), s);
+  auto nw = gdnf_make_row_contiguous(astype(norm_weight, bfloat16, s), s);
+
+  int B = (int)q.shape(0);
+  int T = (int)q.shape(1);
+  int Hk = (int)q.shape(2) / 128;
+  int Hv = (int)v.shape(2) / 128;
+  int kernel_size = (int)cw.shape(1);
+
+  auto fallback = [B, T, Hk, Hv, s, inv_scale, prep_eps, norm_eps](
+                      std::vector<array> inputs) {
+    // The default 4-op chain, bit-identical to the model's default path
+    // (gdn_prep conv+silu+beta+g -> gdn_prep qk_norm -> r4d recurrent state
+    // update -> gdn_norm_gated). The conv-cache update is model-side either
+    // way, so it is not part of this op.
+    auto q = inputs[0];
+    auto k = inputs[1];
+    auto v = inputs[2];
+    auto bb = inputs[3];
+    auto aa = inputs[4];
+    auto al = inputs[5];
+    auto db = inputs[6];
+    auto cs = inputs[7];
+    auto cw = inputs[8];
+    auto zg = inputs[9];
+    auto st = inputs[10];
+    auto nw = inputs[11];
+
+    auto prep = gdn_prep(
+        q, k, v, bb, aa, al, db, cs, cw, inv_scale, prep_eps, s);
+    auto qn = prep[0];
+    auto kn = prep[1];
+    auto vc = prep[2];
+    auto beta = prep[3];
+    auto g = prep[4];
+    auto qn4 = reshape(qn, {B, T, (int)q.shape(2) / 128, 128}, s);
+    auto kn4 = reshape(kn, {B, T, (int)q.shape(2) / 128, 128}, s);
+    auto vc4 = reshape(vc, {B, T, (int)v.shape(2) / 128, 128}, s);
+    auto g4 = reshape(g, {B, T, (int)v.shape(2) / 128}, s);
+    auto beta4 = reshape(beta, {B, T, (int)v.shape(2) / 128}, s);
+    auto upd = gated_delta_update(qn4, kn4, vc4, g4, beta4, st, std::nullopt, s);
+    auto out2 = upd[0];
+    auto st2 = upd[1];
+    auto out3 = gdn_norm_gated(out2, zg, nw, norm_eps, s)[0];
+    return std::vector<array>{out3, st2};
+  };
+
+  if (!GdnFusedStep::use_fallback(B, T, 128, 128, Hv, Hk, kernel_size, s)) {
+    auto inputs = std::vector<array>{
+        q, k, v, bb, aa, al, db, cs, cw, zg, st, nw};
+    return array::make_arrays(
+        std::vector<Shape>{zg.shape(), st.shape()},
+        std::vector<Dtype>{bfloat16, float32},
+        std::make_shared<GdnFusedStep>(
+            s, fallback, inv_scale, prep_eps, norm_eps),
+        inputs);
+  }
+  // The 4-op fallback chain is unsafe for T>1: gdn_prep is 1-D-only and
+  // misinterprets multi-row inputs (out-of-bounds reads, GPU fault). Throw
+  // instead so A/B gating degrades to a clear error, not a hang.
+  throw std::invalid_argument(
+      "gdn_fused_step: fallback disabled for this shape (the 4-op chain is "
+      "1-D-only in gdn_prep and unsafe for T>1); use the model default "
+      "path (MLX_ROCM_GDN_FUSE=0) or T<=4 with MLX_ROCM_GDN_FUSE=1");
+}
+
+bool GdnFusedStepTape::use_fallback(
+    int B,
+    int T,
+    int Dk,
+    int Dv,
+    int Hv,
+    int Hk,
+    int kernel_size,
+    Stream s) {
+  // MLX_ROCM_GDN_TAPE=1 (DEFAULT OFF: the op is unreachable without it, so
+  // MLX_ROCM_GDN_TAPE=0/unset is a zero-behavior-change path). Same shape
+  // gate as GdnFusedStep (B=1, T<=4, Dk=Dv=128, kernel_size=4, GPU).
+  if (s.device == Device::cpu) {
+    return true;
+  }
+  const char* e = std::getenv("MLX_ROCM_GDN_TAPE");
+  if (e == nullptr || e[0] != '1') {
+    return true;
+  }
+  if (B != 1 || T > 4) {
+    return true;
+  }
+  if (Dk != 128 || Dv != 128) {
+    return true;
+  }
+  if (Hv % Hk != 0) {
+    return true;
+  }
+  if (kernel_size != 4) {
+    return true;
+  }
+  return false;
+}
+
+std::vector<array> gdn_fused_step_tape(
+    const array& q_raw,
+    const array& k_raw,
+    const array& v_raw,
+    const array& b,
+    const array& a,
+    const array& A_log,
+    const array& dt_bias,
+    const array& conv_state,
+    const array& conv_weight,
+    const array& z_raw,
+    const array& state_raw,
+    const array& norm_weight,
+    float inv_scale,
+    float prep_eps,
+    float norm_eps,
+    StreamOrDevice s_ /* = {} */) {
+  auto s = to_stream(s_);
+
+  auto q = gdnf_make_row_contiguous(astype(q_raw, bfloat16, s), s);
+  auto k = gdnf_make_row_contiguous(astype(k_raw, bfloat16, s), s);
+  auto v = gdnf_make_row_contiguous(astype(v_raw, bfloat16, s), s);
+  auto bb = gdnf_make_row_contiguous(astype(b, bfloat16, s), s);
+  auto aa = gdnf_make_row_contiguous(astype(a, bfloat16, s), s);
+  auto al = gdnf_make_row_contiguous(astype(A_log, float32, s), s);
+  auto db = gdnf_make_row_contiguous(astype(dt_bias, float32, s), s);
+  auto cs = gdnf_make_row_contiguous(astype(conv_state, bfloat16, s), s);
+  auto cw = gdnf_make_row_contiguous(astype(conv_weight, bfloat16, s), s);
+  auto zg = gdnf_make_row_contiguous(astype(z_raw, bfloat16, s), s);
+  auto st = gdnf_make_row_contiguous(astype(state_raw, float32, s), s);
+  auto nw = gdnf_make_row_contiguous(astype(norm_weight, bfloat16, s), s);
+
+  int B = (int)q.shape(0);
+  int T = (int)q.shape(1);
+  int Hk = (int)q.shape(2) / 128;
+  int Hv = (int)v.shape(2) / 128;
+  int kernel_size = (int)cw.shape(1);
+
+  auto fallback = [](std::vector<array> inputs) -> std::vector<array> {
+    // There is NO chain fallback: the per-row state tapes are emitted by
+    // the fused recurrence kernel only. The use_fallback gate (env +
+    // shape) makes the op unreachable when the tape is off/disabled, so
+    // this only fires on a direct call with the gate bypassed.
+    throw std::runtime_error(
+        "gdn_fused_step_tape: no fallback (the 4-op chain emits no "
+        "per-row state tapes); require MLX_ROCM_GDN_TAPE=1 on the ROCm "
+        "GPU with B=1, T<=4, Dk=Dv=128, kernel_size=4");
+  };
+
+  if (!GdnFusedStepTape::use_fallback(B, T, 128, 128, Hv, Hk, kernel_size, s)) {
+    auto inputs = std::vector<array>{
+        q, k, v, bb, aa, al, db, cs, cw, zg, st, nw};
+    int conv_dim = 2 * (int)q.shape(2) + (int)v.shape(2);
+    return array::make_arrays(
+        std::vector<Shape>{
+            zg.shape(),
+            st.shape(),
+            {T, Hv, 128, 128},
+            {T, 3, conv_dim}},
+        std::vector<Dtype>{bfloat16, float32, float32, bfloat16},
+        std::make_shared<GdnFusedStepTape>(
+            s, fallback, inv_scale, prep_eps, norm_eps),
+        inputs);
+  }
+  throw std::invalid_argument(
+      "gdn_fused_step_tape: tape unavailable for this shape (require "
+      "MLX_ROCM_GDN_TAPE=1 on the ROCm GPU with B=1, T<=4, Dk=Dv=128, "
+      "kernel_size=4); the tape has no 4-op-chain fallback (per-row "
+      "state tapes are emitted by the fused recurrence kernel only)");
 }
 
 std::vector<array> ScaledDotProductAttention::vjp(

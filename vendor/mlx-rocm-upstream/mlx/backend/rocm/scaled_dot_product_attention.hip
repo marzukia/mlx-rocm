@@ -13,6 +13,7 @@
 #include <hip/hip_bfloat16.h>
 #include <hip/hip_runtime.h>
 #include <cmath>
+#include <cstdlib>
 
 namespace mlx::core {
 
@@ -30,6 +31,7 @@ struct AttnParams {
   int kL;
   int gqa_factor;
   float scale;
+  bool do_causal; // m8: runtime (single code path - T-invariant)
   int64_t Q_strides[3];
   int64_t K_strides[3];
   int64_t V_strides[3];
@@ -65,9 +67,10 @@ __device__ __forceinline__ T tile_reduce_max_32(T val) {
   return val;
 }
 
-// Single-pass SDPA kernel for short sequences
+// Single-pass SDPA kernel for short sequences (m8: runtime causal mask -
+// single template instantiation per (dtype, D) so rows are T-invariant)
 // Uses 32-thread tiles for consistent behavior across architectures
-template <typename T, bool do_causal, int D>
+template <typename T, int D>
 __global__ void kernel_sdpav_1pass(
     const T* Q,
     const T* K,
@@ -132,7 +135,7 @@ __global__ void kernel_sdpav_1pass(
   // Process keys
   for (int i = kv_seq_idx; i < params.kL; i += BN) {
     bool use_key = true;
-    if constexpr (do_causal) {
+    if (params.do_causal) {
       use_key = i <= (params.kL - params.qL + q_seq_idx);
     }
 
@@ -205,6 +208,18 @@ __global__ void kernel_sdpav_1pass(
 } // namespace rocm
 
 // Forward declarations
+// verify-attention: the S=4 (qL == 4, K=3 spec-decode verify batch)
+// extension to the 1-pass vector kernel. DEFAULT OFF - engages only under
+// MLX_ROCM_SDPA_S4VA=1; with the env unset the gate is the stock
+// `query_sequence_length < 4` exactly.
+bool s4va_enabled() {
+  static const bool en = [] {
+    const char* e = std::getenv("MLX_ROCM_SDPA_S4VA");
+    return e != nullptr && e[0] == '1';
+  }();
+  return en;
+}
+
 bool supports_sdpa_vector(
     const array& q,
     const array& k,
@@ -249,8 +264,19 @@ bool supports_sdpa_vector(
       (query_head_dim == 64 || query_head_dim == 96 || query_head_dim == 128 ||
        query_head_dim == 256);
 
-  const bool supported_vector_config =
-      sdpa_supported_head_dim && query_sequence_length < 4;
+  // verify-attention: the 1-pass kernel is row-independent (grid (H, qL, B))
+  // and is T-invariant per row under the runtime-causal mask (m8 single-
+  // instantiation), so it can take qL == 4 (the K=3 spec-decode verify
+  // batch) instead of falling through to the scalar flash (prefill)
+  // kernel, which serializes the key scan into a handful of threads per
+  // head. DEFAULT OFF: the extension engages only under
+  // MLX_ROCM_SDPA_S4VA=1 (qL == 4 rows go to the vector kernel); with the
+  // env unset the gate is the stock `query_sequence_length < 4` exactly,
+  // so the no-graft behavior is bit-identical.
+const bool supported_vector_config =
+      sdpa_supported_head_dim &&
+      (query_sequence_length < 4 ||
+       (query_sequence_length == 4 && s4va_enabled()));
 
   return supported_vector_config && !has_arr_mask;
 }
@@ -286,6 +312,7 @@ void sdpa_vector(
   params.kL = kL;
   params.gqa_factor = gqa_factor;
   params.scale = scale;
+  params.do_causal = do_causal;
   params.Q_strides[0] = q.strides(0);
   params.Q_strides[1] = q.strides(1);
   params.Q_strides[2] = q.strides(2);
@@ -313,13 +340,15 @@ void sdpa_vector(
     dim3 grid_dim(H, qL, B);
     dim3 block_dim(1024, 1, 1); // 32 tiles * 32 threads = 1024
 
-    auto launch_kernel = [&](auto type_tag, auto causal_tag, auto headdim_tag) {
+    // m8: single runtime-mask kernel (no compile-time causal split) so the
+    // S=2 causal row 1 (all keys visible) and the S=1 no-mask row (all keys
+    // visible) use the same compiled code and are bit-identical per row.
+    auto launch_kernel = [&](auto type_tag, auto headdim_tag) {
       using DataType = decltype(type_tag);
-      constexpr bool causal = decltype(causal_tag)::value;
       constexpr int headdim = decltype(headdim_tag)::value;
 
       encoder.add_kernel_node(
-          &rocm::kernel_sdpav_1pass<DataType, causal, headdim>,
+          &rocm::kernel_sdpav_1pass<DataType, headdim>,
           grid_dim,
           block_dim,
           0,
@@ -333,105 +362,32 @@ void sdpa_vector(
 
     // Dispatch based on dtype, causal, and head dimension
     if (o.dtype() == float32) {
-      if (do_causal) {
-        if (D == 64)
-          launch_kernel(
-              float(), std::true_type(), std::integral_constant<int, 64>());
-        else if (D == 96)
-          launch_kernel(
-              float(), std::true_type(), std::integral_constant<int, 96>());
-        else if (D == 128)
-          launch_kernel(
-              float(), std::true_type(), std::integral_constant<int, 128>());
-        else if (D == 256)
-          launch_kernel(
-              float(), std::true_type(), std::integral_constant<int, 256>());
-      } else {
-        if (D == 64)
-          launch_kernel(
-              float(), std::false_type(), std::integral_constant<int, 64>());
-        else if (D == 96)
-          launch_kernel(
-              float(), std::false_type(), std::integral_constant<int, 96>());
-        else if (D == 128)
-          launch_kernel(
-              float(), std::false_type(), std::integral_constant<int, 128>());
-        else if (D == 256)
-          launch_kernel(
-              float(), std::false_type(), std::integral_constant<int, 256>());
-      }
+      if (D == 64)
+        launch_kernel(float(), std::integral_constant<int, 64>());
+      else if (D == 96)
+        launch_kernel(float(), std::integral_constant<int, 96>());
+      else if (D == 128)
+        launch_kernel(float(), std::integral_constant<int, 128>());
+      else if (D == 256)
+        launch_kernel(float(), std::integral_constant<int, 256>());
     } else if (o.dtype() == float16) {
-      if (do_causal) {
-        if (D == 64)
-          launch_kernel(
-              __half(), std::true_type(), std::integral_constant<int, 64>());
-        else if (D == 96)
-          launch_kernel(
-              __half(), std::true_type(), std::integral_constant<int, 96>());
-        else if (D == 128)
-          launch_kernel(
-              __half(), std::true_type(), std::integral_constant<int, 128>());
-        else if (D == 256)
-          launch_kernel(
-              __half(), std::true_type(), std::integral_constant<int, 256>());
-      } else {
-        if (D == 64)
-          launch_kernel(
-              __half(), std::false_type(), std::integral_constant<int, 64>());
-        else if (D == 96)
-          launch_kernel(
-              __half(), std::false_type(), std::integral_constant<int, 96>());
-        else if (D == 128)
-          launch_kernel(
-              __half(), std::false_type(), std::integral_constant<int, 128>());
-        else if (D == 256)
-          launch_kernel(
-              __half(), std::false_type(), std::integral_constant<int, 256>());
-      }
+      if (D == 64)
+        launch_kernel(__half(), std::integral_constant<int, 64>());
+      else if (D == 96)
+        launch_kernel(__half(), std::integral_constant<int, 96>());
+      else if (D == 128)
+        launch_kernel(__half(), std::integral_constant<int, 128>());
+      else if (D == 256)
+        launch_kernel(__half(), std::integral_constant<int, 256>());
     } else if (o.dtype() == bfloat16) {
-      if (do_causal) {
-        if (D == 64)
-          launch_kernel(
-              hip_bfloat16(),
-              std::true_type(),
-              std::integral_constant<int, 64>());
-        else if (D == 96)
-          launch_kernel(
-              hip_bfloat16(),
-              std::true_type(),
-              std::integral_constant<int, 96>());
-        else if (D == 128)
-          launch_kernel(
-              hip_bfloat16(),
-              std::true_type(),
-              std::integral_constant<int, 128>());
-        else if (D == 256)
-          launch_kernel(
-              hip_bfloat16(),
-              std::true_type(),
-              std::integral_constant<int, 256>());
-      } else {
-        if (D == 64)
-          launch_kernel(
-              hip_bfloat16(),
-              std::false_type(),
-              std::integral_constant<int, 64>());
-        else if (D == 96)
-          launch_kernel(
-              hip_bfloat16(),
-              std::false_type(),
-              std::integral_constant<int, 96>());
-        else if (D == 128)
-          launch_kernel(
-              hip_bfloat16(),
-              std::false_type(),
-              std::integral_constant<int, 128>());
-        else if (D == 256)
-          launch_kernel(
-              hip_bfloat16(),
-              std::false_type(),
-              std::integral_constant<int, 256>());
-      }
+      if (D == 64)
+        launch_kernel(hip_bfloat16(), std::integral_constant<int, 64>());
+      else if (D == 96)
+        launch_kernel(hip_bfloat16(), std::integral_constant<int, 96>());
+      else if (D == 128)
+        launch_kernel(hip_bfloat16(), std::integral_constant<int, 128>());
+      else if (D == 256)
+        launch_kernel(hip_bfloat16(), std::integral_constant<int, 256>());
     }
   }
 }
