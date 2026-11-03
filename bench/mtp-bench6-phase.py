@@ -120,10 +120,17 @@ def main():
     mode = os.environ.get("MLX_MTP", "0")
     assert mode in ("0", "1", "2", "3", "4"), mode
     mtp_on = mode in ("1", "2", "3", "4")
-    accept = os.environ.get("MTP6_ACCEPT", "savestate")
-    assert accept in ("savestate", "tape"), accept
+    # MTP6_TAPE: 0=savestate (canonical), 1=pure tape (round-1 measured),
+    # hybrid (round-2: tape commit + S=1 correction forward, h from the
+    # correction forward). Legacy MTP6_ACCEPT alias: tape -> hybrid.
+    tape_mode = os.environ.get("MTP6_TAPE", "")
+    if not tape_mode:
+        legacy = os.environ.get("MTP6_ACCEPT", "savestate")
+        assert legacy in ("savestate", "tape"), legacy
+        tape_mode = "0" if legacy == "savestate" else "hybrid"
+    assert tape_mode in ("0", "1", "hybrid"), tape_mode
     mtptrim = os.environ.get("MTP6_MTPTRIM", "0") == "1"
-    if mode == "4" and accept == "tape":
+    if mode == "4" and tape_mode in ("1", "hybrid"):
         os.environ["MLX_ROCM_GDN_TAPE"] = "1"
         os.environ["MLX_ROCM_GDN_FUSE"] = "1"
     t0 = time.time()
@@ -355,40 +362,78 @@ def main():
             acc("commit", time.perf_counter() - tc0)
         else:
             # Verify step (from S_k, drafts D1, D2, D3). BATCHED S=4.
+            # MTP6_TAPE: 0=savestate (canonical), 1=pure tape (round-1
+            # measured: h from the batched S=4 row), hybrid (round-2: h
+            # from the S=1 correction forward).
             d1, d2, d3 = draft1, draft2, draft3
             draft1 = draft2 = draft3 = None
             verifies += 1
             tv0 = time.perf_counter()
-            if accept == "tape":
-                logits, hidden = lm(
-                    mx.array([[prev_token, d1, d2, d3]]),
-                    cache=cache,
-                    return_hidden=True,
-                    return_prenorm=True,
-                )
-            else:
+            if tape_mode == "0":
                 saved = save_gdn(cache)
-                logits, hidden = lm(
-                    mx.array([[prev_token, d1, d2, d3]]),
-                    cache=cache,
-                    return_hidden=True,
-                    return_prenorm=True,
-                )
+            logits, hidden = lm(
+                mx.array([[prev_token, d1, d2, d3]]),
+                cache=cache, return_hidden=True, return_prenorm=True,
+            )
             acc("verify", time.perf_counter() - tv0)
             tc0 = time.perf_counter()
             l0, l1, l2, l3 = logits[0, 0], logits[0, 1], logits[0, 2], logits[0, 3]
+            hb0, hb1, hb2, hb3 = hidden[0, 0], hidden[0, 1], hidden[0, 2], hidden[0, 3]
+            did_commit = False
 
-            def commit(krow):
+            def commit(krow, prefix):
                 # tape: select the per-row GDN state-tape row and rebind
                 # the cache leaves (lazy). lengths is None in this model.
-                for i, c in enumerate(cache):
-                    if hasattr(c, "cache"):
-                        st, cstab = lm.model.layers[i].linear_attn.last_tape
-                        c[1] = st[krow].reshape((1,) + st[krow].shape)
-                        c[0] = cstab[krow].reshape((1,) + cstab[krow].shape)
-                for c in cache:
-                    if isinstance(c, KVCache):
-                        c.trim(3 - krow)
+                nonlocal n_tape
+                tape_avail = tape_mode in ("1", "hybrid")
+                if tape_avail:
+                    try:
+                        st0 = lm.model.layers[0].linear_attn.last_tape[0]
+                        tape_avail = st0 is not None
+                    except Exception:
+                        tape_avail = False
+                if tape_avail:
+                    for i, c in enumerate(cache):
+                        if hasattr(c, "cache"):
+                            st, cstab = lm.model.layers[i].linear_attn.last_tape
+                            c[1] = st[krow].reshape((1,) + st[krow].shape)
+                            c[0] = cstab[krow].reshape((1,) + cstab[krow].shape)
+                    for c in cache:
+                        if isinstance(c, KVCache):
+                            c.trim(3 - krow)
+                    n_tape += 1
+                else:
+                    restore_gdn(cache, saved)
+                    for c in cache:
+                        if isinstance(c, KVCache):
+                            c.trim(4)
+                    for pt in prefix:
+                        lm(mx.array([[pt]]), cache=cache)
+
+            def reject(krow, lk, hb, ktrim, prefix, ctoken):
+                # Rejected step: commit the tape row (or canonical restore
+                # + re-forward of the accepted prefix), trim mtp_cache,
+                # run ONE S=1 correction forward, then choose (l, h) by
+                # mode: pure = batched row logits + batched S=4 row h;
+                # hybrid / savestate = the correction forward's own
+                # logits + S=1 sequential pre-norm h.
+                nonlocal l, h, n_refwd, did_commit
+                commit(krow, prefix)
+                mtp_cache[0].trim(ktrim)
+                acc("commit", time.perf_counter() - tc0)
+                tc1 = time.perf_counter()
+                logits, hidden = lm(
+                    mx.array([[ctoken]]), cache=cache,
+                    return_hidden=True, return_prenorm=True,
+                )
+                acc("correction", time.perf_counter() - tc1)
+                if tape_mode == "1":
+                    l, h = lk, hb
+                else:
+                    l, h = logits[0, 0], hidden[0, 0]
+                out.append(ctoken)
+                n_refwd += 1
+                did_commit = True
 
             t2 = int(mx.argmax(l0))
             if t2 == EOS:
@@ -408,79 +453,15 @@ def main():
                     if t4 == d3:
                         d3_acc += 1
                         out.append(t4)
-                        l, h = l3, hidden[0, 3]
+                        l, h = l3, hb3
                     else:
-                        if accept == "tape":
-                            commit(2)
-                            mtp_cache[0].trim(1)
-                            logits, hidden = lm(
-                                mx.array([[t4]]), cache=cache, return_hidden=True, return_prenorm=True
-                            )
-                            l, h = logits[0, 0], hidden[0, 0]
-                            out.append(t4)
-                            n_refwd += 1
-                            n_tape += 1
-                        else:
-                            out.append(t4)
-                            restore_gdn(cache, saved)
-                            for c in cache:
-                                if isinstance(c, KVCache):
-                                    c.trim(4)
-                            logits, hidden = lm(
-                                mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True
-                            )
-                            logits, hidden = lm(mx.array([[d1]]), cache=cache, return_hidden=True, return_prenorm=True)
-                            logits, hidden = lm(mx.array([[d2]]), cache=cache, return_hidden=True, return_prenorm=True)
-                            logits, hidden = lm(mx.array([[t4]]), cache=cache, return_hidden=True, return_prenorm=True)
-                            l, h = logits[0, -1], hidden[0, -1]
-                            n_refwd += 4
+                        reject(2, l2, hb2, 1, [prev_token, d1, d2], t4)
                 else:
-                    if accept == "tape":
-                        commit(1)
-                        mtp_cache[0].trim(2)
-                        logits, hidden = lm(
-                            mx.array([[t3]]), cache=cache, return_hidden=True, return_prenorm=True
-                        )
-                        l, h = logits[0, 0], hidden[0, 0]
-                        out.append(t3)
-                        n_refwd += 1
-                        n_tape += 1
-                    else:
-                        out.append(t3)
-                        restore_gdn(cache, saved)
-                        for c in cache:
-                            if isinstance(c, KVCache):
-                                c.trim(4)
-                        logits, hidden = lm(
-                            mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True
-                        )
-                        logits, hidden = lm(mx.array([[d1]]), cache=cache, return_hidden=True, return_prenorm=True)
-                        logits, hidden = lm(mx.array([[t3]]), cache=cache, return_hidden=True, return_prenorm=True)
-                        l, h = logits[0, -1], hidden[0, -1]
-                        n_refwd += 3
+                    reject(1, l1, hb1, 2, [prev_token, d1], t3)
             else:
-                if accept == "tape":
-                    commit(0)
-                    mtp_cache[0].trim(3)
-                    logits, hidden = lm(
-                        mx.array([[t2]]), cache=cache, return_hidden=True, return_prenorm=True
-                    )
-                    l, h = logits[0, 0], hidden[0, 0]
-                    out.append(t2)
-                    n_refwd += 1
-                    n_tape += 1
-                else:
-                    out.append(t2)
-                    restore_gdn(cache, saved)
-                    for c in cache:
-                        if isinstance(c, KVCache):
-                            c.trim(4)
-                    logits, hidden = lm(mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True)
-                    logits, hidden = lm(mx.array([[t2]]), cache=cache, return_hidden=True, return_prenorm=True)
-                    l, h = logits[0, -1], hidden[0, -1]
-                    n_refwd += 2
-
-            acc("commit", time.perf_counter() - tc0)
+                reject(0, l0, hb0, 3, [prev_token], t2)
+            if not did_commit:
+                acc("commit", time.perf_counter() - tc0)
 
     t_gen = time.time() - t1
     t_elapsed = time.time() - t0
@@ -507,9 +488,9 @@ def main():
     import mlx_lm.models.qwen3_5 as _m5
 
     print(
-        "INFO ACCEPT=%s REFWDS=%d TAPE_COMMITS=%d GDN_TAPE_CALLS=%d INT2=%s MTPTRIM=%s"
+        "INFO TAPEMODE=%s REFWDS=%d TAPE_COMMITS=%d GDN_TAPE_CALLS=%d INT2=%s MTPTRIM=%s"
         % (
-            accept,
+            tape_mode,
             n_refwd,
             n_tape,
             getattr(_m5, "GDN_TAPE_CALLS", -1),
@@ -519,20 +500,22 @@ def main():
         flush=True,
     )
     print(
-        "PHASE prefill=%.1fms draft=%.1fms verify=%.1fms commit=%.1fms ar=%.1fms"
+        "PHASE prefill=%.1fms draft=%.1fms verify=%.1fms commit=%.1fms correction=%.1fms ar=%.1fms"
         % (
             1000.0 * PT.get("prefill", 0.0),
             1000.0 * PT.get("draft", 0.0),
             1000.0 * PT.get("verify", 0.0),
             1000.0 * PT.get("commit", 0.0),
+            1000.0 * PT.get("correction", 0.0),
             1000.0 * PT.get("ar", 0.0),
         ),
         flush=True,
     )
     print(
-        "PHASE_PCT prefill=%.1f draft=%.1f verify=%.1f commit=%.1f ar=%.1f"
+        "PHASE_PCT prefill=%.1f draft=%.1f verify=%.1f commit=%.1f correction=%.1f ar=%.1f"
         % tuple(
-            100.0 * PT.get(k, 0.0) / t_gen if t_gen else 0.0 for k in ("prefill", "draft", "verify", "commit", "ar")
+            100.0 * PT.get(k, 0.0) / t_gen if t_gen else 0.0
+            for k in ("prefill", "draft", "verify", "commit", "correction", "ar")
         ),
         flush=True,
     )
