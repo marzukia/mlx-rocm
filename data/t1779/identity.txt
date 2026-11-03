@@ -1,0 +1,7 @@
+[22:29:35] start PA
+[22:30:07] done PA rc=0
+[22:30:07] start PG
+[22:30:38] done PG rc=0
+[22:30:38] start PB
+[22:31:08] done PB rc=0
+ALLDONE 22:31:09
