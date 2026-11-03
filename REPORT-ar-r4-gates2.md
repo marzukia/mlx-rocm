@@ -19,8 +19,14 @@ TL;DR:
   `state_new.copy_shared_buffer(st)` instead of the fresh malloc. In-place safety
   verified in the fused kernel: each thread loads its h[64] tile into registers
   BEFORE the row loop and writes `state_new` only AFTER it.
-- Gate re-run: see below (Gate 1 + Gate 2, 400-tok protocol, same session, t1769
-  scripts).
+- Gate re-run (new wheel, 400-tok protocol, same session): Gate 1 LOSSLESS FAIL (G1
+  still period-4: first 5 tokens match A1, attractor through idx 228, escape at
+  229 into a 29006-family loop; A1 tokens bit-identical to t1769), Gate 2 SPEED
+  FAIL (G 65.26 vs A 71.50 = -8.7%). The fix FIRES (9528 in-place aliases,
+  st==state_new) and CHANGES the ssm dynamics (pre-fix PG ssm state was a strict
+  period-4 cycle; post-fix it is evolving/chained) — the remaining attractor
+  points to the conv state (python-side, non-in-place in both paths) as the
+  dominant residual. Stopped per brief.
 
 ## Probe evidence
 
@@ -34,12 +40,10 @@ REFWD_M1=1 GDN_FUSE=1 MTP=0). Per-step md5 of 24 GDN-layer ssm state samples
 
 Tokens (first 24 post-capture decode):
 - PA: 271 1919 369 264 15352 11 70042 29006 314 1204 264 6278 20853 5568 13 357 20853 369 34383 279 1379 6150 6365 314
-  (v2.1-probe-protocol eager trajectory; first 5 tokens == the gate A-arm prefix
-  271 1919 369 264 15352; token 6 onward differs from the gate A arm
-  (8214 5529 11 ...) because the probe prefills differently than the mtp-bench6
-  S=4-chunk A arm — the within-run PA-vs-PG comparison below is the relevant one)
+  (== the t1769 gate A1 FIRST20 exactly: 271 1919 369 264 15352 11 70042 29006 314 1204 264 6278 20853 5568 13 357
+    20853 369 34383 279 — the probe reproduces the gate A arm)
 - PG: 271 1919 369 264 15352 8214 5529 264 15352 8214 5529 264 15352 8214 5529 ...
-  (== the gate G1 period-4 attractor 264 15352 8214 5529, locked from step 5)
+  (== the t1769 gate G1 FIRST20 exactly: the period-4 attractor 264 15352 8214 5529, locked from step 5)
 
 Both arms share the first 5 tokens (271 1919 369 264 15352) and then diverge.
 
@@ -132,7 +136,64 @@ the conv-state update (python-side `mx.contiguous`, see residual suspect below).
 
 ## Gate re-run (protocol per t1771/t1769, 400 tokens, same session)
 
-[awaiting results]
+New wheel: sha256 25ad0a0b731e1197 (mlx-0.32.3.dev20261103+75ca881), LIBMD5 790dac8a
+(the t1769/t1771 library md5 was b4d206b4). Graft evidence intact (gdidx=8,
+gather_rows_ind=264, gdn_fused_step=92) + fix marker present (GDNF-DBG=1).
+
+### Gate 1 (lossless): FAIL
+
+- A1 (eager, t1779 wheel): 71.50 t/s; FIRST20 = 271 1919 369 264 15352 11 70042 29006 314 1204 264 6278 20853 5568
+    13 357 20853 369 34383 279 — bit-identical tokens to t1769 A1 (72.11 t/s; -0.8% speed = run variance). Eager path
+    unaffected by the fix.
+- G1 (graph, t1779 wheel): 65.26 t/s; FIRST20 = 271 1919 369 264 15352 8214 5529 264 15352 8214 5529 264 15352 8214
+    5529 264 15352 8214 5529 264 — STILL the period-4 attractor. ALLTOKS: period-4 through idx 228, escapes at idx 229
+    into a 29006/314/10288-family attractor (t1769 G1: cycle through idx 229, escape at 230 into the same family). md5
+    mismatch A vs G persists.
+
+### Gate 2 (speed): FAIL
+
+- G 65.26 t/s vs A 71.50 t/s = -8.7% same-session (t1769: -9.8%). No change.
+
+### Diagnostic evidence that the F-branch fix fires and works
+
+- G1 re-run with MLX_GDN_DEBUG=1: **9528 GDNF-DBG lines** (st == state_new, same VA on every line; 24 stable per-
+    layer state VAs, 397 steps each — the host state arrays are pinned after capture). The alias fires on every replay-
+    step enqueue, including at capture.
+- None of the 24 aliased state VAs appears in any [g1t] arena trace line (g1t=0) — the traced arena ops do not
+    reuse the state VAs.
+- Post-fix probe (PA2/PG2, 24 steps, v2.1 methodology):
+  - PG2 ssm state is EVOLVING: all of s4..s23 pairwise-unique (cyc4=False, frozen=False).
+  - Pre-fix PG (t1771 wheel) ssm state was a STRICT period-4 cycle (s_k == s_{k+4} for all k; cyc4=True).
+  - => the in-place alias CHANGED the replayed ssm dynamics from a frozen-read 4-cycle to a properly chained,
+    evolving state. The v2.1-pattern mechanism works on the live F-branch op.
+  - PG2 tokens are nonetheless still period-4-locked (== G1 attractor), while PA2 == A1 tokens (24/24).
+- Provenance note: PA (t1771-wheel eager) vs PA2 (t1779-wheel eager) tokens are identical (24/24; both == t1769 A1
+    FIRST20) but the ssm state md5s differ from s0 (24/24 layers). The t1779 wheel was built from vendor-r4v HEAD
+    75ca881 ("t761: fix gdn_prep launcher"), which postdates the t1769/t1771 build tree; the F-branch fix is mode-gated
+    and code-identical on the eager path, so this is a pre-existing tree/build difference (likely the gdn_prep launcher
+    fix itself), not a regression from this change.
+
+### Interpretation
+
+- The F-branch GDN ssm state was one of the non-in-place recurrent states in the gate config (the v2.1 fix never
+    reached it); it is now in-place and chains at replay.
+- The period-4 attractor persists => the DOMINANT remaining non-in-place recurrent state is the conv state:
+    `cache[0] = mx.contiguous(conv_input[:, -n_keep:, :])` (python-side, shared by both paths) is a recorded copy whose
+    source chain (the concat/conv kernels) reads the pre-capture conv-state buffer VA at replay — the same stale-read
+    class, and it cannot be made in-place from python. (The K=4 value-slot path at copy.hip:343 remains a secondary
+    suspect.)
+- Gate 1 FAIL and Gate 2 FAIL persist. Per the run brief: report the numbers and stop.
+
+## Next-round suggestion
+
+1. Conv-state in-place: extend the F-branch fused op (or a small new op) to also emit the conv-state shift (the
+    3-row slide of [cs0, cs1, cs2, v0]) and, in graph_decode_mode, write it in-place into the conv-state buffer
+    (mirroring this fix's pattern); update qwen3_5.py to take the conv state from the op output instead of
+    `mx.contiguous`. Re-run Gate 1 + Gate 2.
+2. If the attractor persists: instrument the recorded GDN node's actual read VA vs the aliased write VA at replay
+    (op-arg tracing) to rule out a recorded-argument VA mismatch, and check the K=4 value-slot path at copy.hip:343.
+3. Gate 3 (MTP4) re-run with the new wheel (the F-branch op serves S=4 verify; the in-place branch is mode-gated
+    and the guard runs under graph decode — acceptance 137/87/49 should be re-verified).
 
 ## Residual suspect if the gate still FAILs
 

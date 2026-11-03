@@ -1,0 +1,26 @@
+Secondary CUID not available: AMDCUID support not enabled.
+[mlx-rocm] bound HIP device 0: gfx1201 (AMD Radeon RX 9070 XT) cus=32 warp=32 lds=64KB
+[mlx-rocm] gfx1201 native_wmma=1 cus=32 (reported=32) warp=32 low_cu=0 host_WARP_SIZE=32
+MTP=0 LOAD=2.02 GEN=5.59 TOKS=400 TOKS_S=71.50 VERIFIES=0 D1ACC=0 D2ACC=0 D3ACC=0 D1PCT=0.0 D2PCT=0.0 D3PCT=0.0 TOK_PER_STEP=0.000
+FIRST16: 271 1919 369 264 15352 11 70042 29006 314 1204 264 6278 20853 5568 13 357
+FIRST20: 271 1919 369 264 15352 11 70042 29006 314 1204 264 6278 20853 5568 13 357 20853 369 34383 279
+ALLTOKS: 271 1919 369 264 15352 11 70042 29006 314 1204 264 6278 20853 5568 13 357 20853 369 34383 279 1379 6150 6365 314 11171 29496 3397 26654 11 52046 8765 314 7752 329 2978 11 24296 11 321 21461 5306 1083 264 3545 8882 1056 264 9249 314 7176 13 271 1206 3418 424 11 567 1902 401 7355 279 3545 1083 1141 2943 5839 13224 25 2972 760 35547 318 37955 22028 221719 2972 760 7185 9268 93868 2972 760 92733 93868 2972 760 33969 717 318 18668 22028 221719 321 2972 760 2570 19409 159034 271 4277 271 13962 220 16 13 561 35547 22028 318 760 26492 4846 8 198 760 11436 369 279 328 2513 1 314 279 4392 13 1049 16661 314 279 67594 26341 8486 318 4716 33 681 279 717 383 29900 318 4272 34 681 4779 11 321 5090 33443 51010 82 13 271 794 357 13 561 717 383 29900 318 4272 34 8 198 760 1987 34 369 279 7853 314 279 4392 13 733 6278 7370 318 4650 7905 579 357 54439 466 59329 579 79222 681 279 13540 11 21966 11 58439 27212 7703 318 45 6126 681 321 49768 513 660 17708 8366 264 3074 48889 2659 13 198 9 256 2972 30576 318 41968 27212 7703 188912 561 4437 56279 17128 13 1049 49703 10895 364 279 10042 1785 321 3870 8806 13 17722 63266 958 264 328 15679 1173 58082 1 17120 11 25936 1496 55549 328 15679 1 34523 440 4649 70342 328 53532 1 34523 310 7915 4478 321 11269 2199 13 198 9 256 2972 48213 318 20030 27212 7703 188912 9493 1452 364 14835 8427 13 1049 42812 279 8851 3622 11 3739 11 321 2678 30907 13 1049 13081 279 45632 1954 314 220 18 35 13775 1083 15289 13 198 9 256 2972 45 6126 318 8547 4038 27212 7703 188912 357 11886 11436 62183 364 14791 8806 318 68 1257 2487 3460 14617 11 1865 7019 14053 11 2099 25932 553 1049 369 11602 777 2279 70342 1056 279 13540 364 5484 6618 8806 13 198 9 256 2972 53643 318 1841 26352 41943 188912 357 11886 15911 421 11036 6891 795 494 279 6053 24296 13 1049 13081 11639 13550 11 52566 51586 11 321 1829 25423 1518 279 795 1442 23716 279 1822 13540 13
+TEXT: 
+
+This is a comprehensive, exhaustive breakdown of how a modern smartphone functions. A smartphone is arguably the most complex piece of consumer electronics ever manufactured, integrating thousands of microchips, sensors, and mechanical parts into a device smaller than a deck of cards.
+
+To understand it, we must deconstruct the device into its four primary layers: **The Hardware (Physical Layer)**, **The Power Management**, **The Connectivity**, **The Operating System (Software Layer)**, and **The User Interface**.
+
+---
+
+### 1. The Hardware Layer (The Physical Foundation)
+The hardware is the "body" of the phone. It consists of the Printed Circuit Board (PCB), the System on Chip (SoC), memory, and various peripheral subsystems.
+
+#### A. The System on Chip (SoC)
+The SoC is the brain of the phone. In modern devices (like Apple's A-series or Qualcomm's Snapdragon), the CPU, GPU, Neural Processing Unit (NPU), and modem are all integrated onto a single silicon die.
+*   **CPU (Central Processing Unit):** The general-purpose processor. It executes instructions for the operating system and background tasks. Modern CPUs use a "big.LITTLE" architecture, mixing high-performance "big" cores with energy-efficient "little" cores to balance speed and battery life.
+*   **GPU (Graphics Processing Unit):** Specialized for parallel processing. It renders the visual interface, games, and video playback. It handles the rasterization of 3D graphics into pixels.
+*   **NPU (Neural Processing Unit):** A dedicated hardware accelerator for AI tasks (e.g., face unlock, real-time translation, image enhancement). It is significantly more power-efficient than the CPU for machine learning tasks.
+*   **ISP (Image Signal Processor):** A dedicated chip that processes raw data from the camera sensors. It handles noise reduction, HDR merging, and color correction before the data even reaches the main CPU.
+Warning: Resource leak detected by SharedSignalPool, 3360 Signals leaked.
+RC=0
