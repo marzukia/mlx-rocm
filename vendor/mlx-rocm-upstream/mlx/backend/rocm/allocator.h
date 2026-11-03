@@ -174,8 +174,8 @@ class RocmAllocator : public allocator::Allocator {
   // VA so the re-run node propagates the NEW token into the slot; the VA is a
   // stable arena input slot (preserved above the floor).
   void decode_idx_set_src_va(void* va, size_t nbytes);
-  void* decode_idx_src_va() const;
-  size_t decode_idx_src_nbytes() const;
+  void* decode_idx_src_va();
+  size_t decode_idx_src_nbytes();
   // GD-idx (R4): the persistent staging source buffer (lazy hipMalloc; the
   // pilot materializes it BEFORE the capture window — a hip* during a
   // capture invalidates it on ROCm 10.1). Never freed: the VA is baked

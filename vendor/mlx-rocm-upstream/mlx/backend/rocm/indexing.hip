@@ -789,7 +789,8 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
             // stages the same value). It is the source of every write
             // below.
             auto* ib =
-                static_cast<const RocmBuffer*>(inputs[1].buffer().ptr());
+                static_cast<const rocm::RocmBuffer*>(
+                    inputs[1].buffer().ptr());
             const void* shadow = (ib != nullptr) ? ib->host_shadow : nullptr;
             bool fresh = (rocm::allocator().decode_idx_src_va() == 0);
             size_t sn = std::min<size_t>(16, inputs[1].nbytes());

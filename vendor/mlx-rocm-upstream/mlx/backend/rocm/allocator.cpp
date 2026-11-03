@@ -1067,12 +1067,12 @@ void RocmAllocator::decode_idx_set_src_va(void* va, size_t nbytes) {
   decode_idx_src_nbytes_ = nbytes;
 }
 
-void* RocmAllocator::decode_idx_src_va() const {
+void* RocmAllocator::decode_idx_src_va() {
   std::lock_guard lock(mutex_);
   return decode_idx_src_va_;
 }
 
-size_t RocmAllocator::decode_idx_src_nbytes() const {
+size_t RocmAllocator::decode_idx_src_nbytes() {
   std::lock_guard lock(mutex_);
   return decode_idx_src_nbytes_;
 }
