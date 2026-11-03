@@ -104,3 +104,79 @@ cover. No finding beyond confirming R5. One nuance for R5: our bench
 already runs B = [commit, d1, d2, d3], so post-R5 our per-pair structure
 (3x draft + 1x verify S=4 + 0 correction) is structurally identical to both
 references.
+
+## C. Levers missed vs verified
+
+Verified / no lever:
+
+1. K/M > 4 per step: NONE. llama.cpp `n_max=3` (t1436 raw: `n_max=3,
+   n_min=0`); radiance K=3 is the best arm (K=4 = 95.05 < 142.31, t1439
+   report); we are at K=3. HOLDS.
+2. Eager claim: VERIFIED. The t1436 build (`-DGGML_HIP=ON`, no graph flag)
+   links the native ggml-hip backend, which has no graph-capture path at
+   29c720e (graph-capture macros `GGML_CUDA_USE_GRAPHS` / `GGML_HIP_GRAPHS`
+   live in ggml-cuda only; no capture in the ggml-hip sources, no capture
+   lines in the raw log). So 144.3 is EAGER: each `llama_process` submits a
+   per-batch ggml compute graph, and the whole S=4 verify is ONE submission
+   of a 32-layer graph. Consequences: (a) our graph-capture lever is NOT
+   "catching up to the anchor" — the anchor has no graph; hitting 144.3
+   with a graph would be a structural advantage over llama.cpp; (b) the 3x
+   wall gap is therefore NOT explained by graph-vs-eager structure — it is
+   kernel/scheduling efficiency. Radiance DOES use CUDA graphs
+   (cudagraphs [1,2,4,8], per the dive), so graph capture = parity with
+   radiance, advantage over llama.cpp.
+3. llama.cpp per-row lm_head (4x per-row passes) vs our rows-msg single
+   pass (`qmm.hip:4170-4217`): favors us. HOLDS.
+4. llama.cpp 4x snapshot state writes per forward (dive line 4) vs our 1x
+   tape: favors us. HOLDS.
+5. llama.cpp catch-up forward: `common_speculative_process` runs after EVERY
+   target batch, "for now, always re-evaluate for simplicity" (their own
+   TODO, `server-context.cpp:4755-4758`) — llama.cpp pays ~1 MTP forward +
+   head per step for draft-KV alignment and SKIPS none. We skip it (no
+   trim, no catch-up) and acceptance parity holds (3.19 vs 3.15 tok/step),
+   so the skip is free. The named-ladder "draft-KV trim" should keep the
+   skip (trim without catch-up), or measure the catch-up variant per dive
+   §5.4 — the acceptance delta is the open question, not the speed.
+6. Radiance items (int2 draft head, dynamic draft + n-gram, GDN 24-layer
+   merge, CUDA graphs, draft-KV trim) all map onto the named ladder. The
+   int2 head kernel ALREADY exists in the vendor tree on
+   `mtp-r4b-fused-verify` (`vendor/.../ops/lm_head_int2.hip`, added in the
+   R4b work) but is NOT compiled into the R4b wheel (traffic audit:
+   "INT2=off in all runs"). The ladder item is closer to done than it
+   looks: it is a wheel build + A/B, not new kernel work.
+
+New observations (not on the ladder):
+
+- llama.cpp's whole verify = 1 compute-graph submission of 32 layers; our
+  forward = 24 GDN launches + 8 SDPA + QMM dispatch. The single-fused-step
+  gap is broader than the 24-layer GDN merge: llama.cpp's per-batch
+  cgraph also collapses inter-op scheduling. Graph capture (named ladder)
+  is the lever that matches this; the GDN merge is a partial address.
+- llama.cpp's host-side sampling is not a lever for us (we are on-device);
+  it is a small cost on their side (a few tens of us per step).
+- Radiance K=4 < K=3 (95.05 vs 142.31) independently confirms K=3 is the
+  operating point (vLLM's own "multiple forwards on same MTP layer may
+  result in lower acceptance rate" warning fired at K=4). We are at K=3.
+- Radiance's dynamic draft gate at K=3 is capped at <=3 forwards per step
+  (dive §4: "the dynamic controller is a gate, not an extension"), so its
+  value here is skipping low-draft forwards plus the free-width n-gram
+  fill; the int2 head is the bigger draft-phase lever.
+
+## D. Stale premises (superseded by the t1585 traffic audit, 4cd7083)
+
+| # | stale claim (dive) | superseded by |
+|---|---|---|
+| 1 | both dives: "our MTP ~32.7 ms per 2.15 accepted tokens, ~66 t/s" | R4b 48.93 t/s / 65.2 ms per verify pair / 3.19 tok/pair (anchor 514 tok / 10.49 s) |
+| 2 | radiance line 1: "2-4 re-forwarded T=1 passes, E~2.55 full target forwards/step, ~18 GiB, ~35 ms" | tape commit eliminated the re-forward; current = 0.783 S=1 correction/step = 3.26 GiB |
+| 3 | radiance line 2: "full bf16 lm_head x3 = 6.1 GiB, ~11 ms/step" | current draft head is 4-bit: 3 x 0.533 = 1.60 GiB (audit draft row: 1.97 GiB incl. 0.38 sidecar) |
+| 4 | radiance §3: "per-step budget ~10-11 GiB, ~11 GiB" | current total 9.39 GiB/step; pre-tape reconstruction 28.3 GiB (+6.7 GiB regime overhead = the old 34) |
+| 5 | radiance: "MTP layer ~0.47 GiB bf16" | current sidecar = 0.125 GiB (4-bit class, 1 GDN layer + norm) |
+| 6 | llama.cpp line 1: "2-4 extra re-forwards ... likely the dominant term in the 32.7 vs 14.9 ms/step delta" | re-forward eliminated; audit verdict: the residual gap is compute/schedule-bound, not traffic-bound |
+| 7 | both: "no per-phase runtime numbers exist" | OUR side now has phase walls (audit); the llama.cpp side is still unmeasured (t1451 crash, unrefetched) — half-stale |
+| 8 | "MTP layer 0.47 GiB" on OUR side in both dives' arithmetic | 0.125 GiB (item 5) — all per-step GiB arithmetic in the dives that uses 0.47 is stale |
+| 9 | radiance: "4-bit target ~5.5 GiB" (bf16-head assumption, 3.63 + 2.03) | measured 4.16 GiB including the 4-bit head (audit) |
+
+Unit mislabels (both dives; detail in E): "13.6 µs/token" and "11.5
+µs/token" (1000x off — ms); "32.7 ms per 2.15-accepted-token step" and
+"14.9 ms per 2.15-token step" (these are ms-per-2.15-tokens; per spec step
+of 3.15 tokens: 48.0 vs 21.8 ms).
