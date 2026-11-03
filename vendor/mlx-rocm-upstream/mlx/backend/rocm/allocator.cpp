@@ -1096,28 +1096,7 @@ void RocmAllocator::decode_idx_reset_src() {
   std::lock_guard lock(mutex_);
   decode_idx_src_va_ = nullptr;
   decode_idx_src_nbytes_ = 0;
-  decode_idx_seed_va_ = nullptr;
-  decode_idx_seed_nbytes_ = 0;
   idx_slot_armed_ = false;
-}
-
-void RocmAllocator::decode_idx_set_seed(const void* va, size_t nbytes) {
-  std::lock_guard lock(mutex_);
-  decode_idx_seed_va_ = const_cast<void*>(va);
-  decode_idx_seed_nbytes_ = nbytes;
-}
-
-void* RocmAllocator::decode_idx_consume_seed() {
-  std::lock_guard lock(mutex_);
-  void* va = decode_idx_seed_va_;
-  decode_idx_seed_va_ = nullptr;
-  decode_idx_seed_nbytes_ = 0;
-  return va;
-}
-
-size_t RocmAllocator::decode_idx_seed_nbytes() {
-  std::lock_guard lock(mutex_);
-  return decode_idx_seed_nbytes_;
 }
 
 bool RocmAllocator::is_persistent_staging_host(const void* p) const {
@@ -1160,6 +1139,24 @@ static size_t host_shadow_chunk_bytes() {
 // run-461-class segfault fix: the run-460 design also DESTROYED the per-chunk stream (hipStreamDestroy). On gfx1201 the KFD completion event of an async copy is not retired promptly; destroying the per-chunk stream while that event is still pending races the runtime stream/event bookkeeping and segfaults in this function (run-506: core x4 in the GDN bf16 D2H, backtrace at the chunked-copy region). The stream is therefore intentionally NOT destroyed: one small bounded leak per chunk per shadow copy (a 1.2 GB copy leaks 12 streams; negligible for a server process) in exchange for no stream-lifecycle race.
 static hipError_t shadow_chunked_copy(void* dst, const void* src, size_t size,
                                      hipMemcpyKind kind) {
+  // GD-idx (R4): while a graph capture is in progress a blocking hipMemcpy
+  // (the small-copy path, or the per-chunk hipStreamSynchronize below)
+  // 906s inside the window and taints the stream — the R4 re-capture
+  // crash. Pinned->device flushes are instead RECORDED as a single async
+  // memcpy on the capture stream (hipMemcpyAsync on a capturing stream is
+  // captured and re-executes at every graph launch, reading the pinned
+  // source at launch time). Only H2D is gated: an in-window D2H readback
+  // would hand the host stale bytes if not actually executed, so D2H
+  // keeps the blocking path (callers in-window defer readbacks via the
+  // worker).
+  if (kind == hipMemcpyHostToDevice && stream_capturing()) {
+    hipStream_t cs = capture_stream();
+    if (cs != nullptr) {
+      hipError_t err = hipMemcpyAsync(dst, src, size, kind, cs);
+      g1_check_hip("hipMemcpyAsync H2D (flush, recorded)", err);
+      return err;
+    }
+  }
   const size_t chunk = host_shadow_chunk_bytes();
   // run-517: small copies use the legacy single-shot sync hipMemcpy (no stream, no leak). The run-444/run-454/run-458 hang was size-dependent (>=300 MB single copies in kfd_wait_on_events); the pre-K3 wheel ran 9B loads (1856 small flushes) on plain hipMemcpy with no hang. Large copies keep the run-460 chunked fresh-stream path (hang-avoidance) with the run-515 no-destroy (bounded leak: a few streams per large copy, not per small flush).
   if (size <= chunk) {

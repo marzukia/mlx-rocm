@@ -182,17 +182,6 @@ class RocmAllocator : public allocator::Allocator {
   // into every exec that references it (the slot's device buffer follows
   // the same rule).
   void* decode_idx_src_buffer();
-  // GD-idx (R4): the pre-launch staging-source seed (the capture step's
-  // per-step idx buffer device VA, recorded by the fresh-capture gather
-  // branch). end_record consumes it between the EndCapture and the
-  // deferred buffer frees: a plain D2D (source <- idx buffer) that
-  // completes before the graph launch is issued, so the first launch's
-  // re-run staging node carries the capture step's token. Plain memory
-  // record (no hip*): safe to write inside the capture window.
-  void decode_idx_set_seed(const void* va, size_t nbytes);
-  // Consume the pending seed (returns the VA and clears the record).
-  void* decode_idx_consume_seed();
-  size_t decode_idx_seed_nbytes();
   // GD-idx (R4): drop the recorded source (a fresh capture records a fresh
   // staging node; the buffer itself persists — only the record is
   // per-incarnation). Also disarms the slot (the old incarnation's arm is
@@ -285,8 +274,6 @@ class RocmAllocator : public allocator::Allocator {
   bool idx_slot_armed_{false};
   void* decode_idx_src_va_{nullptr};
   size_t decode_idx_src_nbytes_{0};
-  void* decode_idx_seed_va_{nullptr};
-  size_t decode_idx_seed_nbytes_{0};
   size_t decode_slot3_cursor_{0};
 };
 

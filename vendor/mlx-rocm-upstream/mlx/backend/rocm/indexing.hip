@@ -787,36 +787,47 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
                     inputs[1].buffer().ptr());
             const void* shadow = (ib != nullptr) ? ib->host_shadow : nullptr;
             bool fresh = (rocm::allocator().decode_idx_src_va() == 0);
-            size_t sn = std::min<size_t>(16, inputs[1].nbytes());
-            if (!fresh && !took && shadow != nullptr) {
+            if (!fresh && !took) {
               // Replay (no Load this step): refresh the source with the
-              // new token (its pinned host shadow holds the value the
-              // gpu_ptr flush above already moved into the per-step idx
-              // buffer). Outside the capture window (replay steps are not
-              // captured); the blocking H2D completes before the step-end
-              // graph launch is issued, and the re-run staging node
-              // (source -> slot, recorded at the capture) delivers it.
-              // A Load-delivered step (took) already refreshed the
+              // new token via a blocking D2D from the per-step idx
+              // buffer (its device value is authoritative: the step's
+              // buffer-creation H2D already ran — replay steps are not
+              // captured). Outside the capture window; the blocking D2D
+              // completes before the step-end graph launch is issued,
+              // and the re-run staging node (source -> slot, recorded at
+              // the capture) delivers it. (The pinned-shadow refresh
+              // the R3 design used cannot work here: the bench creates
+              // a FRESH per-step idx array, so the buffer's lazy
+              // shadow is null and never holds the new token.) A
+              // Load-delivered step (took) already refreshed the
               // source in load.cpp.
-              (void)hipMemcpy(src, shadow, sn, hipMemcpyHostToDevice);
+              (void)hipMemcpy(
+                  src, gpu_ptr<void>(inputs[1]),
+                  std::min<size_t>(16, inputs[1].nbytes()),
+                  hipMemcpyDeviceToDevice);
             }
             if (fresh) {
-              // Capture: NO host/device memcpy in this window (a blocking
+              // Capture: NO blocking copy in this window (a blocking
               // hipMemcpy lands on the legacy stream and 906s inside a
               // capture window — the R4 re-capture crash; the per-step
               // idx buffer's shadow is not even guaranteed to exist at
-              // the first capture). Instead record the staging node once,
-              // and pending-record a pre-launch seed: between the
-              // EndCapture and the deferred buffer frees, end_record copies
-              // the capture step's idx buffer (device, still live) into
-              // the staging source via a plain D2D that completes before
-              // the graph launch is issued. First launch: the node then
-              // copies the capture step's token into the slot; replay
-              // launches: the per-step refresh above (or the Load path)
-              // rewrites the source before launch. The node re-copies
-              // whatever is in the source at every launch and zero-fills
-              // the slot's remaining bytes (a blind 16 B read would run
-              // off the nbytes-wide token).
+              // the first capture). Record the staging node once, and
+              // record the staging-source seed as an async memcpy on the
+              // capture stream (captured; re-executes at every graph
+              // launch): H2D from the buffer's pinned shadow when it
+              // exists (the gpu_ptr flush above is now recorded the same
+              // way — the fill-loop flush 906ed on the re-capture where
+              // the shadow exists), else D2D from the per-step idx
+              // buffer's device VA, which the recorded buffer-creation
+              // H2D precedes in stream order (the first capture: the
+              // token's H2D is a recorded node of this same graph).
+              // First launch: the node then copies the capture step's
+              // token into the slot; replay launches: the per-step
+              // refresh above (or the Load path) rewrites the source
+              // before launch. The node re-copies whatever is in the
+              // source at every launch and zero-fills the slot's
+              // remaining bytes (a blind 16 B read would run off the
+              // nbytes-wide token).
               dim3 cgrid(1);
               dim3 cblk(2);
               encoder.add_kernel_node(
@@ -825,22 +836,29 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
                   reinterpret_cast<const int64_t*>(src),
                   (int)inputs[1].nbytes());
               rocm::allocator().decode_idx_set_src_va(src, inputs[1].nbytes());
-              rocm::allocator().decode_idx_set_seed(
-                  reinterpret_cast<const int64_t*>(gpu_ptr<void>(inputs[1])),
-                  inputs[1].nbytes());
+              hipStream_t cs = rocm::capture_stream();
+              hipError_t sm = hipMemcpyAsync(
+                  src,
+                  (shadow != nullptr) ? shadow
+                                    : gpu_ptr<void>(inputs[1]),
+                  std::min<size_t>(16, inputs[1].nbytes()),
+                  (shadow != nullptr) ? hipMemcpyHostToDevice
+                                    : hipMemcpyDeviceToDevice,
+                  (cs != nullptr) ? cs : 0);
               if (std::getenv("MLX_G1Y_DEBUG") != nullptr) {
                 fprintf(stderr,
                         "[gdidx] gather: staged node recorded, src=%p "
-                        "seed=%p\n",
+                        "seed=%p kind=%d stream=%p mc=%d\n",
                         src,
-                        reinterpret_cast<const void*>(
-                            gpu_ptr<void>(inputs[1])));
+                        (shadow != nullptr) ? shadow
+                                          : gpu_ptr<void>(inputs[1]),
+                        (shadow != nullptr) ? 1 : 2, cs, (int)sm);
               }
               // Slot read: the staging node (recorded above, seeded
               // pre-launch) delivers the capture step's token; a
               // Load-delivered capture (took) wrote the slot directly.
               h_indices[0] = ixs.data;
-            } else if (!fresh && (shadow != nullptr || took)) {
+            } else if (!fresh) {
               // Slot read at replay: the staging node (source refreshed
               // above, or by the Load) delivers the token.
               h_indices[0] = ixs.data;

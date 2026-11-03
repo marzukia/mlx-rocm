@@ -1535,12 +1535,14 @@ bool CommandEncoder::decode_capture_begin(int slot) {
   // was previously never set, so the capture step's first GEMM could hit
   // hipBLASLt's non-capturable lazy init).
   set_stream_capturing(true);
+  set_capture_stream(stream_);
   hipError_t e =
       hipStreamBeginCapture(stream_, hipStreamCaptureModeGlobal);
   g1_check_hip("hipStreamBeginCapture", e, "begin");
   if (e != hipSuccess) {
     g_decode_capturing.store(false, std::memory_order_relaxed);
     set_stream_capturing(false);
+    set_capture_stream(nullptr);
     (void)hipGetLastError();
     static const bool dbg = std::getenv("MLX_PURE_DEBUG") != nullptr;
     if (dbg)
@@ -1587,34 +1589,14 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
   g1_check_hip("hipStreamEndCapture", ee, "end");
   g_decode_capturing.store(false, std::memory_order_relaxed);
   set_stream_capturing(false);
-  // GD-idx (R4): consume the pending staging-source seed BETWEEN the
-  // EndCapture and the deferred buffer frees: the capture step's per-step
-  // idx buffer is still live (its deferred free lands in signal_now
-  // below), and the plain D2D (staging source <- idx buffer) completes
-  // before the graph launch is issued further down, so the first
-  // launch's re-run staging node carries the capture step's token into
-  // the slot. The per-step idx buffer's VA cannot be the node source
-  // directly: it is a plain-malloc buffer at the capture step (the
-  // arena activates later / is the step-end offset at replay steps),
-  // freed after this step (the R3/R4 264 attractor: the re-run node
-  // read the stale capture-time value on every replay).
-  if (ee == hipSuccess && g != nullptr) {
-    auto& al = rocm::allocator();
-    void* seed_va = al.decode_idx_consume_seed();
-    if (seed_va != nullptr) {
-      void* src = al.decode_idx_src_buffer();
-      if (src != nullptr) {
-        hipError_t sm = hipMemcpy(
-            src, seed_va, al.decode_idx_seed_nbytes(), hipMemcpyDeviceToDevice);
-        g1_check_hip("hipMemcpy D2D (idx seed pre-launch)", sm, "end");
-        if (std::getenv("MLX_G1Y_DEBUG") != nullptr) {
-          fprintf(stderr,
-                  "[gdidx] seed: D2D pre-launch src=%p seed=%p n=%zu mc=%d\n",
-                  src, seed_va, al.decode_idx_seed_nbytes(), (int)sm);
-        }
-      }
-    }
-  }
+  set_capture_stream(nullptr);
+  // GD-idx (R4): the staging-source seed is delivered IN-window as a
+  // recorded memcpy node (the fresh-capture gather branch records an
+  // async H2D from the pinned shadow, or a D2D from the per-step idx
+  // buffer which the recorded buffer-creation H2D precedes in stream
+  // order) — no blocking copy is needed between the EndCapture and the
+  // deferred buffer frees, and the first graph launch carries the
+  // capture step's token.
   // Run the completion handlers (buffer frees) that were deferred during the
   // capture. Doing this now (after the stream is no longer capturing) avoids
   // the cross-thread hipFreeAsync invalidating the capture.
@@ -2438,6 +2420,18 @@ bool stream_capturing() {
 void set_stream_capturing(bool v) {
   g_stream_capturing.store(v, std::memory_order_relaxed);
 }
+
+// GD-idx (R4): the stream currently recording a graph capture, so that
+// pinned-memory flushes (allocator::shadow_chunked_copy) can be RECORDED
+// (hipMemcpyAsync on the capture stream -> replayed at the launch) instead
+// of run as a blocking hipMemcpy, which 906s inside a capture window and
+// taints the stream (the R4 re-capture crash: the fill-loop gpu_ptr flush
+// of the per-step idx buffer fired in-window on the re-capture, where the
+// buffer's pinned shadow exists, and every later launch failed with
+// "operation failed due to a previous error during capture").
+static hipStream_t g_capture_stream{nullptr};
+hipStream_t capture_stream() { return g_capture_stream; }
+void set_capture_stream(hipStream_t s) { g_capture_stream = s; }
 
 std::atomic<bool> g_graph_active{false};
 bool graph_active() {

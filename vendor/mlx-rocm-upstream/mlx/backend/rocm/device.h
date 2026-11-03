@@ -469,6 +469,8 @@ void clear_all_encoders();
 // inits that abort under capture (e.g. hipblasLtCreate) check this.
 bool stream_capturing();
 void set_stream_capturing(bool v);
+hipStream_t capture_stream();
+void set_capture_stream(hipStream_t s);
 void set_graph_active(bool v);
 
 // True from capture start until the captured graph is destroyed. The allocator
