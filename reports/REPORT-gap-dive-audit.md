@@ -40,12 +40,19 @@ correction phases. Evidence:
 
 Phase mapping (our current vs llama.cpp static):
 
-| our phase | llama.cpp analogue | status |
-|---|---|---|
-| 3x draft (39.3 ms, 1.97 GiB) | 3x MTP-layer forward + 4-bit shared head + host-side greedy sampling (a few tens of us per 3 draft tokens, per dive line 5) | we carry the draft cost on-device; llama's sampling is host-side (D2H + argmax x4 + draft sampler) — not a lever for us, we are already on-device |
-| verify S=4 (26.7 ms counted in commit; 4.16 GiB) | one `llama_process` per S=4 batch = ONE submission of a 32-layer compute graph | we do 24 GDN launches + 8 SDPA + QMM dispatch per forward (24 GDN-layer launch merge on the named ladder addresses the launch count) |
-| correction S=1 (0.4 ms wall, 3.26 GiB re-read @0.783) | none: O(1) snapshot rollback + correction token folded into next verify (see B) | R5 target |
-| commit (tape-row select) | O(1) `seq_rm` via per-token snapshot index (see B) | par |
+- 3x draft (39.3 ms, 1.97 GiB) vs 3x MTP-layer forward + 4-bit shared head +
+  host-side greedy sampling (a few tens of us per 3 draft tokens, per dive
+  line 5): we carry the draft cost on-device; llama's sampling is host-side
+  (D2H + argmax x4 + draft sampler) — not a lever for us.
+- verify S=4 (26.7 ms counted in commit; 4.16 GiB) vs one `llama_process`
+  per S=4 batch = ONE submission of a 32-layer compute graph: we do 24 GDN
+  launches + 8 SDPA + QMM dispatch per forward (the named-ladder GDN merge
+  addresses the launch count).
+- correction S=1 (0.4 ms wall, 3.26 GiB re-read @0.783) vs none (O(1)
+  snapshot rollback + correction token folded into the next verify, see B):
+  R5 target.
+- commit (tape-row select) vs O(1) `seq_rm` via per-token snapshot index
+  (see B): par.
 
 Unexplained remainder: llama.cpp does a full spec step (3.15 tokens, 21.8 ms)
 where we do 65.2 ms. None of llama.cpp's 21.8 ms is attributable per-phase
@@ -166,15 +173,15 @@ New observations (not on the ladder):
 
 | # | stale claim (dive) | superseded by |
 |---|---|---|
-| 1 | both dives: "our MTP ~32.7 ms per 2.15 accepted tokens, ~66 t/s" | R4b 48.93 t/s / 65.2 ms per verify pair / 3.19 tok/pair (anchor 514 tok / 10.49 s) |
-| 2 | radiance line 1: "2-4 re-forwarded T=1 passes, E~2.55 full target forwards/step, ~18 GiB, ~35 ms" | tape commit eliminated the re-forward; current = 0.783 S=1 correction/step = 3.26 GiB |
-| 3 | radiance line 2: "full bf16 lm_head x3 = 6.1 GiB, ~11 ms/step" | current draft head is 4-bit: 3 x 0.533 = 1.60 GiB (audit draft row: 1.97 GiB incl. 0.38 sidecar) |
-| 4 | radiance §3: "per-step budget ~10-11 GiB, ~11 GiB" | current total 9.39 GiB/step; pre-tape reconstruction 28.3 GiB (+6.7 GiB regime overhead = the old 34) |
-| 5 | radiance: "MTP layer ~0.47 GiB bf16" | current sidecar = 0.125 GiB (4-bit class, 1 GDN layer + norm) |
-| 6 | llama.cpp line 1: "2-4 extra re-forwards ... likely the dominant term in the 32.7 vs 14.9 ms/step delta" | re-forward eliminated; audit verdict: the residual gap is compute/schedule-bound, not traffic-bound |
-| 7 | both: "no per-phase runtime numbers exist" | OUR side now has phase walls (audit); the llama.cpp side is still unmeasured (t1451 crash, unrefetched) — half-stale |
-| 8 | "MTP layer 0.47 GiB" on OUR side in both dives' arithmetic | 0.125 GiB (item 5) — all per-step GiB arithmetic in the dives that uses 0.47 is stale |
-| 9 | radiance: "4-bit target ~5.5 GiB" (bf16-head assumption, 3.63 + 2.03) | measured 4.16 GiB including the 4-bit head (audit) |
+| 1 | both: "our MTP ~32.7 ms per 2.15 tokens, ~66 t/s" | R4b 48.93 t/s, 65.2 ms/verify pair, 3.19 tok/pair |
+| 2 | radiance: "2-4 re-forwarded passes, ~18 GiB, ~35 ms/step" | eliminated by tape; now 0.783 S=1/step (3.26 GiB) |
+| 3 | radiance: "bf16 lm_head x3 = 6.1 GiB, ~11 ms/step" | 4-bit head: 3 x 0.533 = 1.60 GiB (1.97 incl. sidecar) |
+| 4 | radiance §3: "per-step budget ~10-11 GiB" | 9.39 GiB/step; pre-tape 28.3 (+6.7 regime = the old 34) |
+| 5 | radiance: "MTP layer ~0.47 GiB bf16" | 0.125 GiB sidecar (4-bit class, 1 GDN layer + norm) |
+| 6 | llama.cpp: "2-4 extra re-forwards ... dominant term" | eliminated; residual gap is compute/schedule-bound |
+| 7 | both: no per-phase runtime numbers (dive line 3-5) | OUR side now has phase walls; llama.cpp unmeasured (t1451) |
+| 8 | "MTP layer 0.47 GiB" in both dives' GiB arithmetic | 0.125 GiB (item 5) — all 0.47-based arithmetic is stale |
+| 9 | radiance: "4-bit target ~5.5 GiB" (bf16-head assumption) | measured 4.16 GiB incl. 4-bit head (audit) |
 
 Unit mislabels (both dives; detail in E): "13.6 µs/token" and "11.5
 µs/token" (1000x off — ms); "32.7 ms per 2.15-accepted-token step" and
@@ -245,12 +252,12 @@ effective ~146 GB/s on the 9.39 GiB/step mix):
 
 | # | lever | expected value | basis |
 |---|---|---|---|
-| 1 | R5 correction fusion (kill S=1 re-read; fold correction into next verify) | ~22-30 ms (3.26 GiB @ ~135-146 GB/s of the 39.3 ms draft phase) | both references confirm the end state (B); audit R5 row: 9.39 -> 6.13 GiB |
-| 2 | int2 draft head | ~5-8 ms (3 x (0.533 - 0.296) = 0.71 GiB; radiance's own 2002->473 us per call, 4.2x) | kernel already in the vendor tree (lm_head_int2.hip on the r4b branch); a wheel build + A/B, not new kernel work |
-| 3 | MTP graph capture | ~5-15 ms if launch/schedule-bound (collapses 24 GDN + 8 SDPA + QMM + 3x draft MTP per step) | anchor is EAGER (C#2) — parity with radiance, advantage over llama.cpp; magnitude uncertain, needs the t1451-style phase profile after R5 |
-| 4 | GDN 24-layer launch merge | ~2-5 ms (48 launches/forward removed) | radiance log evidence; partial address of the same schedule overhead as #3 |
-| 5 | dynamic draft gate + n-gram fill | ~0-3 ms (skips 2.09 GiB of low-confidence draft forwards) + free width | capped at <=3 forwards at K=3; value is the gate, not the extension |
-| 6 | draft-KV trim | ~0 direct (few KiB/token); correctness/robustness | keep the catch-up skip (C#5) |
+| 1 | R5 (kill S=1 re-read) | ~22-30 ms (3.26 GiB in the draft phase) | both refs confirm (B); 9.39 -> 6.13 GiB |
+| 2 | int2 draft head | ~5-8 ms (0.71 GiB; radiance 4.2x faster) | kernel in vendor tree; wheel build + A/B |
+| 3 | MTP graph capture | ~5-15 ms if launch-bound | anchor EAGER (C#2): parity with radiance, edge over llama.cpp |
+| 4 | GDN 24-layer merge | ~2-5 ms (48 launches/forward removed) | radiance log; partial address of #3's overhead |
+| 5 | dynamic gate + n-gram fill | ~0-3 ms (skips 2.09 GiB low-confidence drafts) | capped at <=3 forwards at K=3 |
+| 6 | draft-KV trim | ~0 direct; correctness/robustness | keep the catch-up skip (C#5) |
 
 ## Updated ladder recommendation
 
