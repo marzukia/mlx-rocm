@@ -143,7 +143,7 @@ uv run python scripts/size_ratchet.py --base 72e33a9
                                          # itself fails the gate (test_array.py
                                          # 2472 / test_ops.py 3618 > 2400, not
                                          # ratcheted) — inherited, not from this PR
-flock -x /home/andryo/gpu-bench.lock      # held for every GPU run
+flock -x ~/gpu-bench.lock      # held for every GPU run
 SBCAR md5 02a54359cda8b247f76b277dd9bc4d4c  pre/post all sessions
 venv-canon libmlx b1de59fda0e4fc607d620e287deeaaf8 untouched pre/post
 ```
@@ -154,7 +154,7 @@ vendor-python and the same two NEW BLOAT test files); the R4b lane's branch
 rewrite (`09ddc98`, not a descendant of `72e33a9`) is the clean line. This
 diff (4 new files, 474 inserted, 0 deleted) adds no gate-relevant content.
 
-Build log tail (`/home/andryo/r4c-build2.log`):
+Build log tail (`~/r4c-build2.log`):
 
 ```
 grafted: int2=1 r4b=1 cmlist=1
@@ -162,7 +162,7 @@ quickcheck rc=0
 === full build start Tue Nov  3 10:34:00 AM UTC 2026
 === full build rc=0 done Tue Nov  3 10:37:02 AM UTC 2026
   Created wheel for mlx: filename=mlx-0.32.3.dev20261103+75ca881-cp314-cp314-linux_x86_64.whl size=22490943
-328dc04ad585d87897f166c10e237323  /home/andryo/wheelout-r4c/mlx-0.32.3.dev20261103+75ca881-cp314-cp314-linux_x86_64.whl
+328dc04ad585d87897f166c10e237323  ~/wheelout-r4c/mlx-0.32.3.dev20261103+75ca881-cp314-cp314-linux_x86_64.whl
 ```
 
 **Recommendation:** keep the int2 lever OFF (default) in the served wheel.

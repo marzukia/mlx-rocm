@@ -10,7 +10,7 @@ import mlx.core as mx
 from mlx_lm import load
 from r4c_head_probe import quantize_int2
 
-MODEL = os.environ.get("MTP_MODEL", os.environ.get("MODELS", "/mnt/models") + "/qwen3-9b-mlx")
+MODEL = os.environ.get("MTP_MODEL", os.environ.get("MODELS", "<models-mount>") + "/qwen3-9b-mlx")
 
 
 def main():
