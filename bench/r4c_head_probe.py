@@ -18,7 +18,7 @@ import time
 import mlx.core as mx
 from mlx_lm import load
 
-MODEL = os.environ.get("MTP_MODEL", os.environ["MODELS"] + "/qwen3-9b-mlx")
+MODEL = os.environ.get("MTP_MODEL", os.environ.get("MODELS", "/mnt/models") + "/qwen3-9b-mlx")
 K = 4096
 N_T = 32
 N_TEST = 256
