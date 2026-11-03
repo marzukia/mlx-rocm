@@ -7,7 +7,7 @@ total (10.7 ms of 13.9 ms sandwich, 10-27 per-layer numbers).
 This is the STATIC profile (no GPU): the exact kernel selection for every op in
 one AR decode step, canonical wheel (0.32.3.dev20261102+75ca881, venv-canon),
 standing config `MLX_ROCM_QMV_ROWS=1 MLX_ROCM_REFWD_M1=1 MLX_ROCM_GDN_FUSE=1`,
-model `/mnt/models/qwen3-9b-mlx` (4-bit affine, group 64, bf16, 4096 hidden,
+model `<models-mount>/qwen3-9b-mlx` (4-bit affine, group 64, bf16, 4096 hidden,
 32 layers = 24 GDN + 8 full-attention, D=256, GQA 32:4, vocab 248320).
 
 > Note on the standing config: `MLX_ROCM_REFWD_M1` is a no-op in venv-canon

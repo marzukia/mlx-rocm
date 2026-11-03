@@ -8,9 +8,9 @@
 #
 # Standing config: MLX_ROCM_QMV_ROWS=1 MLX_ROCM_REFWD_M1=1 MLX_ROCM_GDN_FUSE=1
 # Lock: short-wait poll (60s), 3h deadline.
-LOGDIR=/home/andryo/arstep
+LOGDIR=<guest-home>/arstep
 mkdir -p $LOGDIR
-exec 9>/home/andryo/gpu-bench.lock
+exec 9><guest-home>/gpu-bench.lock
 DEADLINE=$(( $(date +%s) + 10800 ))
 while true; do
   if flock -n 9; then break; fi
@@ -18,7 +18,7 @@ while true; do
   sleep 60
 done
 echo "=== LOCK ACQUIRED $(date -u +%H:%M:%SZ) ==="
-md5sum /home/andryo/mtp-bench6.py
+md5sum <guest-home>/mtp-bench6.py
 
 run() {  # $1=label  $2=venv  $3=extra env
   local label=$1 venv=$2 extra=$3
@@ -26,19 +26,19 @@ run() {  # $1=label  $2=venv  $3=extra env
     echo "=== RUN $label.$i $(date -u +%H:%M:%SZ) ==="
     env LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libhsa-runtime64.so.1 \
         HCC_AMDGPU_TARGET=gfx1201 \
-        MODELS=/mnt/models MLX_MTP=0 MTP_MAX_TOKENS=400 \
+        MODELS=<models-mount> MLX_MTP=0 MTP_MAX_TOKENS=400 \
         MLX_ROCM_QMV_ROWS=1 MLX_ROCM_REFWD_M1=1 MLX_ROCM_GDN_FUSE=1 \
         $extra \
-        timeout -s KILL 1500 $venv/bin/python /home/andryo/mtp-bench6.py \
+        timeout -s KILL 1500 $venv/bin/python <guest-home>/mtp-bench6.py \
         > $LOGDIR/$label.$i.log 2>&1
     echo "rc=$?"
     grep -E "^TOKS:|t/s|FIRST20:" $LOGDIR/$label.$i.log | head -5
   done
 }
 
-run A  /home/andryo/venv-canon ""
-run B1 /home/andryo/venv-ar    "MLX_ROCM_M1_LX=1"
-run B2 /home/andryo/venv-ar    "MLX_ROCM_M1_ROWSMSG=1"
+run A  <guest-home>/venv-canon ""
+run B1 <guest-home>/venv-ar    "MLX_ROCM_M1_LX=1"
+run B2 <guest-home>/venv-ar    "MLX_ROCM_M1_ROWSMSG=1"
 
 echo "=== LOCK RELEASED $(date -u +%H:%M:%SZ) ==="
 exec 9>&-

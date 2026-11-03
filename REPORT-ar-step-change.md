@@ -151,7 +151,7 @@ not a path change.
   arstep-round2.sh (control + probes + MTP4 guard), scripts/arstep-round3.sh
   (WCOLS A/B), scripts/arstep_qmm_probe.py (per-shape probe),
   scripts/arstep_rowsmsg_check.py (contract check).
-- GPU logs: /home/andryo/arstep/{A,B1,B2,C,W4,W16,MTP4-guard,P-*}.log.
-- Wheel: /home/andryo/wheelout-ar/mlx-0.32.3.dev20261103+75ca881-*.whl
+- GPU logs: <guest-home>/arstep/{A,B1,B2,C,W4,W16,MTP4-guard,P-*}.log.
+- Wheel: <guest-home>/wheelout-ar/mlx-0.32.3.dev20261103+75ca881-*.whl
   (patched, gates DEFAULT OFF); vendor-canon reverted to qmm.hip.bak-ar
   after the bench (task hygiene — the vendor tree is shared with t1469).

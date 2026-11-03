@@ -1,10 +1,10 @@
 #!/bin/bash
 # Round 3: WCOLS tuning A/B (bit-identical geometry) on venv-ar,
-# canonical bench /home/andryo/bench/mtp-bench6.py (md5 452d363d),
+# canonical bench <guest-home>/bench/mtp-bench6.py (md5 452d363d),
 # standing config, 400 tokens, 3 runs per config.
-LOGDIR=/home/andryo/arstep
+LOGDIR=<guest-home>/arstep
 mkdir -p $LOGDIR
-exec 9>/home/andryo/gpu-bench.lock
+exec 9><guest-home>/gpu-bench.lock
 DEADLINE=$(( $(date +%s) + 7200 ))
 while true; do
   if flock -n 9; then break; fi
@@ -12,7 +12,7 @@ while true; do
   sleep 60
 done
 echo "=== LOCK ACQUIRED $(date -u +%H:%M:%SZ) ==="
-md5sum /home/andryo/bench/mtp-bench6.py
+md5sum <guest-home>/bench/mtp-bench6.py
 
 run() {
   local label=$1 wcols=$2
@@ -20,10 +20,10 @@ run() {
     echo "=== RUN $label.$i $(date -u +%H:%M:%SZ) ==="
     env LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libhsa-runtime64.so.1 \
         HCC_AMDGPU_TARGET=gfx1201 \
-        MODELS=/mnt/models MLX_MTP=0 MTP_MAX_TOKENS=400 \
+        MODELS=<models-mount> MLX_MTP=0 MTP_MAX_TOKENS=400 \
         MLX_ROCM_QMV_ROWS=1 MLX_ROCM_REFWD_M1=1 MLX_ROCM_GDN_FUSE=1 \
         MLX_QMV_WCOLS=$wcols \
-        timeout -s KILL 1500 /home/andryo/venv-ar/bin/python /home/andryo/bench/mtp-bench6.py \
+        timeout -s KILL 1500 <guest-home>/venv-ar/bin/python <guest-home>/bench/mtp-bench6.py \
         > $LOGDIR/$label.$i.log 2>&1
     echo "rc=$?"
     grep -E "^MTP=0" $LOGDIR/$label.$i.log

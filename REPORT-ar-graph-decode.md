@@ -21,10 +21,10 @@ within this round's scope and is recorded as the blocker for the AR gap.**
 
 ## Setup (identity)
 - Branch `ar-step-change-r2`. Guest-a: `100.78.68.72` (RX 9070 XT / gfx1201,
-  ROCm 10.1 guest userland), GPU locked at `/home/andryo/gpu-bench.lock`.
+  ROCm 10.1 guest userland), GPU locked at `<guest-home>/gpu-bench.lock`.
 - Standing config: `MLX_ROCM_QMV_ROWS=1 MLX_ROCM_REFWD_M1=1
   MLX_ROCM_GDN_FUSE=1`, sclk locked 2200 MHz, model
-  `/mnt/models/qwen3-9b-mlx`.
+  `<models-mount>/qwen3-9b-mlx`.
 - Bench: canonical `mtp-bench6.py` (md5 `452d363de7c6754de8333ae09999327f`),
   MTP=0, 400-token window, 3-run median, FIRST20/ALLTOKS anchor.
 - Wheel: `mlx-0.32.3.dev20261103+75ca881-cp314` built on guest-a from
@@ -132,11 +132,11 @@ re-alloc VA vs the graph's baked pointer), which is the next round's work.
 - MTP=4 is unaffected and passes its guard.
 
 ## Reproduction
-- Wheel: `/home/andryo/wheelout-gd2/mlx-0.32.3.dev20261103+75ca881-cp314-...whl`
+- Wheel: `<guest-home>/wheelout-gd2/mlx-0.32.3.dev20261103+75ca881-cp314-...whl`
   (venv-gd2). Install requires `rm -rf` of the old `mlx/`, `bin/`,
   `*.dist-info` dirs first (pip `--target` does not overwrite).
-- Battery: `/home/andryo/gd2/{A.1,A.2,A.3,G.1,G.2,G.3,MTP4.1}.log`.
-- Probes: `/home/andryo/arstep_gd_probe.py` (PYTOK + GPROBE_HID);
+- Battery: `<guest-home>/gd2/{A.1,A.2,A.3,G.1,G.2,G.3,MTP4.1}.log`.
+- Probes: `<guest-home>/arstep_gd_probe.py` (PYTOK + GPROBE_HID);
   `PROBE.OD3.log` (op-sequence dump), `PROBE.HL.log` (H2D log),
   `PROBE.XK.log` (idx K3 on/off).
 - K3 idx redirect: `MLX_GD_K3IDXOFF=1` (isolate), `MLX_GD_K3OFF=1` (full off),

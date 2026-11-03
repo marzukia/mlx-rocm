@@ -25,7 +25,7 @@ HID = os.environ.get("GPROBE_HID", "") != ""
 
 def main():
     t0 = time.time()
-    model, tok = mlxlm.load(os.path.join(os.environ.get("MODELS", "/mnt/models"), "qwen3-9b-mlx"))
+    model, tok = mlxlm.load(os.path.join(os.environ.get("MODELS", "<models-mount>"), "qwen3-9b-mlx"))
     t_load = time.time() - t0
     lm = model.language_model
     mx.eval(model.parameters())
