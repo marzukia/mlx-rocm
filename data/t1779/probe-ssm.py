@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Probe A (t1779): re-run of the v2.1 per-step PA-vs-PG GDN state md5 probe.
 
-Identical methodology to the v2.1 round probe: per-step md5 of the GDN ssm
-state (first 4096 f32 values) + tokens, arm set by MLX_ROCM_GRAPH_DECODE
+Identical methodology to the v2.1 round probe: per-step md5 of the GDN ssm state (first 4096 f32 values) + tokens, arm set by MLX_ROCM_GRAPH_DECODE
 (0 = PA eager, 1 = PG graph). Question: is the GDN ssm state now step-exact
 at replay after the 9c82e4c in-place fix, or still period-4?
 """

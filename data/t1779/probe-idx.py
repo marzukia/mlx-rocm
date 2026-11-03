@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Probe B (t1779): D2H read of the per-step idx buffer DEVICE contents at
-LAUNCH time (not op time), to confirm/refute the cross-stream visibility
-hypothesis (the replayed kernel reads pre-launch buffer contents).
+LAUNCH time (not op time), to confirm/refute the cross-stream visibility hypothesis (the replayed kernel reads pre-launch buffer contents).
 
 Method: PG (MLX_ROCM_GRAPH_DECODE=1). Each step creates the per-step idx
 buffer exactly as the bench does (fresh mx.array([[t]])); before the step's
-forward (i.e. before the graph launch, with nothing else writing the buffer
-in between) a D2H read (.item()) forces the creation H2D to complete and
+forward (i.e. before the graph launch, with nothing else writing the buffer in between) a D2H read (.item()) forces the creation H2D to complete and
 reports the buffer's device contents at launch time. match=1 means the
 kernel's read point sees the current token; match=0 means it sees a stale
 (pre-launch) value. MLX_G1Y_DEBUG=1 gives the [gdidx] gather lines

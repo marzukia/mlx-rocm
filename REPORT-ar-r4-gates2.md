@@ -25,8 +25,7 @@ TL;DR:
   FAIL (G 65.26 vs A 71.50 = -8.7%). The fix FIRES (9528 in-place aliases,
   st==state_new) and CHANGES the ssm dynamics (pre-fix PG ssm state was a strict
   period-4 cycle; post-fix it is evolving/chained) — the remaining attractor
-  points to the conv state (python-side, non-in-place in both paths) as the
-  dominant residual. Stopped per brief.
+  points to the conv state (python-side, non-in-place in both paths) as the dominant residual. Stopped per brief.
 
 ## Probe evidence
 
@@ -74,9 +73,7 @@ CONCLUSION: the GDN ssm state is still non-in-place in the graph decode path.
   with the in-place alias — is NOT the op executed in the gate config (S<=4,
   GDN_FUSE=1). It is only reached by the default chain (prefill T>4 / S>4 paths).
 
-So in the gate config the recorded GDN step node reads the pre-capture ssm state
-buffer and writes a fresh arena buffer forever — the exact v2.1 stale-read class,
-now in the fused op.
+So in the gate config the recorded GDN step node reads the pre-capture ssm state buffer and writes a fresh arena buffer forever — the exact v2.1 stale-read class, now in the fused op.
 
 ### Probe B — per-step idx buffer device contents at launch time
 
@@ -101,9 +98,7 @@ token that step is supposed to process.
 
 The per-step token buffer's device contents equal the current token at launch for
 EVERY replay step; the op-time `idxval` reads (from within the recorded gather)
-also match (264/15352/8214/5529 cycling correctly). The slot VA is stable across
-steps (0x7216c769a700). CONCLUSION: the 1-step-lag / cross-stream-visibility
-token hypothesis is falsified — token delivery via the indirect path is fresh at
+also match (264/15352/8214/5529 cycling correctly). The slot VA is stable across steps (0x7216c769a700). CONCLUSION: the 1-step-lag / cross-stream-visibility token hypothesis is falsified — token delivery via the indirect path is fresh at
 launch; the period-4 attractor is not caused by stale token delivery.
 
 ## Fix (t1779, mirrors 9c82e4c)
@@ -170,8 +165,7 @@ gather_rows_ind=264, gdn_fused_step=92) + fix marker present (GDNF-DBG=1).
 - Provenance note: PA (t1771-wheel eager) vs PA2 (t1779-wheel eager) tokens are identical (24/24; both == t1769 A1
     FIRST20) but the ssm state md5s differ from s0 (24/24 layers). The t1779 wheel was built from vendor-r4v HEAD
     75ca881 ("t761: fix gdn_prep launcher"), which postdates the t1769/t1771 build tree; the F-branch fix is mode-gated
-    and code-identical on the eager path, so this is a pre-existing tree/build difference (likely the gdn_prep launcher
-    fix itself), not a regression from this change.
+    and code-identical on the eager path, so this is a pre-existing tree/build difference (likely the gdn_prep launcher fix itself), not a regression from this change.
 
 ### Interpretation
 
@@ -201,7 +195,5 @@ The conv state update (`cache[0] = mx.contiguous(conv_input[:, -n_keep:, :])`,
 python-side, shared by both paths) is a recorded copy whose source chain
 (concat/conv kernels) reads the pre-capture conv-state buffer VA at replay — the
 same stale-read class. It cannot be made in-place from python; fixing it
-requires either an op-side change (fused op also emits the conv-state shift,
-aliased in graph decode mode) or an arena-slot-reuse argument. If Gate 1 still
-shows the period-4 attractor after this fix, that is the next suspect (along
+requires either an op-side change (fused op also emits the conv-state shift, aliased in graph decode mode) or an arena-slot-reuse argument. If Gate 1 still shows the period-4 attractor after this fix, that is the next suspect (along
 with the K=4 value-slot path at copy.hip:343).
