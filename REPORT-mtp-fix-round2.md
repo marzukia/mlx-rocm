@@ -20,8 +20,7 @@ All runs: venv-canon wheel `75ca881` (installed Nov 2 11:56, unchanged), model `
 
 Regime delta: the 65.88 anchor (t1387, Nov 2 17:29-19:43Z) was measured on the **VM** (the previous guest, now dead). This bare-metal box (guest-a, booted Nov 2 ~20:23Z) has **never** produced 65-class MTP in any clock state: best ever 37.71 (DPM-era 00:15Z), 37.42 (locked 02:15Z), 37.47 (locked, current session). MTP/AR ratio: 0.50 on this box vs 1.08 on the VM. The "65-66 class" expectation is a genealogy error — the S=4 batched-verify path is pathologically slow relative to S=1 on bare-metal. Operator judgment required before the A/B can proceed.
 
-## Losslessness gate results (median-of-3 not applicable: gate stopped; 1-run
-arms with the controlled variable isolated)
+## Losslessness gate results (median-of-3 not applicable: gate stopped; 1-run arms with the controlled variable isolated)
 
 | Arm | config | t/s | toks | D1/D2/D3 PCT | REFWDS |
 |---|---|---|---|---|---|

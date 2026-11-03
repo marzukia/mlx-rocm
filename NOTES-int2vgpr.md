@@ -25,8 +25,9 @@ Branch: int2-wmma-vgpr from int2-wmma @ e6a06da (measured negative baseline: 9.7
 ## Open questions
 - [x] per-lane VGPR limit on gfx1201: empirically, 51-VGPR base kernel -> 2 blocks/CU; the 128-x-value preload variant uses 192 VGPR (max v191 in disasm) -> hipOccupancyMaxActiveBlocksPerMultiprocessor = 1 block/CU. gfx1201: 32 CU, 2048 threads/CU, 64 KB LDS/CU. So the VGPR budget for 2 blocks/CU is between 104448 (base) and 208896 (192/lane x 2048); 2 blocks fit iff R <= ~64-96/lane.
 - [x] Decision: SHIP Option B (128-x hoisted preload, 192 VGPR, 1 block/CU, 33 scratch loads = spills, 1.41 ms/row standalone). Option A (per-quarter streaming): occupancy API = 0 blocks/CU, 176 VGPR, 10.54 ms/row standalone (4.4x slower than B) - NOT shippable; the per-quarter structure did not cut register pressure as hoped (the compiler keeps the 32 x + 8 weight + ~40 other live). The 2-blocks/CU loss is measured and reported (occupancy trade, not silently accepted): 32 active waves (B) vs 64 (base) vs 48 (4-bit anchor).
-- [ ] wheel build + xcheck + 16-row probe (the real gate; standalone absolute values differ from the wheel loop by ~1.67x on the base - do NOT extrapolate, measure on the wheel).
-- [ ] A/B (only if gate PASS).
+- [x] wheel build + xcheck + 16-row probe: wheel a5b79f84 (sha256 e96f6c74, 22.5 MB) in venv-int2w (pip --target --upgrade; the venv has no pip/uv on the guest - system pip 26.1.2 used). 16-row probe: max abs/rel = 0.0. xcheck (2 runs): wide 1.354 / 1.351 ms, head 0.954 / 0.950 ms, int2 scalar 19.06 / 18.90 ms, sel_match=0/256. GATE FAIL (1.35 >= 0.953) -> A/B NOT run, per the gate.
+- [x] Counter-evidence: 1 block/CU (32 waves) vs base 2 blocks (64) vs 4-bit 48 waves; 192 VGPR + 33 scratch loads vs base 51 VGPR; LDS unchanged (not the constraint); 0 LDS x-reads in the FMA loop; per-column int2 174.5 ns vs 4-bit 184.4 ns (5.4% faster per wave - the inner loop won, the occupancy lost the row).
+- [x] A/B: NOT run (gate FAIL).
 
 ## Option A design (per-quarter streaming, the 4-bit x_local mirror)
 - Prologue: x_shared staging once per block (x fixed per call) + __syncthreads.
@@ -36,5 +37,9 @@ Branch: int2-wmma-vgpr from int2-wmma @ e6a06da (measured negative baseline: 9.7
 - Option B (current edit): xv[4][32] hoisted before the tile loop, 0 LDS x-reads per column; 192 VGPR -> 1 block/CU (32 waves).
 - Standalone bench plan: hip harness, real shapes (N=248320, K=4096, M=1), synthetic random wq/scale/zs/sx/x (timing-representative; correctness verified separately by the 16-row xcheck probe on the exact head), warm 10-iter, per-row ms via hip events.
 
-## Standalone occupancy probe (done)
+## Build (in flight)
+- Graft: modified lm_head_int2w.hip (md5 6e58970a49f457911c481d88bfee726b) copied into ~/vendor-int2wbuild/mlx/backend/rocm/ (the t1697 build tree; cmake cache: Release, ROCm ON, gfx1201, OpenBLAS - verified).
+- Incremental: `cmake --build . -j$(nproc)` in build/temp.linux-x86_64-cpython-314/mlx.core, log ~/build-int2vgpr.log, started PID 504223 (env HCC_AMDGPU_TARGET=gfx1201 + libhsa LD_PRELOAD).
+- Next: pip wheel . -> ~/wheelout-int2vgpr/, md5-check, uv pip install --force-reinstall into venv-int2w (lineage of venv-r4c; canonical venv untouched), then xcheck (r4c_xcheck.py) + 16-row probe (int2w_probe.py, both in ~/bench-int2w), 4-bit anchor re-measured in the same session (r4c_xcheck prints head=...us).
+- Standalone bench (synthetic data, hip events, warm 3 + timed 10): base 16.19 ms/row (2 blocks/CU), Option A 10.54 (0 blocks - not shippable), Option B 1.41 (1 block/CU). NOTE: standalone base is ~1.67x the wheel xcheck's 9.73 - do not extrapolate; the wheel xcheck is the gate.
 - occ probe (hipOccupancyMaxActiveBlocksPerMultiprocessor, block (32,32), 16 KB dynamic LDS): base kernel = 2 blocks/CU; VGPR (Option B) kernel = 1 block/CU. Disasm max v-reg: base 50, Option B 191. Option B inner loop: 0 ds_load (106 v_fma present; the 16+5 ds_load = prologue staging + xv preload, once per block).
