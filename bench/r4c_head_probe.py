@@ -133,7 +133,7 @@ def main():
         maxdiff = 0.0
         for i in range(N_TEST):
             xi = x[i : i + 1]
-            l2, cval, ccol = mx.fast.lm_head_int2(xi, packed, scale, zs, sxs[i : i + 1])
+            l2, cval, ccol = mx.fast.lm_head_int2(xi, packed, scale, zs, sxs[i])
             perm = mx.argsort(cval.reshape(-1))
             idx = mx.take(ccol.reshape(-1), perm[-32:])
             cols = (
