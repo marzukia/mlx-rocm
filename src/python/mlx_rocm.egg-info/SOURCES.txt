@@ -22,6 +22,7 @@ tests/test_qmv_mr2_lx_instantiation.py
 vendor/mlx-rocm-upstream/CMakeLists.upstream.txt
 vendor/mlx-rocm-upstream/LICENSE.upstream
 vendor/mlx-rocm-upstream/README.md
+vendor/mlx-rocm-upstream/REPORT.md
 vendor/mlx-rocm-upstream/ci/build_rocm.yml
 vendor/mlx-rocm-upstream/mlx/CMakeLists.txt
 vendor/mlx-rocm-upstream/mlx/allocator.h
@@ -601,6 +602,9 @@ vendor/mlx-rocm-upstream/mlx/backend/rocm/flash_attention_bwd_wmma.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/flash_attention_wmma.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/g1_hiplog.h
 vendor/mlx-rocm-upstream/mlx/backend/rocm/gated_delta_update.cpp
+vendor/mlx-rocm-upstream/mlx/backend/rocm/gdn_fused_step.hip
+vendor/mlx-rocm-upstream/mlx/backend/rocm/gdn_fused_step_tape.hip
+vendor/mlx-rocm-upstream/mlx/backend/rocm/gdn_prep.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/graph_decode_pilot_logic.h
 vendor/mlx-rocm-upstream/mlx/backend/rocm/host_stage.cpp
 vendor/mlx-rocm-upstream/mlx/backend/rocm/indexing.hip
@@ -609,6 +613,8 @@ vendor/mlx-rocm-upstream/mlx/backend/rocm/jit_module.h
 vendor/mlx-rocm-upstream/mlx/backend/rocm/kernel_utils.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/kernel_utils.hpp
 vendor/mlx-rocm-upstream/mlx/backend/rocm/layer_norm.hip
+vendor/mlx-rocm-upstream/mlx/backend/rocm/lm_head_int2.hip
+vendor/mlx-rocm-upstream/mlx/backend/rocm/lm_head_int2w.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/load.cpp
 vendor/mlx-rocm-upstream/mlx/backend/rocm/logsumexp.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/lru_cache.h
@@ -680,6 +686,7 @@ vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qdequant.hpp
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmm.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_kernel.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_lx_kernel.hip
+vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_rows_msg_kernel.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_tiled_kernel.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_wide_mr_kernel.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/quantized.cpp

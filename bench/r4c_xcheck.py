@@ -51,11 +51,7 @@ def main():
 
     t_int2 = loop(lambda i: mx.fast.lm_head_int2(rows[i], packed, scale, zs, sxs[i]))
     t_head = loop(lambda i: lm.lm_head(rows[i]))
-    t_wide = (
-        loop(lambda i: mx.fast.lm_head_int2_wide(rows[i], packed, scale, zs, sxs[i]))
-        if has_wide
-        else None
-    )
+    t_wide = loop(lambda i: mx.fast.lm_head_int2_wide(rows[i], packed, scale, zs, sxs[i])) if has_wide else None
     # Losslessness probe: on 256 seeded rows, the wide op's re-rank selection
     # (top-32 candidate set + argmax token) vs the scalar int2 op.
     sel_match = None
@@ -68,15 +64,20 @@ def main():
             sxx = mx.sum(xx.astype(mx.float32).reshape(NG, 128), axis=1)
             _, cv1, cc1 = mx.fast.lm_head_int2(xx, packed, scale, zs, sxx)
             _, cv2, cc2 = mx.fast.lm_head_int2_wide(xx, packed, scale, zs, sxx)
-            p1 = mx.argsort(cv1.reshape(-1)); i1 = mx.take(cc1.reshape(-1), p1[-32:])
-            p2 = mx.argsort(cv2.reshape(-1)); i2 = mx.take(cc2.reshape(-1), p2[-32:])
-            s1 = set(mx.eval(i1).tolist()); s2 = set(mx.eval(i2).tolist())
+            p1 = mx.argsort(cv1.reshape(-1))
+            i1 = mx.take(cc1.reshape(-1), p1[-32:])
+            p2 = mx.argsort(cv2.reshape(-1))
+            i2 = mx.take(cc2.reshape(-1), p2[-32:])
+            s1 = set(i1.tolist())
+            s2 = set(i2.tolist())
             if s1 == s2:
                 nmatch += 1
         sel_match = nmatch
         print(f"XCHECK sel_match={nmatch}/256", flush=True)
+    wvh = f"{t_wide / t_head:.2f}" if t_wide is not None else "NA"
     print(
-        f"XCHECK int2_loop={t_int2:.0f}us head_loop={t_head:.0f}us wide_loop={t_wide if t_wide is not None else 'NA'}us ratio={t_int2 / t_head:.2f} wide_vs_head={t_wide / t_head:.2f if t_wide else 'NA'}",
+        f"XCHECK int2={t_int2:.0f}us head={t_head:.0f}us wide={t_wide if t_wide is not None else 'NA'}us "
+        f"int2_vs_head={t_int2 / t_head:.2f} wide_vs_head={wvh} sel_match={sel_match}",
         flush=True,
     )
 
