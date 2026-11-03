@@ -57,34 +57,36 @@ def bench(f, x) -> float:
 
 def main() -> None:
     rows_on = os.environ.get("MLX_ROCM_QMV_ROWS") is not None
-    print(f"probe env: QMV_ROWS={os.environ.get('MLX_ROCM_QMV_ROWS')} "
-          f"ROWS_MIN_N={os.environ.get('MLX_ROCM_QMV_ROWS_MIN_N')} "
-          f"(rows_live={rows_on})")
+    print(
+        f"probe env: QMV_ROWS={os.environ.get('MLX_ROCM_QMV_ROWS')} "
+        f"ROWS_MIN_N={os.environ.get('MLX_ROCM_QMV_ROWS_MIN_N')} "
+        f"(rows_live={rows_on})"
+    )
     for name, K, N in SHAPES:
         lin_nb = make_lin(K, N, bias=False)
         x1 = mx.random.normal((1, K)).astype(mx.bfloat16)
         x4 = mx.random.normal((4, K)).astype(mx.bfloat16)
         t_m1 = bench(lin_nb, x1)
         t_m4 = bench(lin_nb, x4)
-        row = (f"bias-free {name:12s} K={K:6d} N={N:6d}: M1={t_m1:8.3f} ms  "
-               f"M4={t_m4:8.3f} ms  M4/M1={t_m4 / t_m1:5.2f}x")
+        row = f"bias-free {name:12s} K={K:6d} N={N:6d}: M1={t_m1:8.3f} ms  M4={t_m4:8.3f} ms  M4/M1={t_m4 / t_m1:5.2f}x"
         # per-row reference (one row at a time, same op). NOTE: mx.eval in this
         # wheel returns None (side effect only) - use the lazy graph and force
         # with float() on a reducing op.
-        refs = [lin_nb(x4[i:i + 1]) for i in range(4)]
+        refs = [lin_nb(x4[i : i + 1]) for i in range(4)]
         out4 = lin_nb(x4)
         maxdiff = 0.0
         for i, r in enumerate(refs):
-            maxdiff = max(maxdiff,
-                         float(mx.max(mx.abs(out4[i:i + 1] - r))))
+            maxdiff = max(maxdiff, float(mx.max(mx.abs(out4[i : i + 1] - r))))
         row += f"  maxdiff_vs_perrow={maxdiff:.3e}"
         print(row)
         if N <= 12288:  # biased arm only for the cheap shapes
             lin_b = make_lin(K, N, bias=True)
             tb_m1 = bench(lin_b, x1)
             tb_m4 = bench(lin_b, x4)
-            print(f"biased     {name:12s} K={K:6d} N={N:6d}: M1={tb_m1:8.3f} ms  "
-                  f"M4={tb_m4:8.3f} ms  M4/M1={tb_m4 / tb_m1:5.2f}x")
+            print(
+                f"biased     {name:12s} K={K:6d} N={N:6d}: M1={tb_m1:8.3f} ms  "
+                f"M4={tb_m4:8.3f} ms  M4/M1={tb_m4 / tb_m1:5.2f}x"
+            )
             del lin_b
         del lin_nb, x1, x4
 
