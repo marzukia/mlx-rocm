@@ -1504,6 +1504,79 @@ std::vector<array> gdn_fused_step_tape(
       "state tapes are emitted by the fused recurrence kernel only)");
 }
 
+bool LMHeadInt2::use_fallback(Stream s) {
+  // The int2 packed weights only exist on the caller side (the MTP draft
+  // bench quantizes the bf16 head itself); there is no chain fallback.
+  // GPU-only by construction; CPU throws.
+  return s.device == Device::cpu;
+}
+
+std::vector<array> lm_head_int2(
+    const array& x_raw,
+    const array& wq_raw,
+    const array& scale_raw,
+    const array& zs_raw,
+    const array& sx_raw,
+    StreamOrDevice s_ /* = {} */) {
+  auto s = to_stream(s_);
+
+  auto x = gdnf_make_row_contiguous(astype(x_raw, bfloat16, s), s);
+  auto wq = astype(wq_raw, uint8, s);
+  auto scale = astype(scale_raw, float32, s);
+  auto zs = astype(zs_raw, float32, s);
+  auto sx = astype(sx_raw, float32, s);
+
+  if (x.ndim() != 2) {
+    throw std::invalid_argument(
+        "lm_head_int2: x must be [1, K] (M=1 only); got rank " +
+        std::to_string(x.ndim()));
+  }
+  if (x.shape(0) != 1) {
+    throw std::invalid_argument(
+        "lm_head_int2: M=1 only; got M=" + std::to_string(x.shape(0)));
+  }
+  int K = (int)x.shape(1);
+  int N = (int)wq.shape(0);
+  if ((int)wq.shape(1) != K / 4) {
+    throw std::invalid_argument(
+        "lm_head_int2: wq must be [N, K/4]; got ["
+        + std::to_string(N) + ", " + std::to_string(wq.shape(1)) + "] for K="
+        + std::to_string(K));
+  }
+  int NG = K / 128;
+  if ((int)scale.shape(1) != NG || (int)zs.shape(1) != NG
+      || (int)sx.shape(0) != NG) {
+    throw std::invalid_argument("lm_head_int2: scale/zs must be [N, K/128] "
+                                "and sx [K/128]");
+  }
+  if (N % 64 != 0) {
+    throw std::invalid_argument(
+        "lm_head_int2: N must be a multiple of 64 (in-kernel candidate "
+        "selection is per 64-column block); got N=" + std::to_string(N));
+  }
+
+  auto fallback = [](std::vector<array> inputs) -> std::vector<array> {
+    (void)inputs;
+    throw std::runtime_error(
+        "lm_head_int2: no CPU fallback (the int2 packed weights have no "
+        "chain form); run on the ROCm GPU");
+  };
+
+  if (!LMHeadInt2::use_fallback(s)) {
+    auto inputs = std::vector<array>{x, wq, scale, zs, sx};
+    return array::make_arrays(
+        std::vector<Shape>{
+            {N},
+            {N / 64, 8},
+            {N / 64, 8}},
+        std::vector<Dtype>{float32, float32, int32},
+        std::make_shared<LMHeadInt2>(s, fallback),
+        inputs);
+  }
+  // CPU path (use_fallback true): run the fallback (which throws).
+  return fallback(std::vector<array>{x, wq, scale, zs, sx});
+}
+
 std::vector<array> ScaledDotProductAttention::vjp(
     const std::vector<array>& primals,
     const std::vector<array>& cotangents,

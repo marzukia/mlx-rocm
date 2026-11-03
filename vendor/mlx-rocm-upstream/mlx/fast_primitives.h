@@ -588,6 +588,41 @@ class GdnFusedStepTape : public Custom {
   float eps_;
   float norm_eps_;
 };
+// LMHeadInt2: int2 g128-asymmetric dequant GEMV (M=1) + in-kernel
+// per-64-column top-8 candidate emission (see backend/rocm/lm_head_int2.hip).
+// Inputs: x [M, K] bf16, wq [N, K/4] u8, scale [N, NG] f32 (pre-mul 4*s),
+// zs [N, NG] f32 (pre-mul (4+z)*s), sx [NG] f32 (sum of x per 128-group).
+// Outputs: logits [N] f32, cand_val [N/64, 8] f32, cand_col [N/64, 8] i32.
+class LMHeadInt2 : public Custom {
+ public:
+  LMHeadInt2(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback)
+      : Custom(stream, std::move(fallback)) {}
+
+  static bool use_fallback(Stream s);
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(LMHeadInt2);
+
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    int N = (int)inputs[1].shape(0);
+    int NG = (int)inputs[4].shape(0);
+    (void)NG;
+    return {Shape{N}, Shape{N / 64, 8}, Shape{N / 64, 8}};
+  }
+
+  std::vector<Dtype> output_dtypes(const std::vector<array>& inputs) override {
+    (void)inputs;
+    return {Dtype::float32, Dtype::float32, Dtype::int32};
+  }
+};
 class GdnPrep : public Custom {
  public:
   GdnPrep(
