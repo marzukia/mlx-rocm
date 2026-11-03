@@ -144,8 +144,11 @@ def main():
     mtp_on = mode in ("1", "2", "3", "4")
     if mode == "4":
         # FIX#1: GDN state-tape commit (the model's TAPE branch is gated
-        # on these; S<=4 forwards go through gdn_fused_step_tape).
-        os.environ["MLX_ROCM_GDN_TAPE"] = "1"
+        # on these; S==4 forwards go through gdn_fused_step_tape in the
+        # wheel model file; S=1 correction forwards use the fused op).
+        # MTP6_TAPE=0 -> savestate path (A/B: int2 + trim without tape).
+        if os.environ.get("MTP6_TAPE", "1") == "1":
+            os.environ["MLX_ROCM_GDN_TAPE"] = "1"
         os.environ["MLX_ROCM_GDN_FUSE"] = "1"
     t0 = time.time()
     model, tok = load(MODEL)
@@ -388,6 +391,8 @@ def main():
             d1, d2, d3 = draft1, draft2, draft3
             draft1 = draft2 = draft3 = None
             verifies += 1
+            if os.environ.get("MTP6_TAPE", "1") != "1":
+                saved = save_gdn(cache)
             logits, hidden = lm(
                 mx.array([[prev_token, d1, d2, d3]]),
                 cache=cache,
@@ -396,20 +401,39 @@ def main():
             )
             l0, l1, l2, l3 = logits[0, 0], logits[0, 1], logits[0, 2], logits[0, 3]
 
-            def commit(krow):
+            def commit(krow, prefix):
                 # Select the per-row GDN state-tape row (the state AFTER
                 # row krow) and rebind the cache leaves to the tape slice
                 # (lazy; no copies, no sync). lengths is None in this
                 # model (advance() is a no-op), so no lengths fix-up.
-                for i, c in enumerate(cache):
-                    if hasattr(c, "cache"):
-                        st, cstab = lm.model.layers[i].linear_attn.last_tape
-                        # tape rows are B-squeezed: restore the B dim
-                        c[1] = st[krow].reshape((1,) + st[krow].shape)
-                        c[0] = cstab[krow].reshape((1,) + cstab[krow].shape)
-                for c in cache:
-                    if isinstance(c, KVCache):
-                        c.trim(3 - krow)
+                tape_avail = os.environ.get("MTP6_TAPE", "1") == "1"
+                if tape_avail:
+                    try:
+                        st0 = lm.model.layers[0].linear_attn.last_tape[0]
+                        tape_avail = st0 is not None
+                    except Exception:
+                        tape_avail = False
+                if tape_avail:
+                    for i, c in enumerate(cache):
+                        if hasattr(c, "cache"):
+                            st, cstab = lm.model.layers[i].linear_attn.last_tape
+                            # tape rows are B-squeezed: restore the B dim
+                            c[1] = st[krow].reshape((1,) + st[krow].shape)
+                            c[0] = cstab[krow].reshape((1,) + cstab[krow].shape)
+                    for c in cache:
+                        if isinstance(c, KVCache):
+                            c.trim(3 - krow)
+                else:
+                    # savestate A/B (MTP6_TAPE=0): canonical restore +
+                    # trim ALL verify rows + re-forward of the accepted
+                    # prefix (the GDN restore makes the re-forward
+                    # mandatory, so the kept rows must be dropped).
+                    restore_gdn(cache, saved)
+                    for c in cache:
+                        if isinstance(c, KVCache):
+                            c.trim(4)
+                    for pt in prefix:
+                        lm(mx.array([[pt]]), cache=cache)
 
             t2 = int(mx.argmax(l0))
             if t2 == EOS:
@@ -436,7 +460,7 @@ def main():
                         # draft3 rejected: commit row 2 (after D2), then
                         # ONE S=1 forward of the correction (the accepted
                         # prefix costs zero - tape commit).
-                        commit(2)
+                        commit(2, [prev_token, d1, d2])
                         mtp_cache[0].trim(1)
                         logits, hidden = lm(
                             mx.array([[t4]]), cache=cache,
@@ -447,7 +471,7 @@ def main():
                         n_refwd += 1
                 else:
                     # draft2 rejected: commit row 1 (after D1), forward t3.
-                    commit(1)
+                    commit(1, [prev_token, d1])
                     mtp_cache[0].trim(2)
                     logits, hidden = lm(
                         mx.array([[t3]]), cache=cache,
@@ -458,7 +482,7 @@ def main():
                     n_refwd += 1
             else:
                 # draft1 rejected: commit row 0 (after prev_token), forward t2.
-                commit(0)
+                commit(0, [prev_token])
                 mtp_cache[0].trim(3)
                 logits, hidden = lm(
                     mx.array([[t2]]), cache=cache,
