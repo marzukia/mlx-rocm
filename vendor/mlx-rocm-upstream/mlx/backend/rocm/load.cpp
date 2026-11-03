@@ -55,6 +55,9 @@ void Load::eval_gpu(const std::vector<array>& inputs, array& out) {
   // suppressed at replay, where this path delivers).
   if (rocm::graph_decode_mode() && nbytes <= 16) {
     auto sl = rocm::allocator().decode_idx_slot();
+    fprintf(stderr,
+            "[gdidx] load: mode=1 nbytes=%zu sl.host=%p sl.data=%p\n",
+            nbytes, sl.host, sl.data);
     if (sl.host && sl.data) {
       // Zero the full 16 B first: a 4 B (int32) load into an 8 B (int64)
       // reader would otherwise leave stale high bytes in the slot.
@@ -81,7 +84,10 @@ void Load::eval_gpu(const std::vector<array>& inputs, array& out) {
           hipMemcpyHostToDevice,
           encoder.stream());
       rocm::allocator().decode_idx_slot_arm();
+      fprintf(stderr, "[gdidx] load: slot path taken, armed\n");
       return;
+    } else {
+      fprintf(stderr, "[gdidx] load: FALL-THROUGH (slot null)\n");
     }
   }
   out.set_data(mlx::core::rocm::malloc_async(nbytes, encoder));

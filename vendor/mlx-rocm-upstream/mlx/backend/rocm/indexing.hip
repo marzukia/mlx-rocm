@@ -110,6 +110,28 @@ __global__ void gather_general_kernel(
 // copy, with the source-row base computed once (no per-element index math).
 // Covers the common axis-0 gather of a row-contiguous source (e.g. the MoE
 // token reorder), which the general kernel does per-element with mod/div loops.
+__global__ void stage_slot16_kernel(
+    int64_t* dst,
+    const int64_t* src,
+    int nbytes) {
+  int i = threadIdx.x;
+  int off = i * 8;
+  if (off >= nbytes) {
+    dst[i] = 0;
+    return;
+  }
+  // Copy the remaining n bytes (little-endian low bytes of word i) and
+  // zero-fill the rest of the 16 B slot: an n-byte token must not leave
+  // stale high bytes (the reader may be wider than the token).
+  uint64_t w = 0;
+  const uint8_t* sb = reinterpret_cast<const uint8_t*>(src) + off;
+  int n = nbytes - off;
+  for (int b = 0; b < n; ++b) {
+    w |= (uint64_t)sb[b] << (8 * b);
+  }
+  dst[i] = static_cast<int64_t>(w);
+}
+
 template <typename T, typename IdxT>
 __global__ void gather_rows_kernel(
     const T* src,
@@ -747,25 +769,29 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
           n_rows == 1) {
         auto ixs = rocm::allocator().decode_idx_slot();
         if (ixs.data) {
-          if (!rocm::allocator().decode_idx_slot_take()) {
-            // Fresh capture (the token load predates the mode flag): move
-            // the idx array into the slot eagerly. The token load ran
-            // BEFORE the capture window opened, so its H2D already landed
-            // in the per-step buffer. A synchronous hipMemcpy on the
-            // default (implicit) stream executes NOW, outside the captured
-            // stream (a hipMemcpyAsync D2D on the captured stream is not
-            // capturable on ROCm 10.1 - it invalidates the capture). The
-            // callback wrapper keeps the replay semantics: suppressed at
-            // replay, where the load's direct pre-launch H2D delivers the
-            // fresh token to the slot instead.
-            const void* src = gpu_ptr<void>(inputs[1]);
-            encoder.launch_kernel(
-                [d = ixs.data, src](hipStream_t) {
-                  hipError_t e = hipMemcpy(
-                      d, src, 16, hipMemcpyDeviceToDevice);
-                  rocm::g1_check_hip(
-                      "hipMemcpy (gd-idx D2D stage, eager)", e);
-                });
+          bool took = rocm::allocator().decode_idx_slot_take();
+          fprintf(stderr, "[gdidx] gather: take()=%d ixs.data=%p\n",
+                  (int)took, ixs.data);
+          if (!took) {
+            // Fresh capture (the token array predates the mode flag):
+            // stage the per-step idx buffer into the slot as a graph
+            // KERNEL node. A memcpy D2D is not capturable on ROCm 10.1
+            // (a legacy-stream hipMemcpy fails 906 "legacy stream depend
+            // on a capturing blocking stream"; a captured-stream
+            // hipMemcpyAsync D2D is likewise not recorded). A kernel
+            // node is recorded at capture and re-run by the graph launch
+            // at replay, where it moves the new token (written by
+            // mx.array's host copy into the arena-pinned per-step buffer,
+            // whose VA the floor reset keeps stable) into the slot, and
+            // zero-fills the slot's remaining bytes (the buffer is only
+            // nbytes wide; a blind 16 B read would run off the buffer).
+            dim3 cgrid(1);
+            dim3 cblk(2);
+            encoder.add_kernel_node(
+                (&rocm::stage_slot16_kernel), cgrid, cblk, 0,
+                reinterpret_cast<int64_t*>(ixs.data),
+                reinterpret_cast<const int64_t*>(gpu_ptr<void>(inputs[1])),
+                (int)inputs[1].nbytes());
           }
           h_indices[0] = ixs.data;
         }

@@ -506,7 +506,11 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
     // gather. If the next step turns out to be big/micro (Eager kind),
     // gd_on_op retracts the mode (it is reset there).
     rocm::set_graph_decode_mode(true);
-    (void)rocm::allocator().decode_idx_slot();
+    {
+      auto iss = rocm::allocator().decode_idx_slot();
+      fprintf(stderr, "[gdidx] arm: mode set; slot dev=%p host=%p\n",
+              iss.data, iss.host);
+    }
   }
   p.step_done();
 }

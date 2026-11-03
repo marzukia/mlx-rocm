@@ -1014,16 +1014,22 @@ RocmAllocator::decode_idx_slot() {
   if (!st.host) {
     void* dev = nullptr;
     void* host = nullptr;
-    if (hipMalloc(&dev, 4096) != hipSuccess || dev == nullptr) {
+    hipError_t me1 = hipMalloc(&dev, 4096);
+    if (me1 != hipSuccess || dev == nullptr) {
+      fprintf(stderr, "[gdidx] slot mat FAIL hipMalloc=%d dev=%p\n",
+              (int)me1, dev);
       (void)hipGetLastError();
       return {Buffer{nullptr}, nullptr, nullptr};
     }
-    if (hipHostMalloc(&host, 16, hipHostMallocDefault) != hipSuccess ||
-        host == nullptr) {
+    hipError_t me2 = hipHostMalloc(&host, 16, hipHostMallocDefault);
+    if (me2 != hipSuccess || host == nullptr) {
+      fprintf(stderr, "[gdidx] slot mat FAIL hipHostMalloc=%d host=%p\n",
+              (int)me2, host);
       (void)hipGetLastError();
       (void)hipFree(dev);
       return {Buffer{nullptr}, nullptr, nullptr};
     }
+    fprintf(stderr, "[gdidx] slot mat OK dev=%p host=%p\n", dev, host);
     // Shell-only Buffer (the alien sentinel, exactly as make_buffer builds it;
     // make_buffer itself takes mutex_ and cannot be called here): free()
     // deletes the shell and never hipFrees the 4 KB device buffer, which must
