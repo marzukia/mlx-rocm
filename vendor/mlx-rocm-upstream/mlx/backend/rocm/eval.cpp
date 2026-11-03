@@ -503,6 +503,22 @@ bool gd_step_is_embedding_lookup(const array& arr) {
 // per-op launches are suppressed and the cached exec is launched at step end); every op of a replay step is validated against the captured op-name sequence (a KVCache resize inserts extra ops). next_capture stays true for the whole step (it is only cleared at step end / on a begin failure), so guard on step_ops: re-beginning per op would discard the partial capture on every op (decode_capture_begin's defensive end+discard) and the recorded step would end up 0 nodes.
 void gd_on_op(GraphDecodePilot& p, const array& arr, Stream s) {
   const std::string name = arr.primitive().name();
+  // G1OP (DEFAULT OFF): per-op sequence dump for the decode pilot. Tags the
+  // step sequence, the op index, the step kind (E/C/R) and the op name so a
+  // capture step and a diverged replay step can be diffed to find the op
+  // that appears in one but not the other.
+  if (std::getenv("MLX_G1_OPDUMP") != nullptr) {
+    const char* kind = p.step_kind == GdPilotLogic::Kind::Capture ? "C"
+                        : p.step_kind == GdPilotLogic::Kind::Replay ? "R" : "E";
+    auto shp = arr.shape();
+    char sbuf[128];
+    int off = snprintf(sbuf, sizeof(sbuf), "");
+    for (size_t d = 0; d < shp.size() && off < 100; ++d)
+      off += snprintf(sbuf + off, sizeof(sbuf) - off, "%s%ld",
+                     d ? "x" : "", (long)shp[d]);
+    fprintf(stderr, "[g1o] seq %ld %s op %ld %s [%s]\n",
+            (long)p.step_seq, kind, (long)p.step_ops, name.c_str(), sbuf);
+  }
   if (p.step_ops == 0) {
     // Choose the step kind (the logic lives in the unit-tested GdPilotLogic base: T>1 eager, the replay arm with the embedding-lookup gate, the capture candidate match) and start the per-op tracking. Re-beginning per op would discard the partial capture on every op (decode_capture_begin's defensive end+discard) and the recorded step would end up 0 nodes.
     p.first_op(name, gd_step_is_big(arr),

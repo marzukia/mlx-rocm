@@ -616,6 +616,30 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& s = stream();
   auto& encoder = rocm::get_command_encoder(s);
 
+// G1_IDXDBG (DEFAULT OFF): for a decode (single-index) gather in graph
+  // decode mode, print the host idx value, the idx buffer VA, and the
+  // device idx value (post-flush, pre-kernel) so a replay step's idx
+  // delivery can be checked against the step's actual token.
+  if (rocm::graph_decode_mode() &&
+      rocm::get_command_encoder(s).decode_replay_suppress() &&
+      std::getenv("MLX_G1_IDXDBG") != nullptr && inputs.size() > 1 &&
+      inputs[1].size() == 1) {
+    static int nidx_dbg = 0;
+    if (nidx_dbg++ < 16) {
+      const auto& idx = inputs[1];
+      void* dev = nullptr;
+      int32_t dv = -1;
+      const int32_t* dp = gpu_ptr<int32_t>(idx);
+      dev = const_cast<void*>(reinterpret_cast<const void*>(dp));
+      if (dev) {
+        (void)hipMemcpy(&dv, dev, 4, hipMemcpyDeviceToHost);
+      }
+      bool arena = dev ? rocm::allocator().in_decode_arena(dev) : false;
+      fprintf(stderr,
+              "[g1x] gather idx dev=%d va=%p arena=%d outn=%zu\n",
+              dv, dev, (int)arena, out.nbytes());
+    }
+  }
   // K3 (t1082): in graph decode mode, a small gather out goes to the
   // persistent 4 KB value slot 3, each row at a distinct 256 B offset (a per-step cursor, reset with the arena): rows do not clobber each other in-graph (a decode step has several fast_rows gathers), and no row overflows into an adjacent wrapper. Out > 4 KB keeps the stable-address arena buffer (the row fits its own block there).
   // MLX_GD_K3OFF=1 disables this (and the idx redirect below) for the t1099 on/off A/B.

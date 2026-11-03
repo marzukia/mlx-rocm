@@ -348,6 +348,15 @@ void KVAppend::eval_gpu(
   int64_t dv_base = off_dev ? 0 : offset_ * cv.strides()[2];
   if (off_dev) {
     *sl.host = offset_;
+    if (std::getenv("MLX_G1_KVAPP_DBG")) {
+      static int n2 = 0;
+      if (n2 < 60) {
+        fprintf(stderr, "[g1kv] append offset=%lld host=%p hostval=%lld\n",
+                (long long)offset_, (void*)sl.host, (long long)*sl.host);
+        fflush(stderr);
+        ++n2;
+      }
+    }
     encoder.launch_kernel(
         [off_dev, host = sl.host](hipStream_t st) {
           hipError_t e = hipMemcpyAsync(
