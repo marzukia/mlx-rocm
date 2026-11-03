@@ -31,7 +31,7 @@ protocol-length datapoint.
 
 ## Regime
 
-- `flock` /home/andryo/gpu-bench.lock held for every run; 25 s idle before and
+- `flock ~/gpu-bench.lock` held for every run; 25 s idle before and
   between runs.
 - DPM: non-root sysfs read is EPERM on this box (worse than the battery's
   EBUSY); the v2 root wrapper had a quoting bug, so the force-level was never

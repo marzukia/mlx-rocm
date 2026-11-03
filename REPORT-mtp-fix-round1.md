@@ -1,8 +1,8 @@
 # MTP fix round 1 — report
 
-Date: 2026-11-03. Guest: `andryo@100.78.68.72` (RX 9070 XT, **16 GB SKU R907XTGL**, gfx1201,
+Date: 2026-11-03. Guest: guest-a (RX 9070 XT, **16 GB SKU R907XTGL**, gfx1201,
 32 CU, 64 KB LDS, DPM performance=high, sclk 3.15–3.17 GHz under load).
-Model: `/mnt/models/qwen3-9b-mlx` (4-bit, 15-tensor sidecar). Wheels: canonical
+Model: `qwen3-9b-mlx` (4-bit, 15-tensor sidecar). Wheels: canonical
 `mlx-0.32.3.dev20261102+75ca881` in `venv-canon`; patched
 `mlx-0.32.3.dev20261103+ed40b1a` in `venv-patch1` (canonical + `lm_head_int2` kernel,
 tape op already in the canonical source, env-default-off).

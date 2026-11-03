@@ -32,7 +32,7 @@ start; power 34-85 W / 32-35 C under load, no throttling).
 **PRE = 37.47 → STOP gate triggered.**
 
 Regime delta: the 65.88 anchor (t1387, Nov 2 17:29-19:43Z) was measured on the
-**VM** (100.91.94.56, now dead). This bare-metal box (100.78.68.72, booted
+**VM** (the previous guest, now dead). This bare-metal box (guest-a, booted
 Nov 2 ~20:23Z) has **never** produced 65-class MTP in any clock state: best
 ever 37.71 (DPM-era 00:15Z), 37.42 (locked 02:15Z), 37.47 (locked, current
 session). MTP/AR ratio: 0.50 on this box vs 1.08 on the VM. The "65-66
