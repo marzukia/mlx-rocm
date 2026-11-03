@@ -286,6 +286,22 @@ static void g1_prelaunch_slot_h2d(hipStream_t st) {
       }
     }
   }
+  // GD-idx (t1099 R3): the token idx slot is re-delivered from its persistent
+  // pinned buffer as well: it covers the case where the capture's direct H2D
+  // was not recorded (discarded by the runtime), and is a redundant no-op
+  // (same value) otherwise. Ordered before the graph launch on the same
+  // stream, so the slot holds the current step's token when the baked-in
+  // embedding gather reads it.
+  auto ixs = alc.decode_idx_slot();
+  if (ixs.host && ixs.data) {
+    hipError_t e = hipMemcpyAsync(
+        ixs.data, ixs.host, 16, hipMemcpyHostToDevice, st);
+    g1_check_hip("hipMemcpyAsync (pre-launch idx-slot H2D)", e);
+    if (logh) {
+      fprintf(stderr, "[g1h] idxslot %p <- 16B\n", ixs.data);
+      fflush(stderr);
+    }
+  }
   // The idx (zero) slot must read 0 at every launch: the capture step's kernels can leave arena garbage in it (and nothing re-zeroes it), which a gather then reads as an index -> off-arena fault address.
   auto zs = alc.decode_zero_slot();
   if (zs.data) {
@@ -377,6 +393,16 @@ void CommandEncoder::g1_prelaunch_recorded_h2d(int slot, hipStream_t st) {
     return;
   const bool logh = std::getenv("MLX_G1_H2DLOG") != nullptr;
   for (auto& r : g1h2d_recs_[slot]) {
+    // GD-idx (t1099 R3): re-deliver only from the persistent staging buffers.
+    // A per-step source (the old Load path's fresh pinned buffer) is freed at
+    // step end; copying from it here is a UAF read of the stale capture-step
+    // value (the R2 collapse's re-delivery leg). Its neutralized in-graph
+    // node already does nothing, so skipping loses nothing. The token load's
+    // record now sources the persistent idx-slot host and delivers the new
+    // value (redundant with the eval-time copy; same value).
+    if (!rocm::allocator().is_persistent_staging_host(r.host_src)) {
+      continue;
+    }
     hipError_t e = hipMemcpyAsync(r.dev_dst, r.host_src, r.bytes,
                                  hipMemcpyHostToDevice, st);
     g1_check_hip("hipMemcpyAsync (pre-launch recorded H2D)", e);

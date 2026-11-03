@@ -900,6 +900,7 @@ void RocmAllocator::decode_arena_reset() {
   decode_arena_.next_wrapper = 0;
   decode_arena_.overflowed = false;
   decode_slot3_cursor_ = 0;
+  idx_slot_armed_ = false;
 }
 
 void RocmAllocator::decode_arena_freeze_floor() {
@@ -1004,6 +1005,63 @@ RocmAllocator::decode_zero_slot() {
     st.base = decode_arena_.base;
   }
   return {st.buf, st.host, st.data};
+}
+
+RocmAllocator::DecodeValueSlot
+RocmAllocator::decode_idx_slot() {
+  std::lock_guard lock(mutex_);
+  DecodeIdxSlotState& st = decode_idx_state_;
+  if (!st.host) {
+    void* dev = nullptr;
+    void* host = nullptr;
+    if (hipMalloc(&dev, 4096) != hipSuccess || dev == nullptr) {
+      (void)hipGetLastError();
+      return {Buffer{nullptr}, nullptr, nullptr};
+    }
+    if (hipHostMalloc(&host, 16, hipHostMallocDefault) != hipSuccess ||
+        host == nullptr) {
+      (void)hipGetLastError();
+      (void)hipFree(dev);
+      return {Buffer{nullptr}, nullptr, nullptr};
+    }
+    // Shell-only Buffer (the alien sentinel, exactly as make_buffer builds it;
+    // make_buffer itself takes mutex_ and cannot be called here): free()
+    // deletes the shell and never hipFrees the 4 KB device buffer, which must
+    // stay mapped for the lifetime of the process (the graph bakes its VA).
+    auto* rb = new RocmBuffer{
+        dev,
+        16,
+        /*is_managed=*/true,
+        /*device=*/-1,
+        nullptr,
+        false,
+        reinterpret_cast<void*>(static_cast<uintptr_t>(1))};
+    st.buf = Buffer{rb};
+    st.data = dev;
+    st.host = host;
+  }
+  return {st.buf, st.host, st.data};
+}
+
+void RocmAllocator::decode_idx_slot_arm() {
+  std::lock_guard lock(mutex_);
+  idx_slot_armed_ = true;
+}
+
+bool RocmAllocator::decode_idx_slot_take() {
+  std::lock_guard lock(mutex_);
+  bool v = idx_slot_armed_;
+  idx_slot_armed_ = false;
+  return v;
+}
+
+bool RocmAllocator::is_persistent_staging_host(const void* p) const {
+  for (int i = 0; i < 4; ++i) {
+    if (decode_value_slot_state_[i].host == p) {
+      return true;
+    }
+  }
+  return decode_idx_state_.host == p;
 }
 
 size_t RocmAllocator::decode_value_slot3_cursor(size_t size) {

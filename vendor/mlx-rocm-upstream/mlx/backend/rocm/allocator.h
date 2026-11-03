@@ -164,6 +164,13 @@ class RocmAllocator : public allocator::Allocator {
   DecodeValueSlot decode_zero_slot();
   // K3 (t1082): per-step cursor into the 4 KB value slot 3 (gather out). Each small gather's row is placed at a distinct 256 B aligned offset so rows do not clobber each other in-graph (a decode step has several fast_rows gathers). Returns the row's offset, or the 4 KB capacity if it does not fit (the caller falls back to a stable-arena buffer). Reset with the arena.
   size_t decode_value_slot3_cursor(size_t size);
+  // GD-idx (t1099 R3): the per-step token-idx staging slot. A 4 KB device buffer on its OWN hipMalloc (not arena: the token array is evaluated when its python object is created — before the step's first op, when a fresh capture's arena is not yet active) + a 16 B pinned host. Its device VA is stable across steps AND arena incarnations, so the capture can bake it into the embedding gather; the token H2D re-executes before every graph launch (eval-time copy + pre-launch re-delivery, both sourced from the persistent pinned buffer, which the neutralized in-graph node pattern keeps current). The per-step re-allocation of the old per-step pinned path moved the out VA under the baked pointer, so the replayed graph read the capture step's value (the R2 collapse).
+  DecodeValueSlot decode_idx_slot();
+  // Arm is set by the token staging (Load small path); consumed by the first single-row fast_rows gather of the step (the embedding). Other single-row gathers keep their own idx buffer. Cleared with the arena reset.
+  void decode_idx_slot_arm();
+  bool decode_idx_slot_take();
+  // True iff p is one of the persistent staging host buffers (value slots 0-3 or the idx slot). Pre-launch re-delivery of a recorded in-graph H2D must skip any other (per-step) source: it is freed at step end, and copying from it is a UAF read of the stale capture-step value.
+  bool is_persistent_staging_host(const void* p) const;
 
   bool train_arena_begin(size_t capacity, int device, void* stream) {
     return decode_arena_begin(capacity, device, stream);
@@ -227,6 +234,13 @@ class RocmAllocator : public allocator::Allocator {
   };
   DecodeValueSlotState decode_value_slot_state_[4];
   DecodeValueSlotState decode_zero_state_;
+  struct DecodeIdxSlotState {
+    Buffer buf{nullptr};
+    void* host{nullptr};  // pinned, 16 B, persistent
+    void* data{nullptr};  // device, 4 KB, persistent
+  };
+  DecodeIdxSlotState decode_idx_state_;
+  bool idx_slot_armed_{false};
   size_t decode_slot3_cursor_{0};
 };
 

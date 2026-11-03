@@ -729,13 +729,39 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   {
     if (fast_rows) {
-      // K3 (graph decode): read the index from the zero slot — zero-cleared before every launch (g1_prelaunch_slot_h2d), so the graph reads the cleared buffer. Pairs with the small-out routing above: only there is the idx chunk clobbered by a >256B row. >4KB rows keep the stable-address arena out (row fits its own block), so the per-step idx buffer is left untouched. MLX_GD_K3OFF=1 or MLX_GD_K3IDXOFF=1 disables this redirect (t1099 A/B: the original idx buffer is read instead).
+      // GD-idx (t1099 R3): the per-step token idx arrives at a persistent
+      // fixed-VA slot (allocator::decode_idx_slot): its device VA is stable
+      // across steps and arena incarnations, so the capture can bake it into
+      // the embedding gather and the replay reads the NEW token (the R2
+      // collapse: the per-step re-allocation moved the idx buffer under the
+      // baked pointer; the K3 zero-slot redirect read the always-zero slot
+      // instead -> row 0 -> the 271 attractor). Replay: the token load
+      // staged the slot (armed) before the step's first op; fresh capture:
+      // the load happened before the mode flag was set, so stage the idx
+      // array into the slot with a D2D — recorded at capture (delivers the
+      // capture step's token when the graph launches), suppressed at replay
+      // (the load's direct H2D delivers there; the stale re-delivery of the
+      // old per-step H2D is filtered by the persistent-host check). MLX_GD_K3OFF=1 or MLX_GD_K3IDXOFF=1 restores the original idx buffer read.
       int64_t n_rows = total / (int64_t)slice_size;
-      // Only idx[0] is zero-cleared (the per-launch memset clears one
-      // element); an n_rows>1 fast_rows gather (an eager T>1 step in a session with an active arena) would read idx[1..] from the never-cleared part of the 4 KB zero-slot wrapper (garbage index -> off-range src row read). Keep the original idx buffer then.
       if (rocm::graph_decode_mode() && !rocm::gd_k3_off() && !rocm::gd_k3_idxoff() &&
-          out.nbytes() <= 4096 && n_rows == 1) {
-        h_indices[0] = rocm::allocator().decode_zero_slot().data;
+          n_rows == 1) {
+        auto ixs = rocm::allocator().decode_idx_slot();
+        if (ixs.data) {
+          if (!rocm::allocator().decode_idx_slot_take()) {
+            // Fresh capture (the token load predates the mode flag): move the
+            // idx array into the slot on-stream. Wrapped: recorded at capture,
+            // suppressed at replay.
+            const void* src = gpu_ptr<void>(inputs[1]);
+            encoder.launch_kernel(
+                [d = ixs.data, src](hipStream_t st) {
+                  hipError_t e = hipMemcpyAsync(
+                      d, src, 16, hipMemcpyDeviceToDevice, st);
+                  rocm::g1_check_hip(
+                      "hipMemcpyAsync (gd-idx D2D stage)", e);
+                });
+          }
+          h_indices[0] = ixs.data;
+        }
       }
       dim3 grid((unsigned int)n_rows);
       dim3 blk(256);
