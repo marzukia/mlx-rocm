@@ -132,7 +132,7 @@ MLX_API std::vector<array> gdn_fused_step_tape(
 // lm_head_int2: int2 g128-asymmetric dequant GEMV (M=1) + in-kernel
 // per-64-column top-8 candidate emission (backend/rocm/lm_head_int2.hip).
 // x [1, K] bf16, wq [N, K/4] u8 (quarter-split 2-bit planes), scale
-// [N, NG] f32 = 4*s, zs [N, NG] f32 = (4+z)*s, sx [NG] f32 = sum of x per
+// [N, NG] f32 = s, zs [N, NG] f32 = z*s, sx [NG] f32 = sum of x per
 // 128-group. Returns {logits [N] f32, cand_val [N/64, 8] f32,
 // cand_col [N/64, 8] i32}.
 MLX_API std::vector<array> lm_head_int2(
