@@ -73,10 +73,97 @@ def restore_gdn(cache, saved):
         cache[i].lengths = lengths
 
 
+def quantize_int2(w, chunk=8192):
+    """Int2 g128-group asymmetric quantization of the bf16 lm_head weights
+    (quarter-split 2-bit packing, radiance port): per 128-group, s =
+    max((hi-lo)/3, 1e-8), z = clamp(round(-lo/s), 0, 3), q =
+    clamp(round(w/s + z), 0, 3); byte j holds v0..v3 for x indices j,
+    j+Q, j+2Q, j+3Q (Q = K/4). Returns (packed u8 [N, K/4], scale f32
+    [N, K/128] = s, zs f32 [N, K/128] = z*s)."""
+    N, K = w.shape
+    NG, Q = K // 128, K // 4
+    packed = mx.zeros((N, Q), dtype=mx.int32)
+    scale = mx.zeros((N, NG), dtype=mx.float32)
+    zs = mx.zeros((N, NG), dtype=mx.float32)
+    for i in range(0, N, chunk):
+        j = min(i + chunk, N)
+        wf = w[i:j].astype(mx.float32).reshape(j - i, NG, 128)
+        lo = wf.min(axis=2)
+        hi = wf.max(axis=2)
+        s = mx.maximum((hi - lo) / 3.0, 1e-8)
+        z = mx.minimum(mx.maximum(mx.round(-lo / s), 0.0), 3.0)
+        q = (
+            mx.minimum(
+                mx.maximum(
+                    mx.round(wf / s[..., None] + z[..., None]), 0.0
+                ),
+                3.0,
+            )
+            .astype(mx.int32)
+            .reshape(j - i, K)
+        )
+        packed[i:j] = q[:, :Q] | (q[:, Q:2*Q] << 2) | (q[:, 2*Q:3*Q] << 4) | (q[:, 3*Q:] << 6)
+        scale[i:j] = s
+        zs[i:j] = z * s
+    return packed.astype(mx.uint8), scale, zs
+
+
+def int2_argmax(x, qh):
+    """Int2 draft head: int2 g128-asym dequant GEMV (mx.fast.lm_head_int2)
+    + exact bf16 re-rank of the global top-32 candidates (in-kernel
+    per-64-column top-8 emission). Returns the argmax token id."""
+    x = x.reshape(1, -1)
+    K = x.shape[1]
+    NG = K // 128
+    xf = x.reshape(NG, 128).astype(mx.float32)
+    sx = mx.sum(xf, axis=1)
+    logits, cval, ccol = mx.fast.lm_head_int2(
+        x, qh["packed"], qh["scale"], qh["zs"], sx
+    )
+    perm = mx.argsort(cval.reshape(-1))
+    idx = mx.take(ccol.reshape(-1), perm[-32:])
+    if "w" in qh:
+        cols = mx.take(qh["w"], idx, 0)
+    else:
+        # Re-dequantize exactly the 32 candidate rows (bit-exact vs the
+        # target's 4-bit head; avoids keeping a 2 GB bf16 copy).
+        cols = mx.dequantize(
+            mx.take(qh["wq"], idx, 0),
+            mx.take(qh["s4"], idx, 0),
+            mx.take(qh["b4"], idx, 0),
+            group_size=qh["gs"],
+            bits=qh["bits"],
+        )
+    exact = mx.sum(x.astype(mx.float32) * cols.astype(mx.float32), axis=1)
+    return int(mx.take(idx, mx.argmax(exact)))
+
+
 def main():
     mode = os.environ.get("MLX_MTP", "0")
     assert mode in ("0", "1", "2", "3", "4"), mode
     mtp_on = mode in ("1", "2", "3", "4")
+    if mode == "4":
+        # FIX#1: GDN state-tape commit (the model's TAPE branch is gated
+        # on these; S==4 forwards go through gdn_fused_step_tape in the
+        # wheel model file; S=1 correction forwards use the fused op).
+        # MTP6_TAPE=0      -> savestate: canonical save/restore GDN +
+        #                     re-forward of the accepted prefix (baseline).
+        # MTP6_TAPE=1      -> pure tape (round-1 measured, 39.16 class):
+        #                     tape commit + ONE S=1 correction forward
+        #                     (state advance), but l = the batched row
+        #                     logits and h = the batched S=4 row h (the
+        #                     next draft chain reuses the batched-row h;
+        #                     the correction token is emitted in the branch
+        #                     and re-emitted by the next argmax(l)).
+        # MTP6_TAPE=hybrid -> round-2 hybrid: tape commit + ONE S=1
+        #                     correction forward; l and h are the
+        #                     correction forward's own (S=1 sequential
+        #                     pre-norm h for the next draft chain).
+        tape_mode = os.environ.get("MTP6_TAPE", "1")
+        assert tape_mode in ("0", "1", "hybrid"), tape_mode
+        if tape_mode in ("1", "hybrid"):
+            os.environ["MLX_ROCM_GDN_TAPE"] = "1"
+        os.environ["MLX_ROCM_GDN_FUSE"] = "1"
     t0 = time.time()
     model, tok = load(MODEL)
     t_load = time.time() - t0
@@ -85,6 +172,45 @@ def main():
     if mtp_on:
         assert lm.mtp is not None, "no mtp module (config.mtp_num_hidden_layers?)"
         mtp_cache = [KVCache()]
+    qh = None
+    if mode == "4":
+        # FIX#2: int2 g128-asymmetric draft head (replaces the full bf16
+        # lm_head per draft; MTP6_DRAFT_HEAD=bf16 to A/B the old head).
+        if os.environ.get("MTP6_DRAFT_HEAD", "int2") == "int2" and hasattr(
+            mx.fast, "lm_head_int2"
+        ):
+            tq0 = time.time()
+            _h = lm.lm_head
+            if type(_h).__name__ == "QuantizedLinear":
+                w_bf16 = mx.dequantize(
+                    _h.weight, _h.scales, _h.biases, group_size=_h.group_size, bits=_h.bits
+                )
+            else:
+                w_bf16 = _h.weight
+            packed, scale, zs = quantize_int2(w_bf16)
+            mx.eval(packed, scale, zs)
+            n_rows, n_cols = w_bf16.shape
+            if type(_h).__name__ == "QuantizedLinear":
+                # 16 GB card: do NOT keep the 2 GB bf16 copy; re-rank by
+                # re-dequantizing the 32 candidate rows.
+                del w_bf16
+                mx.clear_cache()
+                qh = {
+                    "packed": packed, "scale": scale, "zs": zs,
+                    "wq": _h.weight, "s4": _h.scales, "b4": _h.biases,
+                    "bits": _h.bits, "gs": _h.group_size,
+                }
+            else:
+                qh = {"packed": packed, "scale": scale, "zs": zs, "w": w_bf16}
+            print(
+                "INT2_BUILD %.1fs N=%d K=%d (packed %d MB)" % (
+                    time.time() - tq0,
+                    n_rows,
+                    n_cols,
+                    packed.nbytes / (1024 * 1024),
+                ),
+                flush=True,
+            )
 
     prompt_ids = tok.encode(PROMPT, add_special_tokens=False)
     cache = lm.make_cache()
@@ -103,6 +229,12 @@ def main():
     d1_acc = 0
     d2_acc = 0
     d3_acc = 0
+    n_refwd = 0
+
+    def draft_tok(dh):
+        return int2_argmax(dh, qh) if qh is not None else int(
+            mx.argmax(lm.lm_head(dh)[0, -1])
+        )
     t1 = time.time()
     for _ in range(MAX_TOKENS):
         if draft1 is None:
@@ -116,17 +248,17 @@ def main():
                 # Draft token 1 (from AR state)
                 emb1 = lm.model.embed_tokens(mx.array([[t]]))
                 dh1 = lm.mtp(h, emb1, mtp_cache)
-                draft1 = int(mx.argmax(lm.lm_head(dh1)[0, -1]))
+                draft1 = draft_tok(dh1)
                 if mode in ("3", "4"):
                     # Draft token 2 (from MTP module given token1)
                     emb2 = lm.model.embed_tokens(mx.array([[draft1]]))
                     dh2 = lm.mtp(dh1, emb2, mtp_cache)
-                    draft2 = int(mx.argmax(lm.lm_head(dh2)[0, -1]))
+                    draft2 = draft_tok(dh2)
                 if mode == "4":
                     # Draft token 3 (from MTP module given token2)
                     emb3 = lm.model.embed_tokens(mx.array([[draft2]]))
                     dh3 = lm.mtp(dh2, emb3, mtp_cache)
-                    draft3 = int(mx.argmax(lm.lm_head(dh3)[0, -1]))
+                    draft3 = draft_tok(dh3)
                 # State stays S_k (no target forward)
             else:
                 # baseline: advance the state with t
@@ -264,21 +396,90 @@ def main():
                 )
                 l, h = logits[0, -1], hidden[0, -1]
         else:
-            # Verify step (from S_k, drafts D1, D2, D3). BATCHED S=4.
+            # Verify step (from S_k, drafts D1, D2, D3). BATCHED S=4
+            # (gdn_fused_step_tape: per-row state tapes).
+            # FIX#1: commit = index select on the state tape + trims
+            # (lazy cache-leaf rebind; NO save/restore, NO re-forward of
+            # accepted rows). MTP6_TAPE=0 -> savestate (canonical
+            # restore + re-forward of the accepted prefix).
             d1, d2, d3 = draft1, draft2, draft3
             draft1 = draft2 = draft3 = None
             verifies += 1
-            saved = save_gdn(cache)
+            if tape_mode == "0":
+                saved = save_gdn(cache)
             logits, hidden = lm(
                 mx.array([[prev_token, d1, d2, d3]]),
                 cache=cache,
                 return_hidden=True,
                 return_prenorm=True
             )
-            l0, h0 = logits[0, 0], hidden[0, 0]
-            l1, h1 = logits[0, 1], hidden[0, 1]
-            l2, h2 = logits[0, 2], hidden[0, 2]
-            l3, h3 = logits[0, 3], hidden[0, 3]
+            l0, l1, l2, l3 = logits[0, 0], logits[0, 1], logits[0, 2], logits[0, 3]
+            # batched S=4 row pre-norm hiddens (pure tape reuses these
+            # for the next draft chain on rejected steps)
+            hb0, hb1, hb2, hb3 = hidden[0, 0], hidden[0, 1], hidden[0, 2], hidden[0, 3]
+
+            def commit(krow, prefix):
+                # Select the per-row GDN state-tape row (the state AFTER
+                # row krow) and rebind the cache leaves to the tape slice
+                # (lazy; no copies, no sync). lengths is None in this
+                # model (advance() is a no-op), so no lengths fix-up.
+                tape_avail = tape_mode in ("1", "hybrid")
+                if tape_avail:
+                    try:
+                        st0 = lm.model.layers[0].linear_attn.last_tape[0]
+                        tape_avail = st0 is not None
+                    except Exception:
+                        tape_avail = False
+                if tape_avail:
+                    for i, c in enumerate(cache):
+                        if hasattr(c, "cache"):
+                            st, cstab = lm.model.layers[i].linear_attn.last_tape
+                            # tape rows are B-squeezed: restore the B dim
+                            c[1] = st[krow].reshape((1,) + st[krow].shape)
+                            c[0] = cstab[krow].reshape((1,) + cstab[krow].shape)
+                    for c in cache:
+                        if isinstance(c, KVCache):
+                            c.trim(3 - krow)
+                else:
+                    # savestate A/B (MTP6_TAPE=0): canonical restore +
+                    # trim ALL verify rows + re-forward of the accepted
+                    # prefix (the GDN restore makes the re-forward
+                    # mandatory, so the kept rows must be dropped).
+                    restore_gdn(cache, saved)
+                    for c in cache:
+                        if isinstance(c, KVCache):
+                            c.trim(4)
+                    for pt in prefix:
+                        lm(mx.array([[pt]]), cache=cache)
+
+            def reject(krow, lk, hb, ktrim, prefix, ctoken):
+                nonlocal l, h, n_refwd
+                # Rejected step: commit the tape row (or canonical
+                # restore + re-forward), trim mtp_cache to the accepted
+                # prefix, run ONE S=1 correction forward, then choose
+                # (l, h) for the next draft chain by mode:
+                #   pure (MTP6_TAPE=1): l = the batched row logits, h =
+                #       the batched S=4 row h (round-1 measured behavior;
+                #       argmax(l) re-emits the correction token next).
+                #   hybrid (MTP6_TAPE=hybrid): l = the correction
+                #       forward's logits, h = its S=1 sequential pre-norm
+                #       h (round-2 fix).
+                #   savestate (MTP6_TAPE=0): l = the correction forward's
+                #       logits (canonical re-forward leaves the same l).
+                commit(krow, prefix)
+                if os.environ.get("MTP6_MTPCACHE_TRIM", "1") == "1":
+                    mtp_cache[0].trim(ktrim)
+                logits, hidden = lm(
+                    mx.array([[ctoken]]), cache=cache,
+                    return_hidden=True, return_prenorm=True
+                )
+                if tape_mode == "1":
+                    l, h = lk, hb
+                else:
+                    l, h = logits[0, 0], hidden[0, 0]
+                out.append(ctoken)
+                n_refwd += 1
+
             t2 = int(mx.argmax(l0))
             if t2 == EOS:
                 break
@@ -297,61 +498,37 @@ def main():
                     if t4 == d3:
                         d3_acc += 1
                         out.append(t4)
-                        l, h = l3, h3
+                        # Full accept: model's state (after row 3)
+                        # is already in the leaves; no rebind, no trims.
+                        l, h = l3, hb3
                     else:
-                        out.append(t4)
-                        restore_gdn(cache, saved)
-                        for c in cache:
-                            if isinstance(c, KVCache):
-                                c.trim(4)
-                        logits, hidden = lm(
-                            mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True
-                        )
-                        logits, hidden = lm(
-                            mx.array([[d1]]), cache=cache, return_hidden=True, return_prenorm=True
-                        )
-                        logits, hidden = lm(
-                            mx.array([[d2]]), cache=cache, return_hidden=True, return_prenorm=True
-                        )
-                        logits, hidden = lm(
-                            mx.array([[t4]]), cache=cache, return_hidden=True, return_prenorm=True
-                        )
-                        l, h = logits[0, -1], hidden[0, -1]
+                        # draft3 rejected: commit row 2 (after D2), then
+                        # ONE S=1 forward of the correction (the accepted
+                        # prefix costs zero - tape commit).
+                        reject(2, l2, hb2, 1, [prev_token, d1, d2], t4)
                 else:
-                    out.append(t3)
-                    restore_gdn(cache, saved)
-                    for c in cache:
-                        if isinstance(c, KVCache):
-                            c.trim(4)
-                    logits, hidden = lm(
-                        mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True
-                    )
-                    logits, hidden = lm(
-                        mx.array([[d1]]), cache=cache, return_hidden=True, return_prenorm=True
-                    )
-                    logits, hidden = lm(
-                        mx.array([[t3]]), cache=cache, return_hidden=True, return_prenorm=True
-                    )
-                    l, h = logits[0, -1], hidden[0, -1]
+                    # draft2 rejected: commit row 1 (after D1), forward t3.
+                    reject(1, l1, hb1, 2, [prev_token, d1], t3)
             else:
-                out.append(t2)
-                restore_gdn(cache, saved)
-                for c in cache:
-                    if isinstance(c, KVCache):
-                        c.trim(4)
-                logits, hidden = lm(
-                    mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True
-                )
-                logits, hidden = lm(
-                    mx.array([[t2]]), cache=cache, return_hidden=True, return_prenorm=True
-                )
-                l, h = logits[0, -1], hidden[0, -1]
+                # draft1 rejected: commit row 0 (after prev_token), forward t2.
+                reject(0, l0, hb0, 3, [prev_token], t2)
     dt = time.time() - t1
     n = len(out)
     d1pct = 100.0 * d1_acc / verifies if verifies else 0.0
     d2pct = 100.0 * d2_acc / d1_acc if d1_acc else 0.0
     d3pct = 100.0 * d3_acc / d2_acc if d2_acc else 0.0
     tok_step = 1.0 + (d1_acc + d2_acc + d3_acc) / verifies if verifies else 0.0
+    if mode == "4":
+        import mlx_lm.models.qwen3_5 as _m5
+        print(
+            "INFO TAPEMODE=%s REFWDS=%d GDN_TAPE_CALLS=%d INT2=%s" % (
+                os.environ.get("MTP6_TAPE", "1"),
+                n_refwd,
+                getattr(_m5, "GDN_TAPE_CALLS", -1),
+                "on" if qh is not None else "off",
+            ),
+            flush=True,
+        )
     print(
         "MTP=%s LOAD=%.2f GEN=%.2f TOKS=%d TOKS_S=%.2f VERIFIES=%d D1ACC=%d D2ACC=%d D3ACC=%d D1PCT=%.1f D2PCT=%.1f D3PCT=%.1f TOK_PER_STEP=%.3f"
         % (mode, t_load, dt, n, n / max(dt, 1e-9), verifies, d1_acc, d2_acc, d3_acc, d1pct, d2pct, d3pct, tok_step),
