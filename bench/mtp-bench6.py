@@ -143,7 +143,7 @@ def main():
     mtp_on = mode in ("1", "2", "3", "4")
     if mode == "4":
         # FIX#1: GDN state-tape commit (the model's TAPE branch is gated on these; S==4 forwards go through gdn_fused_step_tape in the wheel model file; S=1 correction forwards use the fused op). MTP6_TAPE=0      -> savestate: canonical save/restore GDN + re-forward of the accepted prefix (baseline). MTP6_TAPE=1      -> pure tape (round-1 measured, 39.16 class): tape commit + ONE S=1 correction forward (state advance), but l = the batched row logits and h = the batched S=4 row h (the next draft chain reuses the batched-row h; the correction token is emitted in the branch and re-emitted by the next argmax(l)). MTP6_TAPE=hybrid -> round-2 hybrid: tape commit + ONE S=1 correction forward; l and h are the correction forward's own (S=1 sequential pre-norm h for the next draft chain).
-        tape_mode = os.environ.get("MTP6_TAPE", "1")
+        tape_mode = os.environ.get("MTP6_TAPE", "0")
         assert tape_mode in ("0", "1", "hybrid"), tape_mode
         if tape_mode in ("1", "hybrid"):
             os.environ["MLX_ROCM_GDN_TAPE"] = "1"
@@ -158,8 +158,8 @@ def main():
         mtp_cache = [KVCache()]
     qh = None
     if mode == "4":
-        # FIX#2: int2 g128-asymmetric draft head (replaces the full bf16 lm_head per draft; MTP6_DRAFT_HEAD=bf16 to A/B the old head).
-        if os.environ.get("MTP6_DRAFT_HEAD", "int2") == "int2" and hasattr(
+        # FIX#2: int2 g128-asymmetric draft head (replaces the full bf16 lm_head per draft). OFF by default: the canonical bf16/4-bit head runs when MTP6_DRAFT_HEAD is unset; int2 is an explicit opt-in (A/B the old head with MTP6_DRAFT_HEAD=bf16).
+        if os.environ.get("MTP6_DRAFT_HEAD", "bf16") == "int2" and hasattr(
             mx.fast, "lm_head_int2"
         ):
             tq0 = time.time()
@@ -478,7 +478,7 @@ def main():
         import mlx_lm.models.qwen3_5 as _m5
         print(
             "INFO TAPEMODE=%s REFWDS=%d GDN_TAPE_CALLS=%d INT2=%s" % (
-                os.environ.get("MTP6_TAPE", "1"),
+                tape_mode,
                 n_refwd,
                 getattr(_m5, "GDN_TAPE_CALLS", -1),
                 "on" if qh is not None else "off",
