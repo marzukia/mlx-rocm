@@ -180,3 +180,91 @@ Unit mislabels (both dives; detail in E): "13.6 µs/token" and "11.5
 µs/token" (1000x off — ms); "32.7 ms per 2.15-accepted-token step" and
 "14.9 ms per 2.15-token step" (these are ms-per-2.15-tokens; per spec step
 of 3.15 tokens: 48.0 vs 21.8 ms).
+
+## E. Number audit
+
+Reproduced from raw data (OK unless flagged):
+
+- t1436: 144.3 = median(144.5, 144.3, 144.1) OK; verbose run 144.1 OK;
+  AR 86.9 = median(86.9, 86.9, 86.7) OK; wall 5.033/6.831 s OK; 512/6.831 =
+  74.95 and 512/5.033 = 101.73 OK; 161 spec steps, 346 accepted,
+  mean 2.14907 OK (raw acc.sh output); 3.15 tok/step = 1 + 346/161 OK.
+- t1439: AR 63.32 = (63.32 + 63.31)/2 OK; K=3 142.31 = (142.09 + 142.53)/2
+  OK; K=4 95.05 = (94.59 + 95.51)/2 OK.
+- Radiance dive: "15.8 ms" = 1000/63.32 OK (the one correctly-labelled ms in
+  the table); "2.03 GiB" bf16 head = 248320 x 4096 x 2 B OK; "0.27 GiB"
+  int2 head is radiance's own number (vs our measured 0.296 GiB — same
+  class, 9% apart, OK); "2.2 GiB draft" = 3 x (0.47 + 0.27) OK;
+  "7.5-8 GiB verify" = 5.5 + 2.03 + GDN OK (but built on the stale 5.5
+  assumption, D#9).
+- R4b anchor row: d1 = 118, d2 = 74, d3 = 35, tok_step = 2.410 OK (1 +
+  227/161); d1-accept = 35 + 43 = 126 OK; 126/161 = 78.3% OK; D2PCT
+  100 x 74/118 = 62.7 OK; D3PCT 100 x 35/74 = 47.3 OK; full-accept 35,
+  d1-reject 43, d2-reject 44, d3-reject 39; tokens = 35 x 4 + 43 x 2 +
+  44 x 3 + 39 x 4 = 514 OK; 514/48.93 = 10.51 s ~ 10.49 s wall OK.
+- Deltas: 48.93/46.07 = +6.2% OK; 56.08/48.60 = +15.4% OK;
+  74.32/71.12 = +4.5% OK.
+- Traffic audit: 9.39 = 4.16 + 3.26 + 1.97 OK; 0.783 = 126/161 OK;
+  9.39 - 3.26 = 6.13 (R5 end state) OK; phase walls 2516/64 = 39.3 and
+  1709.2/64 = 26.7 OK; 6888 launches = 24 x 287 OK.
+
+Findings (not reproducible / mislabelled):
+
+1. Unit mislabels (both dives, confirmed 1000x): "13.6 µs/token" (73.45
+   t/s) and "11.5 µs/token" (86.9 t/s) — these are ms (1000/73.45 = 13.61;
+   1000/86.9 = 11.51).
+2. Per-step vs per-token conflation: "32.7 ms per 2.15-accepted-token step"
+   (ours) and "14.9 ms per 2.15-token step" (llama.cpp) are
+   ms-per-2.15-tokens; per spec step (3.15 tokens) the true figures are
+   48.0 vs 21.8 ms. The "32.7 vs 14.9" framing in both dives understates
+   the per-step gap (it is 2.2x, not 2.2x-per-2.15-tokens vs 1.4x).
+3. Radiance dive: "same acceptance profile (2.15 tok/step on both sides)"
+   — the raw t1439 report contains NO acceptance measurement for radiance;
+   2.15 is an unverified assumption imported from our side. The t1463 brief
+   repeats it as a "known cost fact". Unsupported.
+4. R4b 64v acceptance row (D1PCT 79.7 / D2PCT 56.2 / D3PCT 20.3 /
+   tok_step 2.56) is internally inconsistent: 1 + (d1 + d2 + d3)/64 = 2.56
+   requires d1 + d2 + d3 = 99.8, but the PCT chain gives 51.0 + 28.7 + 5.8
+   = 85.5 (tok_step 2.34); and 50.02 t/s x 4.285 s = 214.3 tokens vs 227.8
+   from the counters (~6% off). The anchor row (item above) IS consistent;
+   the 64v row appears to be a transcription error. Impact limited: 64v is
+   the phase-protocol arm, not the anchor. Raw logs for the 64v arm are not
+   in the repo, so this cannot be adjudicated further — flag for the next
+   run.
+5. Radiance dive regime note: "33-35 t/s ~ 90+ ms/step at 2.5 tok/step" —
+   1000/33 = 30.3 ms/token vs 90/2.5 = 36 ms/token, a ~20% internal
+   spread in a two-word estimate. Minor.
+6. Precedent: the D1 95->72.7 incident in this lane (unit misread) matches
+   the pattern in findings 1-2; the R4b report's own anchor row
+   (D1PCT 73.3 ON = 73.3 OFF) shows the correct reproduction.
+
+## Missed-lever ranking (expected ms per verify-pair, anchor regime)
+
+Estimates use the audit's effective-bandwidth method (65.2 ms/pair;
+effective ~146 GB/s on the 9.39 GiB/step mix):
+
+| # | lever | expected value | basis |
+|---|---|---|---|
+| 1 | R5 correction fusion (kill S=1 re-read; fold correction into next verify) | ~22-30 ms (3.26 GiB @ ~135-146 GB/s of the 39.3 ms draft phase) | both references confirm the end state (B); audit R5 row: 9.39 -> 6.13 GiB |
+| 2 | int2 draft head | ~5-8 ms (3 x (0.533 - 0.296) = 0.71 GiB; radiance's own 2002->473 us per call, 4.2x) | kernel already in the vendor tree (lm_head_int2.hip on the r4b branch); a wheel build + A/B, not new kernel work |
+| 3 | MTP graph capture | ~5-15 ms if launch/schedule-bound (collapses 24 GDN + 8 SDPA + QMM + 3x draft MTP per step) | anchor is EAGER (C#2) — parity with radiance, advantage over llama.cpp; magnitude uncertain, needs the t1451-style phase profile after R5 |
+| 4 | GDN 24-layer launch merge | ~2-5 ms (48 launches/forward removed) | radiance log evidence; partial address of the same schedule overhead as #3 |
+| 5 | dynamic draft gate + n-gram fill | ~0-3 ms (skips 2.09 GiB of low-confidence draft forwards) + free width | capped at <=3 forwards at K=3; value is the gate, not the extension |
+| 6 | draft-KV trim | ~0 direct (few KiB/token); correctness/robustness | keep the catch-up skip (C#5) |
+
+## Updated ladder recommendation
+
+R5 (unchanged, #1 — largest, and both references confirm the end state) ->
+int2 draft head (promoted to #2: the kernel already exists in the vendor
+tree on `mtp-r4b-fused-verify`; the remaining work is a wheel build + A/B,
+so it is the cheapest win on the ladder) -> GDN 24-layer merge + MTP graph
+capture (combined as one "schedule/launch reduction" step; they address the
+same overhead, and the graph adds the structural edge over the eager
+anchor) -> dynamic draft gate + n-gram fill -> draft-KV trim (hygiene,
+last).
+
+Two validation items before/with R5 A/B, in the same lock window: (a) the
+llama.cpp per-phase capture the t1451 crash left undone (t_draft_us /
+t_accept_us + metrics pre/post decode — this fills the A accounting hole on
+their side); (b) re-capture the 64v acceptance counters (E#4) so the phase
+protocol is adjudicated from raw logs, not the inconsistent report row.
