@@ -1572,6 +1572,87 @@ std::vector<array> lm_head_int2(
   return fallback(std::vector<array>{x, wq, scale, zs, sx});
 }
 
+bool LMHeadInt2W::use_fallback(Stream s) {
+  // Same as the scalar port: the int2 packed weights only exist on the caller side; GPU-only by construction, CPU throws.
+  return s.device == Device::cpu;
+}
+
+std::vector<array> lm_head_int2_wide(
+    const array& x_raw,
+    const array& wq_raw,
+    const array& scale_raw,
+    const array& zs_raw,
+    const array& sx_raw,
+    StreamOrDevice s_ /* = {} */) {
+  auto s = to_stream(s_);
+
+  auto x = gdnf_make_row_contiguous(astype(x_raw, bfloat16, s), s);
+  auto wq = astype(wq_raw, uint8, s);
+  auto scale = astype(scale_raw, float32, s);
+  auto zs = astype(zs_raw, float32, s);
+  auto sx = astype(sx_raw, float32, s);
+
+  if (x.ndim() != 2) {
+    throw std::invalid_argument(
+        "lm_head_int2_wide: x must be [1, K] (M=1 only); got rank " +
+        std::to_string(x.ndim()));
+  }
+  if (x.shape(0) != 1) {
+    throw std::invalid_argument(
+        "lm_head_int2_wide: M=1 only; got M=" + std::to_string(x.shape(0)));
+  }
+  int K = (int)x.shape(1);
+  int N = (int)wq.shape(0);
+  if ((int)wq.shape(1) != K / 4) {
+    throw std::invalid_argument(
+        "lm_head_int2_wide: wq must be [N, K/4]; got ["
+        + std::to_string(N) + ", " + std::to_string(wq.shape(1)) + "] for K="
+        + std::to_string(K));
+  }
+  int NG = K / 128;
+  if ((int)scale.shape(1) != NG || (int)zs.shape(1) != NG
+      || (int)sx.shape(0) != NG) {
+    throw std::invalid_argument("lm_head_int2_wide: scale/zs must be [N, K/128] "
+                                "and sx [K/128]");
+  }
+  if (N % 64 != 0) {
+    throw std::invalid_argument(
+        "lm_head_int2_wide: N must be a multiple of 64 (grid = "
+        "N/64 64-column blocks of 2048 threads; a partial block would run "
+        "the 8-round candidate selection over dead shared columns and "
+        "write past the [N/64, 8] candidate arrays); got N="
+        + std::to_string(N));
+  }
+  if (K % 512 != 0) {
+    throw std::invalid_argument(
+        "lm_head_int2_wide: K must be a multiple of 512 (Q = K/4 must be "
+        "a multiple of 128 so the 4-lane 128-groups do not cross quarter "
+        "boundaries and no tail group is dropped); got K="
+        + std::to_string(K));
+  }
+
+  auto fallback = [](std::vector<array> inputs) -> std::vector<array> {
+    (void)inputs;
+    throw std::runtime_error(
+        "lm_head_int2_wide: no CPU fallback (the int2 packed weights have "
+        "no chain form); run on the ROCm GPU");
+  };
+
+  if (!LMHeadInt2W::use_fallback(s)) {
+    auto inputs = std::vector<array>{x, wq, scale, zs, sx};
+    return array::make_arrays(
+        std::vector<Shape>{
+            {N},
+            {N / 64, 8},
+            {N / 64, 8}},
+        std::vector<Dtype>{float32, float32, int32},
+        std::make_shared<LMHeadInt2W>(s, fallback),
+        inputs);
+  }
+  // CPU path (use_fallback true): run the fallback (which throws).
+  return fallback(std::vector<array>{x, wq, scale, zs, sx});
+}
+
 std::vector<array> ScaledDotProductAttention::vjp(
     const std::vector<array>& primals,
     const std::vector<array>& cotangents,

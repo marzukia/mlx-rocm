@@ -30,12 +30,17 @@ def main():
     rows = [x[i : i + 1] for i in range(8)]
     sxs = [mx.sum(xx.astype(mx.float32).reshape(NG, 128), axis=1) for xx in rows]
 
+    has_wide = hasattr(mx.fast, "lm_head_int2_wide")
+
     # warmup (kernel load + L2 warm)
     for _ in range(3):
         for i in range(8):
             mx.eval(mx.fast.lm_head_int2(rows[i], packed, scale, zs, sxs[i]))
         for i in range(8):
             mx.eval(lm.lm_head(rows[i]))
+        if has_wide:
+            for i in range(8):
+                mx.eval(mx.fast.lm_head_int2_wide(rows[i], packed, scale, zs, sxs[i]))
 
     def loop(fn, iters=10):
         t0 = time.perf_counter()
@@ -46,8 +51,32 @@ def main():
 
     t_int2 = loop(lambda i: mx.fast.lm_head_int2(rows[i], packed, scale, zs, sxs[i]))
     t_head = loop(lambda i: lm.lm_head(rows[i]))
+    t_wide = (
+        loop(lambda i: mx.fast.lm_head_int2_wide(rows[i], packed, scale, zs, sxs[i]))
+        if has_wide
+        else None
+    )
+    # Losslessness probe: on 256 seeded rows, the wide op's re-rank selection
+    # (top-32 candidate set + argmax token) vs the scalar int2 op.
+    sel_match = None
+    if has_wide:
+        mx.random.seed(42)
+        xw = mx.random.uniform(0.0, 1.0, (256, K)).astype(mx.bfloat16)
+        nmatch = 0
+        for i in range(256):
+            xx = xw[i : i + 1]
+            sxx = mx.sum(xx.astype(mx.float32).reshape(NG, 128), axis=1)
+            _, cv1, cc1 = mx.fast.lm_head_int2(xx, packed, scale, zs, sxx)
+            _, cv2, cc2 = mx.fast.lm_head_int2_wide(xx, packed, scale, zs, sxx)
+            p1 = mx.argsort(cv1.reshape(-1)); i1 = mx.take(cc1.reshape(-1), p1[-32:])
+            p2 = mx.argsort(cv2.reshape(-1)); i2 = mx.take(cc2.reshape(-1), p2[-32:])
+            s1 = set(mx.eval(i1).tolist()); s2 = set(mx.eval(i2).tolist())
+            if s1 == s2:
+                nmatch += 1
+        sel_match = nmatch
+        print(f"XCHECK sel_match={nmatch}/256", flush=True)
     print(
-        f"XCHECK int2_loop={t_int2:.0f}us head_loop={t_head:.0f}us ratio={t_int2 / t_head:.2f}",
+        f"XCHECK int2_loop={t_int2:.0f}us head_loop={t_head:.0f}us wide_loop={t_wide if t_wide is not None else 'NA'}us ratio={t_int2 / t_head:.2f} wide_vs_head={t_wide / t_head:.2f if t_wide else 'NA'}",
         flush=True,
     )
 

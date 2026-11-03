@@ -102,7 +102,12 @@ def int2_argmax(x, qh):
     NG = K // 128
     xf = x.reshape(NG, 128).astype(mx.float32)
     sx = mx.sum(xf, axis=1)
-    logits, cval, ccol = mx.fast.lm_head_int2(x, qh["packed"], qh["scale"], qh["zs"], sx)
+    _op = (
+        mx.fast.lm_head_int2_wide
+        if os.environ.get("MTP6_DRAFT_HEAD", "bf16") == "int2w"
+        else mx.fast.lm_head_int2
+    )
+    logits, cval, ccol = _op(x, qh["packed"], qh["scale"], qh["zs"], sx)
     perm = mx.argsort(cval.reshape(-1))
     idx = mx.take(ccol.reshape(-1), perm[-32:])
     if "w" in qh:
@@ -144,7 +149,8 @@ def main():
         mtp_cache = [KVCache()]
     qh = None
     if mode == "4":
-        if os.environ.get("MTP6_DRAFT_HEAD", "bf16") == "int2" and hasattr(mx.fast, "lm_head_int2"):
+        _dh = os.environ.get("MTP6_DRAFT_HEAD", "bf16")
+        if _dh in ("int2", "int2w") and hasattr(mx.fast, "lm_head_int2_wide" if _dh == "int2w" else "lm_head_int2"):
             tq0 = time.time()
             _h = lm.lm_head
             if type(_h).__name__ == "QuantizedLinear":
