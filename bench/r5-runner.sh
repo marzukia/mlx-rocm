@@ -4,8 +4,9 @@
 # 3 repeats per arm per protocol, interleaved B/R5, 25 s idle between runs,
 # SCLK sampled every 10 s during each run, all under flock on ~/gpu.lock.
 set -u
-W=/home/andryo/r5-bench
-LOCK=/home/andryo/gpu.lock
+MODELS_DIR="${MODELS_DIR:?set by caller}"
+W=$HOME/r5-bench
+LOCK=$HOME/gpu.lock
 mkdir -p "$W"
 cd "$W"
 LOG="$W/r5-run.log"
@@ -21,11 +22,11 @@ for i in $(seq 1 96); do
   sleep 60
 done
 [ "$LOCKED" = "1" ] || { echo "LOCK-FAIL $(date -u +%H:%M:%S)" >>"$LOG"; exit 1; }
-PY=/home/andryo/venv-r4v/bin/python
+PY=$HOME/venv-r4v/bin/python
 B6="$W/mtp-bench6.py"
 B6P="$W/mtp-bench6-phase.py"
-LM=/home/andryo/venv-r4v/lib/python3.14/site-packages/mlx/lib/libmlx.so
-SB=/mnt/models/qwen3-9b-mlx/model-mtp.safetensors
+LM=$HOME/venv-r4v/lib/python3.14/site-packages/mlx/lib/libmlx.so
+SB="$MODELS_DIR/qwen3-9b-mlx/model-mtp.safetensors"
 echo "PRE $(date -u +%H:%M:%S) libmlx=$(md5sum "$LM" | cut -d' ' -f1) sbcar=$(md5sum "$SB" | cut -d' ' -f1)" >>"$LOG"
 
 sampler() {
@@ -41,7 +42,7 @@ run() { # arm maxtok benchfile name
   sleep 25
   echo "RUN $(date -u +%H:%M:%S) $name arm=$arm maxtok=$mt" >>"$LOG"
   sampler & local SP=$!
-  env MODELS=/mnt/models LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libhsa-runtime64.so.1 HCC_AMDGPU_TARGET=gfx1201 \
+  env MODELS="$MODELS_DIR" LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libhsa-runtime64.so.1 HCC_AMDGPU_TARGET=gfx1201 \
     MLX_MTP=4 MTP6_TAPE="$arm" GDN_FUSE=1 REFWD_M1=1 MLX_ROCM_QMV_ROWS=1 MLX_ROCM_QMV_ROWS_MIN_N=1 \
     MTP_MAX_TOKENS="$mt" "$PY" "$bf" >"$W/$name.log" 2>&1
   local rc=$?
