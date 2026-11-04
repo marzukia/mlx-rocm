@@ -143,9 +143,11 @@ def main():
     if mode == "4":
         # FIX#1: GDN state-tape commit (the model's TAPE branch is gated on these; S==4 forwards go through gdn_fused_step_tape in the wheel model file; S=1 correction forwards use the fused op). MTP6_TAPE=0      -> savestate: canonical save/restore GDN + re-forward of the accepted prefix (baseline). MTP6_TAPE=1      -> pure tape (round-1 measured, 39.16 class): tape commit + ONE S=1 correction forward (state advance), but l = the batched row logits and h = the batched S=4 row h (the next draft chain reuses the batched-row h; the correction token is emitted in the branch and re-emitted by the next argmax(l)). MTP6_TAPE=hybrid -> round-2 hybrid: tape commit + ONE S=1 correction forward; l and h are the correction forward's own (S=1 sequential pre-norm h for the next draft chain).
         # MTP6_TAPE=r5b -> R5b: r5 + the commit rebind MATERIALIZES the selected tape row (a fresh contiguous array) instead of rebinding the strided row-slice view of the tape batch.
+        # MTP6_TAPE=r5b -> R5b: r5 + the commit rebind MATERIALIZES the selected tape row (a fresh contiguous array) instead of rebinding the strided row-slice view of the tape batch.
+        # MTP6_TAPE=r5e -> R5e: r5 + the S=4 verify GEMM is forced in the verify window (mx.eval after the verify forward) instead of by the first argmax in the commit window (the deferred-eval-order diagnostic/fix).
         tape_mode = os.environ.get("MTP6_TAPE", "1")
-        assert tape_mode in ("0", "1", "hybrid", "r5", "r5b"), tape_mode
-        if tape_mode in ("1", "hybrid", "r5", "r5b"):
+        assert tape_mode in ("0", "1", "hybrid", "r5", "r5b", "r5e"), tape_mode
+        if tape_mode in ("1", "hybrid", "r5", "r5b", "r5e"):
             os.environ["MLX_ROCM_GDN_TAPE"] = "1"
         os.environ["MLX_ROCM_GDN_FUSE"] = "1"
     t0 = time.time()
@@ -409,7 +411,7 @@ def main():
 
             def commit(krow, prefix):
                 # Select the per-row GDN state-tape row (the state AFTER row krow) and rebind the cache leaves to the tape slice (lazy; no copies, no sync). lengths is None in this model (advance() is a no-op), so no lengths fix-up.
-                tape_avail = tape_mode in ("1", "hybrid", "r5")
+                tape_avail = tape_mode in ("1", "hybrid", "r5", "r5b", "r5e")
                 if tape_avail:
                     try:
                         st0 = lm.model.layers[0].linear_attn.last_tape[0]
