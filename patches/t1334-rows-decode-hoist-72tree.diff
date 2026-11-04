@@ -1,0 +1,373 @@
+diff --git a/mlx/backend/rocm/quantized/qmm.hip b/mlx/backend/rocm/quantized/qmm.hip
+index 0a53dd9..ed5a5b9 100644
+--- a/mlx/backend/rocm/quantized/qmm.hip
++++ b/mlx/backend/rocm/quantized/qmm.hip
+@@ -8,6 +8,18 @@
+ #include "mlx/backend/rocm/kernel_utils.hpp"
+ #include "mlx/backend/rocm/quantized/quantized.h"
+ #include "mlx/backend/rocm/quantized/qmv_tiled_kernel.hip"
++#include "mlx/backend/rocm/quantized/qmv_lx_kernel.hip"
++// Forward-declare load_scale_value (defined below in namespace rocm) so the
++// MR kernel template (included next) can name-lookup it. Two-phase lookup:
++// a raw-value template is not found by ADL, so it must be declared before the
++// template definition. Kept at file scope (before namespace mlx::core) so the
++// MR kernel's own namespace wrapper resolves to ::mlx::core::rocm.
++namespace mlx::core::rocm {
++template <typename ScaleT, int GROUP_SIZE, bool AFFINE>
++__device__ inline float load_scale_value(ScaleT raw);
++}
++#include "mlx/backend/rocm/quantized/qmv_wide_mr_kernel.hip"
++#include "mlx/backend/rocm/quantized/qmv_rows_msg_kernel.hip"
+ #include "mlx/primitives.h"
+ 
+ #include <hip/hip_bfloat16.h>
+@@ -677,6 +689,14 @@ inline rocm::HWInfo detect_rocm_hw_info(rocm::Device& d) {
+     hw.tier = (props.warpSize == 32) ? RocmQmvArchTier::Rdna2
+                                     : RocmQmvArchTier::Cdna;
+     hw.num_cus = props.multiProcessorCount;
++    // The guest's HIP userspace can under-report CUs (vGPU: HIP says 32,
++    // KFD/HSA say 64 — step 0, 2026-10-28). An under-count 2x
++    // under-provisions the CU-sized persistent grids (tiled QMV, WMMA
++    // prefill, 6-bit tiled). Override with MLX_ROCM_NUM_CUS; the raw and
++    // effective values are logged below.
++    int env_cus = parse_non_negative_int_env("MLX_ROCM_NUM_CUS", 0);
++    if (env_cus > 0)
++      hw.num_cus = env_cus;
+     hw.max_threads_per_cu = props.maxThreadsPerMultiProcessor;
+     hw.shared_mem_per_cu = props.sharedMemPerBlock;
+     hw.l2_cache_bytes = props.l2CacheSize;
+@@ -730,10 +750,12 @@ inline rocm::HWInfo detect_rocm_hw_info(rocm::Device& d) {
+       }
+     }
+     fprintf(stderr,
+-            "[mlx-rocm] %s native_wmma=%d cus=%d warp=%d low_cu=%d host_WARP_SIZE=%d\n",
++            "[mlx-rocm] %s native_wmma=%d cus=%d (reported=%d) warp=%d "
++            "low_cu=%d host_WARP_SIZE=%d\n",
+             arch_name ? arch_name : "?",
+             (int)hw.has_native_wmma,
+             hw.num_cus,
++            props.multiProcessorCount,
+             hw.warp_size,
+             (int)hw.is_low_cu_igpu,
+             (int)WARP_SIZE);
+@@ -4023,24 +4045,226 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
+     return;
+   }
+ 
++  // K1: int8-activation v_dot4 QMV with x staged in LDS (opt-in: MLX_QMV_LX).
++  // A/B against the wide default: MLX_QMV_LX=1 -> 32 cols/block, =16 -> 16.
++  // 4/8-bit affine decode (M<=8); replaces the f32-FMA wide loop with
++  // in-block int8 quant + __builtin_amdgcn_sudot4 + LDS x.
++  static const char* lx_env = std::getenv("MLX_QMV_LX");
++  if (lx_env != nullptr && (bits_ == 4 || bits_ == 8) &&
++      mode_ == QuantizationMode::Affine && has_bias && transpose_ &&
++      batch_count == 1 && non_batched && M >= 1 && M <= 8 &&
++      (K % 32 == 0) && (K % group_size_ == 0) &&
++      (group_size_ == 32 || group_size_ == 64 || group_size_ == 128) &&
++      (x.dtype() == bfloat16 || x.dtype() == float16 || x.dtype() == float32) &&
++      host_warp == 32) {
++    int lx_cols = (lx_env[0] == '1' && lx_env[1] == '6') ? 16 : 32;
++#define LAUNCH_LX(TT, ST, GS, BV, C)                                          \
++  do {                                                                       \
++    dim3 lblock(32, C);                                                      \
++    dim3 lgrid((N + C - 1) / C, M);                                          \
++    size_t lds = (size_t)K + (size_t)(K / GS) * 4 +                         \
++        (size_t)(K / (128 / BV)) * 4;                                        \
++    enc.add_kernel_node(                                                     \
++        &rocm::qmv_lx_kernel<TT, ST, GS, BV, C>, lgrid, lblock,              \
++        (uint32_t)lds, (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr,       \
++        (const ST*)biases_ptr, (TT*)out_ptr, M, N, K, has_bias);            \
++  } while (0)
++#define LAUNCH_LX_GS(TT, ST, BV)                                             \
++  do {                                                                       \
++    if (group_size_ == 32) {                                                 \
++      if (lx_cols == 16) { LAUNCH_LX(TT, ST, 32, BV, 16); }                  \
++      else { LAUNCH_LX(TT, ST, 32, BV, 32); }                               \
++    } else if (group_size_ == 64) {                                         \
++      if (lx_cols == 16) { LAUNCH_LX(TT, ST, 64, BV, 16); }                 \
++      else { LAUNCH_LX(TT, ST, 64, BV, 32); }                              \
++    } else {                                                                 \
++      if (lx_cols == 16) { LAUNCH_LX(TT, ST, 128, BV, 16); }                \
++      else { LAUNCH_LX(TT, ST, 128, BV, 32); }                             \
++    }                                                                        \
++  } while (0)
++    if (x.dtype() == bfloat16) {
++      if (bits_ == 4) { LAUNCH_LX_GS(hip_bfloat16, hip_bfloat16, 4); }
++      else { LAUNCH_LX_GS(hip_bfloat16, hip_bfloat16, 8); }
++    } else if (x.dtype() == float16) {
++      if (bits_ == 4) { LAUNCH_LX_GS(__half, __half, 4); }
++      else { LAUNCH_LX_GS(__half, __half, 8); }
++    } else {
++      // f32 x (the affine quantized_matmul op promotes x to scales dtype):
++      // the K1 math is dtype-generic (x staged as int8 in LDS), so f32
++      // instantiates directly.
++      if (bits_ == 4) { LAUNCH_LX_GS(float, float, 4); }
++      else { LAUNCH_LX_GS(float, float, 8); }
++    }
++#undef LAUNCH_LX_GS
++#undef LAUNCH_LX
++    return;
++  }
++
+   // Dense wide-load (128-bit / uint4) QMV decode path (4-bit affine). DEFAULT ON
+   // (opt out with MLX_QMV_NO_WIDE): +14-20% on dense decode, never regresses.
+   // Replaces qmv_tiled for decode; ~175 vs ~108 GB/s.
+   static bool use_wide_qmv = (std::getenv("MLX_QMV_NO_WIDE") == nullptr);
+   bool wide_ok = use_wide_qmv && (bits_ == 4 || bits_ == 8) &&
+       mode_ == QuantizationMode::Affine &&
+-      has_bias && transpose_ && batch_count == 1 && non_batched && M >= 1 &&
++      (has_bias || (M >= 2 && M <= 4)) && transpose_ && batch_count == 1 && non_batched && M >= 1 &&
+       M <= 8 && (K % 32 == 0) &&
+       (group_size_ == 32 || group_size_ == 64 || group_size_ == 128) &&
+-      (x.dtype() == bfloat16 || x.dtype() == float16);
++      (x.dtype() == bfloat16 || x.dtype() == float16 || x.dtype() == float32);
++      if (std::getenv("MLX_T1251_DBG") != nullptr) {
++        static long t1251_n = 0;
++        if (t1251_n++ < 64)
++          fprintf(stderr, "[t1251] M=%d N=%d K=%d bits=%d gs=%d dt=%s has_bias=%d trans=%d nb=%d bc=%d hw=%d\n",
++                  (int)M, (int)N, (int)K, (int)bits_, (int)group_size_,
++                  (x.dtype() == bfloat16) ? "bf16" : (x.dtype() == float16) ? "f16" : "other",
++                  (int)has_bias, (int)transpose_, (int)non_batched, (int)batch_count,
++                  (int)host_warp);
++      }
+   if (wide_ok) {
++
+     int wcols = hw_info.is_low_cu_igpu ? 4 : 8;
+     // Wave32 kernels only (hardcoded 32 in qmv_wide). Skip on CDNA host_warp=64.
+     if (host_warp != 32) {
+       // fall through to tiled / warp-shared
+     } else {
+-    dim3 wblock(32, wcols);
+-    dim3 wgrid((N + wcols - 1) / wcols, M);
++      // Multi-row wide (M<=4): one weight pass for up to 4 rows (levers
++      // 1+2+3: shared weight tile, x staged in LDS once per block, 16
++      // cols/block). Bit-identical per row to qmv_wide_kernel (same tile
++      // order). Opt out: MLX_QMV_NO_MR; cols: MLX_QMV_MR_COLS.
++      static bool use_mr_qmv = (std::getenv("MLX_QMV_NO_MR") == nullptr);
++
++      static int mr_cols_env = parse_non_negative_int_env("MLX_QMV_MR_COLS", 0);
++      // run-889: A/B toggle for the run-852 LX hoist (default 1 = hoist on;
++      // 0 = run-825 path — the same kernel without the in-k barrier).
++      static int mr_lx_env = parse_non_negative_int_env("MLX_QMV_MR_LX", 1);
++      int mcols = (mr_cols_env >= 8) ? mr_cols_env : 16;
++      // 2-byte-typed staging: the old MR kernel is bf16/f16-only; f32 x must
++      // not reach it (4B elements overflow the 2B vector loads).
++      size_t mr_lds = (size_t)std::min(4, M) * (size_t)K * 2;
++      if (x.dtype() == float32)
++        mr_lds = (size_t)-1;  // force per-row for f32
++      // t1251: mr2 — vectorized-LDS, K/4 chunked-staging MR (4-bit, M = 2..4,
++      // large N). Covers K = 8192 / 12288 (16 / 24 KB staging, M = 4) which
++      // the full-staging MR cannot (64 KB + 1 KB > 64 KB per-block limit),
++      // and is 6-9% faster than the full-staging MR at K = 4096 (lab
++      // 2026-11-01, gfx1201: lm_head N = 248320 M = 4, 2.59 vs 2.79 ms,
++      // per-row 4.00 ms; bit-identical to per-row, maxdiff 0.0). Large-N
++      // only (N >= 16384): below that the per-row wide kernel wins on
++      // block count (lab gate_up N = 12288: mr2 0.138 vs per-row 0.131;
++      // down N = 4096: mr2 0.154 vs per-row 0.123). Opt out:
++      // MLX_QMV_NO_MR (shared); threshold: MLX_QMV_MR2_MIN_N.
++      static int mr2_min_n_env = parse_non_negative_int_env("MLX_QMV_MR2_MIN_N", 0);
++      int mr2_min_n = (mr2_min_n_env > 0) ? mr2_min_n_env : 16384;
++      // t1253: rows-msg — multi-row QMV with shared weight decode (the
++      // MTPLX msg morphology ported to gfx1201/HIP; see
++      // qmv_rows_msg_kernel.hip + docs/qmv-rows-msg.md). One workgroup =
++      // 6 waves, each wave owns BN=4 columns and all M rows in a 16-
++      // accumulator array; full-K lane-strided over 128-bit pack-
++      // interleaved weight loads; each 4/8-bit weight tile is decoded
++      // once and MAC'd against all rows (one weight pass regardless of
++      // M). No LDS, no barriers. Per-row math transcribes qmv_wide
++      // verbatim (row-exact contract: output row r ==
++      // quantized_matmul(x[r:r+1]) bit for bit). Large-N band (N >=
++      // rows_min_n). OPT-IN ONLY: MLX_ROCM_QMV_ROWS=1 (DEFAULT OFF —
++      // zero behavior change when unset); band floor:
++      // MLX_ROCM_QMV_ROWS_MIN_N (default 16384).
++      static bool use_rows_qmv = (std::getenv("MLX_ROCM_QMV_ROWS") != nullptr);
++      static bool use_hoist =
++          (std::getenv("MLX_ROCM_QMV_ROWS_HOIST") != nullptr);
++      static int rows_min_n_env =
++          parse_non_negative_int_env("MLX_ROCM_QMV_ROWS_MIN_N", 0);
++      int rows_min_n = (rows_min_n_env > 0) ? rows_min_n_env : 16384;
++      bool rows_ok = use_rows_qmv && (M >= 2) && (M <= 4) &&
++          (N >= rows_min_n) && (K % 32 == 0);
++      if (rows_ok) {
++        dim3 rblock(32 * 6);
++        dim3 rgrid((N + 23) / 24, 1);
++#define LAUNCH_QMV_ROWS_MSG(TT, ST, GS, BV)                              \
++  enc.add_kernel_node(                                                  \
++      &rocm::qmv_rows_msg_kernel<TT, ST, GS, BV>, rgrid, rblock, 0u,   \
++      (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr,                 \
++      (const ST*)biases_ptr, (TT*)out_ptr, M, N, K, has_bias)
++#define LAUNCH_QMV_ROWS_MSG_H(TT, ST, GS, BV)                              \
++  enc.add_kernel_node(                                                  \
++      &rocm::qmv_rows_msg_hoist_kernel<TT, ST, GS, BV>, rgrid, rblock, 0u,   \
++      (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr,                 \
++      (const ST*)biases_ptr, (TT*)out_ptr, M, N, K, has_bias)
++#define LAUNCH_QMV_ROWS_MSG_GS(TT, ST, BV)                             \
++  do {                                                                  \
++    if (use_hoist) {                                                  \
++      if (group_size_ == 32) { LAUNCH_QMV_ROWS_MSG_H(TT, ST, 32, BV); }   \
++      else if (group_size_ == 64) { LAUNCH_QMV_ROWS_MSG_H(TT, ST, 64, BV); } \
++      else { LAUNCH_QMV_ROWS_MSG_H(TT, ST, 128, BV); }                    \
++    } else {                                                          \
++      if (group_size_ == 32) { LAUNCH_QMV_ROWS_MSG(TT, ST, 32, BV); }   \
++      else if (group_size_ == 64) { LAUNCH_QMV_ROWS_MSG(TT, ST, 64, BV); } \
++      else { LAUNCH_QMV_ROWS_MSG(TT, ST, 128, BV); }                    \
++    }                                                                 \
++  } while (0)
++        if (x.dtype() == bfloat16) {
++          if (bits_ == 4) { LAUNCH_QMV_ROWS_MSG_GS(hip_bfloat16, hip_bfloat16, 4); }
++          else { LAUNCH_QMV_ROWS_MSG_GS(hip_bfloat16, hip_bfloat16, 8); }
++        } else if (x.dtype() == float32) {
++          // f32 x (the op promotes bf16 x when scales are f32): T=ST=float.
++          if (bits_ == 4) { LAUNCH_QMV_ROWS_MSG_GS(float, float, 4); }
++          else { LAUNCH_QMV_ROWS_MSG_GS(float, float, 8); }
++        } else {
++          if (bits_ == 4) { LAUNCH_QMV_ROWS_MSG_GS(__half, __half, 4); }
++          else { LAUNCH_QMV_ROWS_MSG_GS(__half, __half, 8); }
++        }
++#undef LAUNCH_QMV_ROWS_MSG_GS
++#undef LAUNCH_QMV_ROWS_MSG
++        return;
++      }
++      // x staging is T-sized: f32 x (the op promotes bf16 x when scales are
++      // f32) needs 4 bytes/element, not 2.
++      const size_t tbytes = (x.dtype() == float32) ? 4 : 2;
++      size_t mr2_lds = (size_t)std::min(4, M) * (size_t)(K / 4) * tbytes;
++      // f32 x: per-row wide measured faster than mr2 on gfx1201 (4.03 vs 9.68ms
++      // at N=248320 K=4096 M=4); mr2 f32 is opt-in only.
++      const bool mr2_f32_ok =
++          (std::getenv("MLX_QMV_MR2_F32") != nullptr) ||
++          (x.dtype() != float32);
++      bool mr2_ok = use_mr_qmv && mr2_f32_ok && (bits_ == 4) && (M >= 2) &&
++          (M <= 4) && (K % 1024 == 0) && ((K / 4) % 32 == 0) &&
++          (N >= mr2_min_n) && (mr2_lds + 1024 <= 65536);
++      if (mr2_ok) {
++        dim3 mr2block(32, 16);
++        dim3 mr2grid((N + 15) / 16, (M + 3) / 4);
++#define LAUNCH_QMV_WIDE_MR2(TT, ST, GS)                                     \
++  enc.add_kernel_node(                                                    \
++      &rocm::qmv_wide_mr2_kernel<TT, ST, GS, 4>, mr2grid, mr2block,      \
++      (uint32_t)mr2_lds, (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr,       (const ST*)biases_ptr, (TT*)out_ptr, M, N, K, has_bias)
++#define LAUNCH_QMV_WIDE_MR2_GS(TT, ST)                                    \
++  do {                                                                    \
++    if (group_size_ == 32) { LAUNCH_QMV_WIDE_MR2(TT, ST, 32); }          \
++    else if (group_size_ == 64) { LAUNCH_QMV_WIDE_MR2(TT, ST, 64); }    \
++    else { LAUNCH_QMV_WIDE_MR2(TT, ST, 128); }                          \
++  } while (0)
++        if (x.dtype() == bfloat16) { LAUNCH_QMV_WIDE_MR2_GS(hip_bfloat16, hip_bfloat16); }
++        else if (x.dtype() == float32) { LAUNCH_QMV_WIDE_MR2_GS(float, float); }
++        else { LAUNCH_QMV_WIDE_MR2_GS(__half, __half); }
++#undef LAUNCH_QMV_WIDE_MR2_GS
++#undef LAUNCH_QMV_WIDE_MR2
++        return;
++      }
++      // M>=2: the multi-row kernel batches up to 4 rows per block to share one weight pass.
++      // At M=1 (eager decode) three of the four rows are padding: no bandwidth win, plus
++      // LDS staging + sync overhead. Measured on gfx1201 bare metal 2026-11-01: M=1 AR
++      // 77.39 tok/s with MR on vs 80.94 with MLX_QMV_NO_MR=1 (-4.5% eager tax). The
++      // multi-row win is real at M=2..4 (MTP verify / batch decode), where the shared
++      // weight pass is fully utilized, so gate on M instead of defaulting off.
++      bool mr_ok = use_mr_qmv && (M <= 4) && (M >= 2) && (mr_lds <= 32768) &&
++          (N >= mr2_min_n);  // t1251: small-N per-row wins (lab 2026-11-01)
++      // run-852: the MR kernel's in-k-loop __syncthreads (LX hoist) requires
++      // uniform k-iteration counts across lanes: K % (32 * WPER) == 0
++      // (K % 1024 == 0 for 4-bit, K % 512 == 0 for 8-bit). Shapes that do
++      // not satisfy it (or MLX_QMV_MR_LX=0) run the run-825 path
++      // (LXHOIST = false) — the MR dispatch gate itself is unchanged.
++      bool lxhoist = (mr_lx_env != 0) &&
++          (K % ((bits_ == 4) ? 1024 : 512) == 0);
++      if (!mr_ok) {
++        dim3 wblock(32, wcols);
++        dim3 wgrid((N + wcols - 1) / wcols, M);
+ #define LAUNCH_QMV_WIDE(TT, ST, GS, BV)                                      \
+   enc.add_kernel_node(                                                       \
+       &rocm::qmv_wide_kernel<TT, ST, GS, BV>, wgrid, wblock, 0u,             \
+@@ -4052,17 +4276,65 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
+     else if (group_size_ == 64) { LAUNCH_QMV_WIDE(TT, ST, 64, BV); }        \
+     else { LAUNCH_QMV_WIDE(TT, ST, 128, BV); }                              \
+   } while (0)
+-    if (x.dtype() == bfloat16) {
+-      if (bits_ == 4) { LAUNCH_QMV_WIDE_GS(hip_bfloat16, hip_bfloat16, 4); }
+-      else { LAUNCH_QMV_WIDE_GS(hip_bfloat16, hip_bfloat16, 8); }
+-    } else {
+-      if (bits_ == 4) { LAUNCH_QMV_WIDE_GS(__half, __half, 4); }
+-      else { LAUNCH_QMV_WIDE_GS(__half, __half, 8); }
+-    }
++        if (x.dtype() == bfloat16) {
++          if (bits_ == 4) { LAUNCH_QMV_WIDE_GS(hip_bfloat16, hip_bfloat16, 4); }
++          else { LAUNCH_QMV_WIDE_GS(hip_bfloat16, hip_bfloat16, 8); }
++        } else if (x.dtype() == float32) {
++          if (bits_ == 4) { LAUNCH_QMV_WIDE_GS(float, float, 4); }
++          else { LAUNCH_QMV_WIDE_GS(float, float, 8); }
++        } else {
++          if (bits_ == 4) { LAUNCH_QMV_WIDE_GS(__half, __half, 4); }
++          else { LAUNCH_QMV_WIDE_GS(__half, __half, 8); }
++        }
+ #undef LAUNCH_QMV_WIDE_GS
+ #undef LAUNCH_QMV_WIDE
+-    return;
+-    } // host_warp == 32
++        return;
++      }
++      dim3 mrblock(32, mcols);
++      dim3 mrgrid((N + mcols - 1) / mcols, (M + 3) / 4);
++#define LAUNCH_QMV_WIDE_MR(TT, ST, GS, BV, LX)                               \
++  enc.add_kernel_node(                                                      \
++      &rocm::qmv_wide_mr_kernel<TT, ST, GS, BV, LX>, mrgrid, mrblock,     \
++      (uint32_t)mr_lds, (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr,     \
++      (const ST*)biases_ptr, (TT*)out_ptr, M, N, K, has_bias)
++#define LAUNCH_QMV_WIDE_MR_GS(TT, ST, BV, LX)                               \
++  do {                                                                      \
++    if (group_size_ == 32) { LAUNCH_QMV_WIDE_MR(TT, ST, 32, BV, LX); }     \
++    else if (group_size_ == 64) { LAUNCH_QMV_WIDE_MR(TT, ST, 64, BV, LX); } \
++    else { LAUNCH_QMV_WIDE_MR(TT, ST, 128, BV, LX); }                      \
++  } while (0)
++      // LXHOIST is a template parameter (compile-time), so the runtime
++      // lxhoist value selects between the two instantiations (true = run-852
++      // hoist, false = run-825 path).
++      if (x.dtype() == bfloat16) {
++        if (bits_ == 4) {
++          if (lxhoist) { LAUNCH_QMV_WIDE_MR_GS(hip_bfloat16, hip_bfloat16, 4, true); }
++          else { LAUNCH_QMV_WIDE_MR_GS(hip_bfloat16, hip_bfloat16, 4, false); }
++        } else {
++          if (lxhoist) { LAUNCH_QMV_WIDE_MR_GS(hip_bfloat16, hip_bfloat16, 8, true); }
++          else { LAUNCH_QMV_WIDE_MR_GS(hip_bfloat16, hip_bfloat16, 8, false); }
++        }
++      } else if (x.dtype() == float32) {
++        if (bits_ == 4) {
++          if (lxhoist) { LAUNCH_QMV_WIDE_MR_GS(float, float, 4, true); }
++          else { LAUNCH_QMV_WIDE_MR_GS(float, float, 4, false); }
++        } else {
++          if (lxhoist) { LAUNCH_QMV_WIDE_MR_GS(float, float, 8, true); }
++          else { LAUNCH_QMV_WIDE_MR_GS(float, float, 8, false); }
++        }
++      } else {
++        if (bits_ == 4) {
++          if (lxhoist) { LAUNCH_QMV_WIDE_MR_GS(__half, __half, 4, true); }
++          else { LAUNCH_QMV_WIDE_MR_GS(__half, __half, 4, false); }
++        } else {
++          if (lxhoist) { LAUNCH_QMV_WIDE_MR_GS(__half, __half, 8, true); }
++          else { LAUNCH_QMV_WIDE_MR_GS(__half, __half, 8, false); }
++        }
++      }
++#undef LAUNCH_QMV_WIDE_MR_GS
++#undef LAUNCH_QMV_WIDE_MR
++      return;
++    }
+   }
+ 
+   // int8 integer-dot QMV (4-bit affine, small-M decode). Quantize activation to
+@@ -4121,8 +4393,13 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
+   // other widths would match nothing here and leave `out` uninitialized.
+   // Restrict to 4/8-bit; 2/5/6-bit fall through to the warp-shared QMV kernel.
+   bool tiled_bits_supported = (bits_ == 4 || bits_ == 8);
++  // The tiled kernel is only instantiated for bf16/f16 x; the inner dispatch
++  // matches nothing else, but the block returns regardless — an f32 x here
++  // would launch NO kernel and leave `out` stale (N=12288 bug: gfx1201
++  // tile_n=24 divides 12288, so the gate matched and returned with no launch).
++  bool tiled_x_dtype_ok = (x.dtype() == bfloat16 || x.dtype() == float16);
+   // tile_n can be 4 on low-CU gfx1152 — still a valid tiled path.
+-  if (use_tiled && tiled_bits_supported && use_fast_qmv &&
++  if (use_tiled && tiled_bits_supported && tiled_x_dtype_ok && use_fast_qmv &&
+       !can_use_batched_qmv && tile_n >= 4 &&
+       mode_ == QuantizationMode::Affine) {
+     {
