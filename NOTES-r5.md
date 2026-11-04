@@ -33,11 +33,9 @@ Per-phase wall (phase harness 64v, median of 3) — KEY for schedule analysis:
 - commit 26.7 ms (S=4 GEMM + tape rebind)
 - correction 0.4 ms (bookkeeping; GEMM billed to next draft)
 - Anchor: 65.2 ms/step at 48.93 t/s (10.49 s / 161 steps).
-- CRITICAL OBSERVATION: the correction forward is ALREADY LAZY — it executes
-  inside the NEXT step's draft phase (the "draft 39.3 ms" includes it). So
+- CRITICAL OBSERVATION: the correction forward is ALREADY LAZY — it executes inside the NEXT step's draft phase (the "draft 39.3 ms" includes it). So
   "one S=1 target re-read per rejected step" runs temporally in the draft
-  window of the following step. Any fusion design must slot into that window
-  or the verify window, not the (near-free) correction bookkeeping slot.
+  window of the following step. Any fusion design must slot into that window or the verify window, not the (near-free) correction bookkeeping slot.
 - Dispatch counters: GDN_TAPE_CALLS = 24 x (verifies + corrections) => the
   fused/tape GDN op path runs in BOTH verify and correction forwards.
 - FIRST20 / accepts bit-stable across runs (lossless gate anchor).

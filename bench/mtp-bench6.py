@@ -110,8 +110,7 @@ def quantize_int2(w, chunk=8192):
 
 def int2_argmax(x, qh):
     """Int2 draft head: int2 g128-asym dequant GEMV (mx.fast.lm_head_int2)
-    + exact bf16 re-rank of the global top-32 candidates (in-kernel
-    per-64-column top-8 emission). Returns the argmax token id."""
+    + exact bf16 re-rank of the global top-32 candidates (in-kernel per-64-column top-8 emission). Returns the argmax token id."""
     x = x.reshape(1, -1)
     K = x.shape[1]
     NG = K // 128
