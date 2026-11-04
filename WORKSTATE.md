@@ -115,7 +115,8 @@ Branch `ar-step-change` (base 60ad8a7 = main). Canonical bench mtp-bench6.py (md
 - CONTROL (venv-ar standing config, no new env) ×3 — isolates wheel/codegen effects from the gate effects (answers the B2-divergence question).
 - Per-shape M=1 QMM probe (scripts/arstep_qmm_probe.py, bf16 x, production shapes incl. N=248320 lm_head and K=12288 down): baseline vs m1lx / m1rowsmsg / wcols-16 / wcols-4.
 - MTP=4 guard on venv-canon (1024 tokens, expect ~65.9-class).
-- If probes show a WCOLS win → 3-run A/B on the winning config; else record the negative result and target the non-GEMM remainder (~launch/overhead: ~517 eager launches/token vs llama.cpp graph-captured). ## Round 3 (done, 02:24Z) — final results
+- If probes show a WCOLS win → 3-run A/B on the winning config; else record the negative result and target the non-GEMM remainder (~launch/overhead: ~517 eager launches/token vs llama.cpp graph-captured).
+## Round 3 (done, 02:24Z) — final results
 - WCOLS=4 e2e: 74.39/74.47/75.19 → **median 74.47 — parity (−0.12%)**, bit-identical (ALLTOKS md5 == A), FIRST20 anchor match.
 - WCOLS=16 e2e: 74.34/74.49/74.50 → **median 74.49 — parity (−0.09%)**, bit-identical.
 - The per-op probe's 2–3% win did NOT transfer to e2e (probe eval-sync misweighting). WCOLS kept as an inert opt-in knob.

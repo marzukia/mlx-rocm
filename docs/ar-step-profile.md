@@ -4,7 +4,10 @@ Task: close the AR gap 73.45 → ~87 t/s (llama.cpp anchor 86.9) on the MTP=0 fu
 
 This is the STATIC profile (no GPU): the exact kernel selection for every op in one AR decode step, canonical wheel (0.32.3.dev20261102+75ca881, venv-canon), standing config `MLX_ROCM_QMV_ROWS=1 MLX_ROCM_REFWD_M1=1 MLX_ROCM_GDN_FUSE=1`, model `<models-mount>/qwen3-9b-mlx` (4-bit affine, group 64, bf16, 4096 hidden, 32 layers = 24 GDN + 8 full-attention, D=256, GQA 32:4, vocab 248320).
 
-> Note on the standing config: `MLX_ROCM_REFWD_M1` is a no-op in venv-canon > (the env does not exist in that wheel; the t1434 wheel has it, but its gate > is rows-aware — with QMV_ROWS=1, M=1 stays on the wide path). So the > standing config's M=1 QMMs run the per-row **wide** kernel in both wheels.
+> Note on the standing config: `MLX_ROCM_REFWD_M1` is a no-op in venv-canon
+> (the env does not exist in that wheel; the t1434 wheel has it, but its gate
+> is rows-aware — with QMV_ROWS=1, M=1 stays on the wide path). So the
+> standing config's M=1 QMMs run the per-row **wide** kernel in both wheels.
 
 ## Per-GDN layer (×24)
 
