@@ -24,7 +24,7 @@ mirroring the 9c82e4c-pattern ssm in-place fix from t1779, rebuild the wheel, re
 | item | value |
 |---|---|
 | box | guest-a, RX 9070 XT (gfx1201), ROCm 10.1.0 guest userland |
-| model | /mnt/models/qwen3-9b-mlx/model-mtp.safetensors, md5 `02a54359` (sidecar pinned pre/post, no drift) |
+| model | <models-mount>/qwen3-9b-mlx/model-mtp.safetensors, md5 `02a54359` (sidecar pinned pre/post, no drift) |
 | wheel source | 75ca881 + full R4 graft (82 files, 6406+/548-) |
 | wheel | `mlx-0.32.3.dev20261103+75ca881-cp314-cp314-linux_x86_64.whl` (22,449,702 B, on the t1779 base), sha256 `eee04542d620b2c025f48359aebb3d52d1be6d998664859728338eaae750f9cd`, BUILD_RC=0 |
 | lib symbols | `gdn_fused_step` 5, `gdn_fused_conv_state` 4, `GdnFusedStepTape` 4, `gdn_prep` 7 |
@@ -134,6 +134,7 @@ FIRST20 bit-identical to the committed t1788 A1 at 70.20 t/s (sidecar pin
 
 - `data/t1788/`: A1.log, G1.log, G1dbg.log (400-tok gate arms + debug),
   PA3.log/PG3.log (24-step state probes), MTP4.1-3.log (guard runs), sidecar.log, clocks-*.log
+- Note: `G1dbg.log` is a trimmed excerpt — head 3000 + tail 3000 of the 25027-line full log (322387 B); the full log (1510200 B) exceeded the 1 MB file-size cap and was trimmed in place.
 - `data/t1779/`: A1.log, G1.log, probe logs (baseline)
 - box: `~/t1788/` (apply/build/gate scripts + full logs), `~/wheelout-t1788/`
   (wheel + sha256), `~/vendor-r4v` (build tree, 82-file graft)
