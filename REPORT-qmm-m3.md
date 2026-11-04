@@ -59,20 +59,13 @@ MLX_ROCM_REFWD_M1=1 MLX_QMV_MR_LX=0`. Bench: consolidated `mtp-bench6.py` md5
 `MLX_ROCM_QMV_ROWS_MIN_N=1` setdefault removed — it is not a config-of-record
 env; the default 16384 is restored so the small-N ops reach the per-row
 fallback where the H3 kernel engages). One wheel (venv-m3k) for both arms:
-C = env off (per-row), F = `MLX_ROCM_QMM_M3=1`. Pre-battery sanity anchor per
-arm, 3 rounds interleaved (C F / F C / C F), 25 s idle before each, per-arm
-timeout 600 (anchor) / 1200 (probe), flock for the whole battery, SCLK sampled
-every 10 s (the amdrocm-10 guest userland exposes no `pp_dpm_sclk` — the
-sample degenerates to 2; the other session's 2200-MHz readings predate this
-userland move, so no clock gate applies this run).
+C = env off (per-row), F = `MLX_ROCM_QMM_M3=1`. Pre-battery sanity anchor per arm, 3 rounds interleaved (C F / F C / C F), 25 s idle before each, per-arm timeout 600 (anchor) / 1200 (probe), flock for the whole battery, SCLK sampled every 10 s (the amdrocm-10 guest userland exposes no `pp_dpm_sclk` — the sample degenerates to 2; the other session's 2200-MHz readings predate this userland move, so no clock gate applies this run).
 
 Gates:
 - Control (C median): t/s 89.70 +/- 1%; fused verify wall 25.21 ms +/- 10%.
 - Lossless (F): FIRST20 = `271 1919 19` bit-identical, rc=0, all runs.
 - Bar (F vs control): t/s >= +5% AND fused verify wall <= 21.4 ms (-15%).
-- Same-wheel A/B (F vs C) is the primary evidence; the reference comparison is
-  secondary (this wheel's dispatch differs from the 460c803d wheel: the
-  current tree uses per-row for N < 16384 where the wheel used staged MR).
+- Same-wheel A/B (F vs C) is the primary evidence; the reference comparison is secondary (this wheel's dispatch differs from the 460c803d wheel: the current tree uses per-row for N < 16384 where the wheel used staged MR).
 
 ## Results
 
@@ -107,30 +100,13 @@ Per-class (probe, config-of-record dispatch, same wheel, C then F ~1 min apart):
 | attn (8x: 4 QMM N=512..4096 + S4VA) | 1.956 | 1.696 | -0.260 (-13.3%) | 25.8% -> 29.8% |
 | norms (unmodified) | 1.480 | 1.481 | +0.001 (flat) | 0.1% -> 0.1% |
 | lm_head (unmodified, staged MR N=248320) | 1.274 | 1.269 | -0.005 (flat) | 82.3% -> 82.6% |
-
-Fused: 25.78 -> 21.11 ms; effective bandwidth 177.6 -> 216.9 GB/s
-(32.5% -> 39.7% of the 546 GB/s floor). The win sits in the QMM classes,
-led by mlp (-2.99 ms, 45% of the wall) exactly where the shared-dequant
-lever was aimed (the K=4096 N=12288 gate/up class plus the K=12288 down
-class, which the t1964 nostage result had left at 45.9% of floor); the
-unmodified control classes (norms, lm_head) are flat, which validates the
-measurement. gdn_fused (unmodified kernel) shows a -15.8% delta that is outside this change's reach — attribute it to run-to-run variation between
-the C and F probe runs (they ran ~1 min apart) rather than a causal effect;
+ Fused: 25.78 -> 21.11 ms; effective bandwidth 177.6 -> 216.9 GB/s (32.5% -> 39.7% of the 546 GB/s floor). The win sits in the QMM classes, led by mlp (-2.99 ms, 45% of the wall) exactly where the shared-dequant lever was aimed (the K=4096 N=12288 gate/up class plus the K=12288 down class, which the t1964 nostage result had left at 45.9% of floor); the unmodified control classes (norms, lm_head) are flat, which validates the measurement. gdn_fused (unmodified kernel) shows a -15.8% delta that is outside this change's reach — attribute it to run-to-run variation between the C and F probe runs (they ran ~1 min apart) rather than a causal effect;
 it does not change any gate.
 
 ## Findings
 
-- The L2/H3 hypothesis is confirmed at scale: sharing the 4-bit weight-tile
-  dequant across the M rows (FMA:dequant 1:1 -> 3:1) with a staging-free
-  dense wide-load layout moves the mlp class from 43.3% to 58.5% of the HBM
-  floor (-26.0% wall) and the whole fused S=3 verify wall from 25.78 to
-  21.11 ms (-18.1%). The t1964 nostage result (which kept the per-row x
-  reads) had captured only part of this (down -0.73 ms at K=12288); the
-  full M-row sharing (x vectorized too, one weight stream per tile) is what
-  pays at the K=4096 N=12288 class.
-- Bit-identity held exactly as contracted: 8/8 runs token-identical across
-  arms (271 1919x19) and D1/D2 acceptance identical (159/148), with the
-  shared dequant being row-invariant and the per-(row,col) FMA order unchanged.
+- The L2/H3 hypothesis is confirmed at scale: sharing the 4-bit weight-tile dequant across the M rows (FMA:dequant 1:1 -> 3:1) with a staging-free dense wide-load layout moves the mlp class from 43.3% to 58.5% of the HBM floor (-26.0% wall) and the whole fused S=3 verify wall from 25.78 to 21.11 ms (-18.1%). The t1964 nostage result (which kept the per-row x reads) had captured only part of this (down -0.73 ms at K=12288); the full M-row sharing (x vectorized too, one weight stream per tile) is what pays at the K=4096 N=12288 class.
+- Bit-identity held exactly as contracted: 8/8 runs token-identical across arms (271 1919x19) and D1/D2 acceptance identical (159/148), with the shared dequant being row-invariant and the per-(row,col) FMA order unchanged.
 - The gate is default-OFF: with the env unset, the per-row path runs verbatim
   (C arm = the stock dispatch), so the change is inert unless adopted.
 - SCLK sampling is degenerate in the amdrocm-10 guest userland (no
@@ -140,12 +116,5 @@ it does not change any gate.
 
 ## Verdict
 
-**ADOPT `MLX_ROCM_QMM_M3=1`** as the config-of-record env change: same-wheel
-A/B (one build, venv-m3k) +16.9% t/s (90.58 -> 105.86, +16.9%) and -18.1%
-fused verify wall (25.78 -> 21.11 ms), both well past the bar (+5% / -15%),
-control gate within tolerance (t/s +0.98%, wall +2.3%), lossless gate
-bit-identical in all runs. This lifts the record stack from 89.70 to the
-105.86-t/s class (142% of AR 74.44) and the fused verify wall to 21.11 ms —
-the L2 ladder step is done; the remaining 21.11 -> 8 ms ladder now sits on
-gdn_fused (4.33 ms) + mlp (8.50 ms, now 58.5% of floor) + qmv_gdn (4.50 ms).
+**ADOPT `MLX_ROCM_QMM_M3=1`** as the config-of-record env change: same-wheel A/B (one build, venv-m3k) +16.9% t/s (90.58 -> 105.86, +16.9%) and -18.1% fused verify wall (25.78 -> 21.11 ms), both well past the bar (+5% / -15%), control gate within tolerance (t/s +0.98%, wall +2.3%), lossless gate bit-identical in all runs. This lifts the record stack from 89.70 to the 105.86-t/s class (142% of AR 74.44) and the fused verify wall to 21.11 ms — the L2 ladder step is done; the remaining 21.11 -> 8 ms ladder now sits on gdn_fused (4.33 ms) + mlp (8.50 ms, now 58.5% of floor) + qmv_gdn (4.50 ms).
 Default stays OFF until the env is folded into the config-of-record.
