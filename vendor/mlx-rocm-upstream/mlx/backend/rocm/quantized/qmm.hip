@@ -20,6 +20,7 @@ __device__ inline float load_scale_value(ScaleT raw);
 }
 #include "mlx/backend/rocm/quantized/qmv_wide_mr_kernel.hip"
 #include "mlx/backend/rocm/quantized/qmv_rows_msg_kernel.hip"
+#include "mlx/backend/rocm/quantized/qmv_wide_mr3_kernel.hip"
 #include "mlx/primitives.h"
 
 #include <hip/hip_bfloat16.h>
@@ -4232,6 +4233,42 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
       bool lxhoist = (mr_lx_env != 0) &&
           (K % ((bits_ == 4) ? 1024 : 512) == 0);
       if (!mr_ok) {
+        // t2011 H3: multi-row dense wide-load QMV WITHOUT x-staging, shared
+        // weight dequant (4-bit, M = 2..4) — replaces the per-row wide
+        // fallback for these shapes. The per-row kernel re-reads and re-
+        // dequantizes the weight tile per output row (3x at M = 3); this
+        // kernel dequantizes each tile ONCE and MACs it against all rows
+        // (bit-identical per row: same values, same per-(row, col) FMA
+        // order). No LDS (x read directly from global with 16B vector
+        // loads). Opt-in: MLX_ROCM_QMM_M3 (DEFAULT OFF — the per-row path
+        // runs verbatim when unset).
+        static bool use_qmm_m3 = (std::getenv("MLX_ROCM_QMM_M3") != nullptr);
+        bool m3ok = use_qmm_m3 && (bits_ == 4) && (M >= 2) && (M <= 4);
+        if (m3ok) {
+          dim3 m3block(32, 16);
+          dim3 m3grid((N + 15) / 16, (M + 3) / 4);
+#define LAUNCH_QMV_WIDE_MR3(TT, ST, GS)                                 \
+  enc.add_kernel_node(                                                \
+      &rocm::qmv_wide_mr3_kernel<TT, ST, GS>, m3grid, m3block, 0u,   \
+      (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr,               \
+      (const ST*)biases_ptr, (TT*)out_ptr, M, N, K, has_bias)
+#define LAUNCH_QMV_WIDE_MR3_GS(TT, ST)                                 \
+  do {                                                                \
+    if (group_size_ == 32) { LAUNCH_QMV_WIDE_MR3(TT, ST, 32); }      \
+    else if (group_size_ == 64) { LAUNCH_QMV_WIDE_MR3(TT, ST, 64); } \
+    else { LAUNCH_QMV_WIDE_MR3(TT, ST, 128); }                      \
+  } while (0)
+          if (x.dtype() == bfloat16) {
+            LAUNCH_QMV_WIDE_MR3_GS(hip_bfloat16, hip_bfloat16);
+          } else if (x.dtype() == float32) {
+            LAUNCH_QMV_WIDE_MR3_GS(float, float);
+          } else {
+            LAUNCH_QMV_WIDE_MR3_GS(__half, __half);
+          }
+#undef LAUNCH_QMV_WIDE_MR3_GS
+#undef LAUNCH_QMV_WIDE_MR3
+          return;
+        }
         dim3 wblock(32, wcols);
         dim3 wgrid((N + wcols - 1) / wcols, M);
 #define LAUNCH_QMV_WIDE(TT, ST, GS, BV)                                      \
