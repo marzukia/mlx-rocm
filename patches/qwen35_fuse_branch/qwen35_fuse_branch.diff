@@ -84,7 +84,7 @@
      # Rope parameters
      rope_parameters: Optional[Dict[str, Union[float, str, bool, List[int]]]] = field(
          default_factory=lambda: {
-@@ -166,6 +232,30 @@
+@@ -166,6 +232,35 @@
                  cache[0] = mx.take_along_axis(conv_input, positions, axis=1)
              else:
                  cache[0] = mx.contiguous(conv_input[:, -n_keep:, :])
@@ -96,7 +96,7 @@
 +            k3 = qkv[:, :, self.key_dim : 2 * self.key_dim]
 +            v3 = qkv[:, :, 2 * self.key_dim :]
 +            state = cache[1] if cache is not None else None
-+            out, state = mx.fast.gdn_fused_step(
++            out, state, conv_state_new = mx.fast.gdn_fused_step(
 +                q3, k3, v3, b, a, self.A_log, self.dt_bias,
 +                conv_state.reshape(self.conv_kernel_size - 1, self.conv_dim),
 +                self.conv1d.weight.reshape(self.conv_dim, self.conv_kernel_size),
@@ -106,6 +106,11 @@
 +                norm_eps=self.layer_norm_epsilon,
 +            )
 +            if cache is not None:
++                # conv state from the op (in graph-decode mode the op
++                # writes it in-place on the conv-state buffer, so the
++                # recorded graph chains it across steps; the python-side
++                # mx.contiguous update above is shadowed by this)
++                cache[0] = conv_state_new.reshape(B, self.conv_kernel_size - 1, self.conv_dim)
 +                cache[1] = state
 +                cache.advance(S)
 +            out = self.out_proj(out.reshape(B, S, -1))
@@ -120,7 +125,7 @@
          cache: Optional[Any] = None,
          input_embeddings: Optional[mx.array] = None,
 +        return_prenorm: bool = False,
-     ) -> mx.array:
+    ) -> mx.array:
          if input_embeddings is not None:
              hidden_states = input_embeddings
 @@ -312,7 +403,11 @@

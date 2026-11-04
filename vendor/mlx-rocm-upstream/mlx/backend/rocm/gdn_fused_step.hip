@@ -457,6 +457,67 @@ __global__ __launch_bounds__(256) void gdn_fused_step_kernel(
     __syncthreads();
   }
 }
+
+// ---- conv-state shift (second launch, after the fused kernel) ----
+// new_cs[r] = row (TMAX + r) of [cs (3 rows), qkv (TMAX rows)]: the sliding
+// conv window the model-side `mx.contiguous(conv_input[:, -n_keep:, :])`
+// computes. Emitted IN-PLACE in graph-decode mode (conv_state_new aliases
+// the conv-state buffer, the 9c82e4c pattern): at replay the recorded node
+// reads and writes the SAME stable VA, so the conv state chains across
+// steps instead of reading the stale pre-capture buffer. A separate launch
+// (not a tail of the fused kernel) because blocks of the fused kernel read
+// conv_state while a same-kernel write would race them; same-stream ordering
+// of this launch after the fused kernel removes the race. The (potentially
+// aliased) buffer is only READ into shared memory before any write, so the
+// in-place write cannot clobber a source row another block still needs.
+template <typename T>
+__global__ __launch_bounds__(256)
+void gdn_fused_conv_state_kernel(
+    const T* __restrict__ cs,
+    const T* __restrict__ q_raw,
+    const T* __restrict__ k_raw,
+    const T* __restrict__ v_raw,
+    T* __restrict__ out,
+    int tmax,
+    int key_dim,
+    int value_dim,
+    int conv_dim) {
+  extern __shared__ T s_src[];  // 768 entries (3 per thread)
+  const int total = 3 * conv_dim;
+  const int gbase = blockIdx.x * 768;
+  #pragma unroll
+  for (int j = 0; j < 3; ++j) {
+    const int idx = gbase + threadIdx.x * 3 + j;
+    if (idx < total) {
+      const int dr = idx / conv_dim;
+      const int srow = tmax + dr;
+      const int col = idx - dr * conv_dim;
+      T val;
+      if (srow < 3) {
+        val = cs[srow * conv_dim + col];
+      } else {
+        const int r = srow - 3;
+        if (col < key_dim) {
+          val = q_raw[r * key_dim + col];
+        } else if (col < 2 * key_dim) {
+          val = k_raw[r * key_dim + (col - key_dim)];
+        } else {
+          val = v_raw[r * value_dim + (col - 2 * key_dim)];
+        }
+      }
+      s_src[threadIdx.x * 3 + j] = val;
+    }
+  }
+  __syncthreads();
+  #pragma unroll
+  for (int j = 0; j < 3; ++j) {
+    const int idx = gbase + threadIdx.x * 3 + j;
+    if (idx < total) {
+      out[idx] = s_src[threadIdx.x * 3 + j];
+    }
+  }
+}
+
 }  // namespace rocm
 
 // ---- host launcher ----
@@ -478,6 +539,7 @@ int launch_gdn_fused_step(
     const void* norm_weight,
     void* result,
     void* state_new,
+    void* conv_state_new,
     int key_dim,
     int value_dim,
     int conv_dim,
@@ -500,7 +562,16 @@ int launch_gdn_fused_step(
       (T*)result, (float*)state_new, key_dim, value_dim, conv_dim,
       kernel_size, num_v_heads, num_k_heads, head_dim, inv_scale, rms_eps,
       norm_eps, dbg);
-  return (int)hipGetLastError();
+  int rc = (int)hipGetLastError();
+  // Conv-state shift: second launch, after the fused kernel (same-stream
+  // ordering makes the in-place write race-free; see the kernel comment).
+  dim3 cgrid((3 * conv_dim + 767) / 768);
+  rocm::gdn_fused_conv_state_kernel<T><<<cgrid, block, 768 * 2, stream>>>(
+      (const T*)conv_state, (const T*)q_raw, (const T*)k_raw,
+      (const T*)v_raw, (T*)conv_state_new, TMAX, key_dim, value_dim,
+      conv_dim);
+  int rc2 = (int)hipGetLastError();
+  return (rc != 0) ? rc : rc2;
 }
 
 }  // namespace mlx::core
@@ -558,6 +629,7 @@ void GdnFusedStep::eval_gpu(
   auto& nw = inputs[11];
   auto& result = outputs[0];
   auto& state_new = outputs[1];
+  auto& conv_state_new = outputs[2];
 
   result.set_data(mlx::core::rocm::malloc_async(result.nbytes(), encoder));
   if (rocm::graph_decode_mode() && st.flags().row_contiguous &&
@@ -581,6 +653,25 @@ void GdnFusedStep::eval_gpu(
   } else {
     state_new.set_data(
         mlx::core::rocm::malloc_async(state_new.nbytes(), encoder));
+  }
+
+  // Conv state: the model-side `mx.contiguous(conv_input[:, -n_keep:, :])`
+  // (recorded as a stale pre-capture buffer read in graph-decode mode) is
+  // replaced by this op output: a bit-exact copy of the same rows, emitted
+  // in-place on the conv-state buffer in graph-decode mode (same guard and
+  // pattern as the ssm state above). Non-graph-decode keeps a fresh buffer;
+  // the value is bit-identical to the model-side copy in both modes.
+  if (rocm::graph_decode_mode() && cs.flags().row_contiguous &&
+      cs.nbytes() == conv_state_new.nbytes()) {
+    conv_state_new.copy_shared_buffer(cs);
+    if (std::getenv("MLX_GDN_DEBUG")) {
+      fprintf(stderr, "GDNF-DBG in-place conv-state alias cs=%p new=%p\n",
+              (void*)cs.data_shared_ptr().get(),
+              (void*)conv_state_new.data_shared_ptr().get());
+    }
+  } else {
+    conv_state_new.set_data(
+        mlx::core::rocm::malloc_async(conv_state_new.nbytes(), encoder));
   }
 
   const char* dbg_env = std::getenv("P2_GDN_DEBUG");
@@ -615,7 +706,8 @@ void GdnFusedStep::eval_gpu(
               gpu_ptr<void>(bb), gpu_ptr<void>(aa), gpu_ptr<float>(al),
               gpu_ptr<float>(db), gpu_ptr<void>(cs), gpu_ptr<void>(cw),
               gpu_ptr<void>(zg), gpu_ptr<float>(st), gpu_ptr<void>(nw),
-              gpu_ptr<void>(result), gpu_ptr<void>(state_new), key_dim,
+              gpu_ptr<void>(result), gpu_ptr<void>(state_new),
+              gpu_ptr<void>(conv_state_new), key_dim,
               value_dim, conv_dim, 4, num_v_heads, num_k_heads, head_dim,
               inv_scale_, eps_ * inv_scale_ * inv_scale_, norm_eps_,
               (dbg_env != nullptr && dbg_env[0] == '1')
@@ -628,7 +720,8 @@ void GdnFusedStep::eval_gpu(
               gpu_ptr<void>(bb), gpu_ptr<void>(aa), gpu_ptr<float>(al),
               gpu_ptr<float>(db), gpu_ptr<void>(cs), gpu_ptr<void>(cw),
               gpu_ptr<void>(zg), gpu_ptr<float>(st), gpu_ptr<void>(nw),
-              gpu_ptr<void>(result), gpu_ptr<void>(state_new), key_dim,
+              gpu_ptr<void>(result), gpu_ptr<void>(state_new),
+              gpu_ptr<void>(conv_state_new), key_dim,
               value_dim, conv_dim, 4, num_v_heads, num_k_heads, head_dim,
               inv_scale_, eps_ * inv_scale_ * inv_scale_, norm_eps_,
               (dbg_env != nullptr && dbg_env[0] == '1')
@@ -640,7 +733,8 @@ void GdnFusedStep::eval_gpu(
               gpu_ptr<void>(bb), gpu_ptr<void>(aa), gpu_ptr<float>(al),
               gpu_ptr<float>(db), gpu_ptr<void>(cs), gpu_ptr<void>(cw),
               gpu_ptr<void>(zg), gpu_ptr<float>(st), gpu_ptr<void>(nw),
-              gpu_ptr<void>(result), gpu_ptr<void>(state_new), key_dim,
+              gpu_ptr<void>(result), gpu_ptr<void>(state_new),
+              gpu_ptr<void>(conv_state_new), key_dim,
               value_dim, conv_dim, 4, num_v_heads, num_k_heads, head_dim,
               inv_scale_, eps_ * inv_scale_ * inv_scale_, norm_eps_,
               (dbg_env != nullptr && dbg_env[0] == '1')
