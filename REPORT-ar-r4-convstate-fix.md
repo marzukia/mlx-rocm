@@ -15,11 +15,9 @@
 
 ## 1. Round purpose
 
-Round N of the R4 GDN-FUSE diagnostic sequence. The t1779 kernel left the
-conv-state commit dangling (the updated conv state was never aliased back onto
+Round N of the R4 GDN-FUSE diagnostic sequence. The t1779 kernel left the conv-state commit dangling (the updated conv state was never aliased back onto
 the captured `conv_state` buffer in graph mode). This round: one minimal fix
-mirroring the 9c82e4c-pattern ssm in-place fix from t1779, rebuild the wheel,
-re-run the canonical Gate 1/2/3 battery, per-step state probes, MTP4 guard.
+mirroring the 9c82e4c-pattern ssm in-place fix from t1779, rebuild the wheel, re-run the canonical Gate 1/2/3 battery, per-step state probes, MTP4 guard.
 
 ## 2. Environment (pinned)
 
@@ -42,8 +40,7 @@ re-run the canonical Gate 1/2/3 battery, per-step state probes, MTP4 guard.
   bit-identical to the python path.
 - In-place safety: shared-memory staging (768 elements/block, 3 per thread;
   Qwen3.5-9B: 3×8192/768 = 32 blocks) + `__syncthreads()` before the write, so
-  all reads from the (aliased) cs buffer complete before any write. The kernel
-  runs after the main fused kernel (same-stream ordering).
+  all reads from the (aliased) cs buffer complete before any write. The kernel runs after the main fused kernel (same-stream ordering).
 - `graph_decode_mode()`: `cs.flags().row_contiguous && cs.nbytes() ==
   conv_state_new.nbytes()` → `conv_state_new.copy_shared_buffer(cs)` — the exact
   mirror of the ssm alias.
@@ -85,10 +82,7 @@ is not a fallback/route mismatch.
   rest of the trace.**
 
 Read: the **conv state is EXONERATED** (bit-exact at s4/s5 despite replay; its
-s6 dirt is purely downstream of the ssm divergence). GDN blocks 0–2 — which
-feed on pre-attention inputs — stay clean while blocks 3+ go dirty at s4, so
-the residual suspect is the **ATTENTION/KV path** (the probe skips KVCache
-entries): whatever the graph replays stale for the full-attention layer between
+s6 dirt is purely downstream of the ssm divergence). GDN blocks 0–2 — which feed on pre-attention inputs — stay clean while blocks 3+ go dirty at s4, so the residual suspect is the **ATTENTION/KV path** (the probe skips KVCache entries): whatever the graph replays stale for the full-attention layer between
 GDN blocks 2 and 3 feeds the GDN ssm updates from block 3 on.
 
 ## 6. Gate 2 — speed (record)
@@ -120,9 +114,7 @@ Met per brief: Gate 1 still fails after the conv-state fix; per-step state md5s
 captured; remaining suspect named (attention/KV path, first full-attention layer
 between GDN blocks 2 and 3). Stopping here.
 
-Kernel change itself is correct as implemented (in-place commit + alias verified
-in the debug run). The next round's probe set should extend to KV cache rows
-and the full-attention output around step 4.
+Kernel change itself is correct as implemented (in-place commit + alias verified in the debug run). The next round's probe set should extend to KV cache rows and the full-attention output around step 4.
 
 ## 10. Graft deliverable note (added by t1816 reconstruction)
 
@@ -141,8 +133,7 @@ FIRST20 bit-identical to the committed t1788 A1 at 70.20 t/s (sidecar pin
 ## 11. Artifact manifest
 
 - `data/t1788/`: A1.log, G1.log, G1dbg.log (400-tok gate arms + debug),
-  PA3.log/PG3.log (24-step state probes), MTP4.1-3.log (guard runs),
-  sidecar.log, clocks-*.log
+  PA3.log/PG3.log (24-step state probes), MTP4.1-3.log (guard runs), sidecar.log, clocks-*.log
 - `data/t1779/`: A1.log, G1.log, probe logs (baseline)
 - box: `~/t1788/` (apply/build/gate scripts + full logs), `~/wheelout-t1788/`
   (wheel + sha256), `~/vendor-r4v` (build tree, 82-file graft)
