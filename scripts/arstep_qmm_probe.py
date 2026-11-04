@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """AR step change: per-shape M=1 QMM probe (bf16 x, production shapes).
 
-Per-op latency (host op + mx.eval) medians across the production decode shapes, for the dispatch variant selected by env:
+Per-op latency (host op + mx.eval) medians across the production decode
+shapes, for the dispatch variant selected by env:
   baseline : wide M=1 (standing config)
   m1lx     : + MLX_ROCM_M1_LX=1 (int8-dot4)
   m1rowsmsg: + MLX_ROCM_M1_ROWSMSG=1 (rows-msg morphology)
