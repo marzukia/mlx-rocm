@@ -131,9 +131,12 @@ git apply --check clean". The delivered `gdn_fused_step.patch` in 928b30f
 carried a residual spurious `gdn_prep`/`gdn_norm_gated` deletion hunk and
 lacked the `gdn_fused_step_tape.hip` creation its own CMake hunk references —
 flagged in the t1808 fleet review. Fixed in t1816: graft regenerated as
-`diff(75ca881 → box wheel tree)`, `git apply --check` on pristine 75ca881,
-7/7 md5-identical to the wheel source tree; the t1816 wheel rebuild spot-check
-accompanies the fix.
+`diff(75ca881 -> box wheel tree)` with the 411512b explicit T-admission gate
+restored, `git apply --check` on pristine 75ca881, 7/7 md5-identical to the
+box wheel source tree; the wheel was rebuilt from the grafted tree
+(BUILD_RC=0, sha256 `caf6299a...`) and the Gate 1 spot-check A1 returned
+FIRST20 bit-identical to the committed t1788 A1 at 70.20 t/s (sidecar pin
+02a54359 pre/post; lib symbols all present).
 
 ## 11. Artifact manifest
 

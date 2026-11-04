@@ -12,7 +12,7 @@ index 49d4985..ccddd17 100644
      ${CMAKE_CURRENT_SOURCE_DIR}/scaled_dot_product_attention.hip
      ${CMAKE_CURRENT_SOURCE_DIR}/flash_attention.hip
 diff --git a/mlx/fast.cpp b/mlx/fast.cpp
-index 0244f12..8306c24 100644
+index 0244f12..95ec3e2 100644
 --- a/mlx/fast.cpp
 +++ b/mlx/fast.cpp
 @@ -2,6 +2,7 @@
@@ -239,7 +239,7 @@ index 0244f12..8306c24 100644
  bool RMSNormVJP::is_equivalent(const Primitive& other) const {
    const RMSNormVJP& a_other = static_cast<const RMSNormVJP&>(other);
    return eps_ == a_other.eps_;
-@@ -970,6 +1173,271 @@ array scaled_dot_product_attention(
+@@ -970,6 +1173,272 @@ array scaled_dot_product_attention(
    return fallback(std::move(inputs))[0];
  }
  
@@ -278,7 +278,8 @@ index 0244f12..8306c24 100644
 +  if (f != nullptr && f[0] == '1') {
 +    return true;
 +  }
-+  if (B != 1 || T > 4) {
++  // T must be one of the TMAX instantiations (1, 2, 4): the launcher maps tmax 1 -> <1>, 2 -> <2>, everything else -> <4>, so admitting T=3 (S=3, K=2 spec-decode) would fall through to the TMAX=4 kernel = OOB read+write on a 3-row buffer. Reject it: it degrades to the clear error below (model default path via MLX_ROCM_GDN_FUSE=0).
++  if (B != 1 || (T != 1 && T != 2 && T != 4)) {
 +    return true;
 +  }
 +  // NOTE: MLX_ROCM_GDN_FUSE_T2=0 no longer routes T=2 to the 4-op chain
@@ -422,7 +423,7 @@ index 0244f12..8306c24 100644
 +  if (e == nullptr || e[0] != '1') {
 +    return true;
 +  }
-+  if (B != 1 || T > 4) {
++  if (B != 1 || (T != 1 && T != 2 && T != 4)) {
 +    return true;
 +  }
 +  if (Dk != 128 || Dv != 128) {

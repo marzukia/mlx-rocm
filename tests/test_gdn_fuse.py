@@ -154,6 +154,7 @@ def test_patch_touches_only_the_expected_files():
         "python/src/fast.cpp",
         "mlx/backend/rocm/CMakeLists.txt",
         "mlx/backend/rocm/gdn_fused_step.hip",
+        "mlx/backend/rocm/gdn_fused_step_tape.hip",
     }
     assert files == expected, f"unexpected patch file set: {files}"
 
