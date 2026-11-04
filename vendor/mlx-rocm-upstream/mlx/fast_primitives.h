@@ -614,6 +614,32 @@ class LMHeadInt2 : public Custom {
     return {Shape{N}, Shape{N / 64, 8}, Shape{N / 64, 8}};
   }
 };
+// LMHeadInt2W: vectorized (wave-wide) int2 g128-asymmetric dequant GEMV (M=1) - the R4c scalar port's vectorized follow-up (see backend/rocm/lm_head_int2w.hip). Same inputs/contract as LMHeadInt2; candidate arrays are [N/32, 8] (per-32-column top-8, refining the scalar's per-64) with shape guards N%32 + K%512.
+class LMHeadInt2W : public Custom {
+ public:
+  LMHeadInt2W(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback)
+      : Custom(stream, std::move(fallback)) {}
+
+  static bool use_fallback(Stream s);
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(LMHeadInt2W);
+
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    int N = (int)inputs[1].shape(0);
+    int NG = (int)inputs[4].shape(0);
+    (void)NG;
+    return {Shape{N}, Shape{N / 32, 8}, Shape{N / 32, 8}};
+  }
+};
 class GdnPrep : public Custom {
  public:
   GdnPrep(

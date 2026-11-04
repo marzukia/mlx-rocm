@@ -17,8 +17,9 @@ Switches (mode 4 only):
         hidden (the llama.cpp/radiance structure; the S=1 re-read is
         eliminated: 9.39 -> 6.13 GiB/step).
     MTP6_DRAFT_HEAD=int2|bf16   - int2 = mx.fast.lm_head_int2 dequant
-        GEMV + exact top-32 re-rank (requires the patched wheel);
-        bf16 = the canonical full lm_head.
+        GEMV + exact top-32 re-rank (requires the patched wheel; an
+        explicit opt-in); bf16 = the canonical full lm_head (the
+        default: the canonical 4-bit path runs when unset).
     MTP6_MTPTRIM=1              - also trim mtp_cache to the accepted
         prefix (off by default: the canonical path never rolls the sidecar back).
 
@@ -88,8 +89,9 @@ def quantize_int2(w, chunk=8192):
             .reshape(j - i, K)
         )
         packed[i:j] = q[:, :Q] | (q[:, Q : 2 * Q] << 2) | (q[:, 2 * Q : 3 * Q] << 4) | (q[:, 3 * Q :] << 6)
-        scale[i:j] = 4.0 * s
-        zs[i:j] = (4.0 + z) * s
+        # Dequant coefficients exactly as the kernel takes them (lm_head_int2.hip: the header contract and the per-group algebra `acc += d*s - sx*(z*s)`, i.e. the dequant of w_hat = s*(q - z) for q = clamp(round(w/s + z), 0, 3)). An earlier revision of this reference wrote 4.0*s / (4.0+z)*s, which rescales each group by 4x plus a per-group offset and corrupts the argmax ranking.
+        scale[i:j] = s
+        zs[i:j] = z * s
     return packed.astype(mx.uint8), scale, zs
 
 
@@ -101,7 +103,12 @@ def int2_argmax(x, qh):
     NG = K // 128
     xf = x.reshape(NG, 128).astype(mx.float32)
     sx = mx.sum(xf, axis=1)
-    logits, cval, ccol = mx.fast.lm_head_int2(x, qh["packed"], qh["scale"], qh["zs"], sx)
+    _op = (
+        mx.fast.lm_head_int2_wide
+        if os.environ.get("MTP6_DRAFT_HEAD", "bf16") == "int2w"
+        else mx.fast.lm_head_int2
+    )
+    logits, cval, ccol = _op(x, qh["packed"], qh["scale"], qh["zs"], sx)
     perm = mx.argsort(cval.reshape(-1))
     idx = mx.take(ccol.reshape(-1), perm[-32:])
     if "w" in qh:
@@ -143,7 +150,8 @@ def main():
         mtp_cache = [KVCache()]
     qh = None
     if mode == "4":
-        if os.environ.get("MTP6_DRAFT_HEAD", "int2") == "int2" and hasattr(mx.fast, "lm_head_int2"):
+        _dh = os.environ.get("MTP6_DRAFT_HEAD", "bf16")
+        if _dh in ("int2", "int2w") and hasattr(mx.fast, "lm_head_int2_wide" if _dh == "int2w" else "lm_head_int2"):
             tq0 = time.time()
             _h = lm.lm_head
             if type(_h).__name__ == "QuantizedLinear":

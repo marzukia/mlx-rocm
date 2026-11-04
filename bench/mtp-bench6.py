@@ -116,7 +116,12 @@ def int2_argmax(x, qh):
     NG = K // 128
     xf = x.reshape(NG, 128).astype(mx.float32)
     sx = mx.sum(xf, axis=1)
-    logits, cval, ccol = mx.fast.lm_head_int2(
+    _op = (
+        mx.fast.lm_head_int2_wide
+        if os.environ.get("MTP6_DRAFT_HEAD", "bf16") == "int2w"
+        else mx.fast.lm_head_int2
+    )
+    logits, cval, ccol = _op(
         x, qh["packed"], qh["scale"], qh["zs"], sx
     )
     perm = mx.argsort(cval.reshape(-1))
@@ -157,9 +162,10 @@ def main():
         mtp_cache = [KVCache()]
     qh = None
     if mode == "4":
-        # FIX#2: int2 g128-asymmetric draft head (replaces the full bf16 lm_head per draft; MTP6_DRAFT_HEAD=bf16 to A/B the old head).
-        if os.environ.get("MTP6_DRAFT_HEAD", "int2") == "int2" and hasattr(
-            mx.fast, "lm_head_int2"
+        # FIX#2: int2 g128-asymmetric draft head (replaces the full bf16 lm_head per draft). OFF by default: the canonical bf16/4-bit head runs when MTP6_DRAFT_HEAD is unset; int2/int2w are explicit opt-ins (A/B the old head with MTP6_DRAFT_HEAD=bf16; int2w = the vectorized int2 kernel).
+        _dh = os.environ.get("MTP6_DRAFT_HEAD", "bf16")
+        if _dh in ("int2", "int2w") and hasattr(
+            mx.fast, "lm_head_int2_wide" if _dh == "int2w" else "lm_head_int2"
         ):
             tq0 = time.time()
             _h = lm.lm_head
@@ -496,7 +502,7 @@ def main():
         import mlx_lm.models.qwen3_5 as _m5
         print(
             "INFO TAPEMODE=%s REFWDS=%d CDEFERRED=%d GDN_TAPE_CALLS=%d INT2=%s" % (
-                os.environ.get("MTP6_TAPE", "1"),
+                tape_mode,
                 n_refwd,
                 n_cdeferred,
                 getattr(_m5, "GDN_TAPE_CALLS", -1),
