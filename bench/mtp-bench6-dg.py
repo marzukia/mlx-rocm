@@ -623,7 +623,7 @@ def main():
 
             def commit(krow, prefix):
                 # Select the per-row GDN state-tape row (the state AFTER row krow) and rebind the cache leaves to the tape slice (lazy; no copies, no sync). lengths is None in this model (advance() is a no-op), so no lengths fix-up.
-                tape_avail = tape_mode in ("1", "hybrid")
+                tape_avail = tape_mode in ("1", "hybrid", "r5")
                 if tape_avail:
                     try:
                         st0 = lm.model.layers[0].linear_attn.last_tape[0]
