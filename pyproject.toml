@@ -95,6 +95,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 # r4c_head_probe.py = module docstring reflowed into flowing lines (PR15 r2 line-wrap fix round); E501 ignored for it only.
 "bench/r4c_head_probe.py" = ["E501"]
 "bench/mtp-bench6.py" = ["E501"]
+"bench/mtp-bench6-dg.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

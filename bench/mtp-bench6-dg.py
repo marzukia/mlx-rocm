@@ -52,8 +52,7 @@ MTP6_DGATE_T0 <= sum < MTP6_DGATE_T1 (default 12) -> 2-draft chain, verified
 by a batched S=3 forward with the same hybrid-tape commit/reject mechanism;
 sum >= T1 -> full 3-draft chain. MTP6_NGRAM=1 (with DRAFTGATE) fills any
 draft position with a zero-cost n-gram continuation lookup (MTP6_NGRAM_N=4)
-over prompt+generated context (common_ngram_map_draft semantics, llama.cpp
-ngram-map.cpp:222-400) before falling back to the MTP draft forward. All
+over prompt+generated context (common_ngram_map_draft semantics, llama.cpp ngram-map.cpp:222-400) before falling back to the MTP draft forward. All
 emitted tokens are target-greedy, so the stream is lossless by construction;
 the D1/D2/D3 acceptance mix and the correction-forward count may differ.
 Default OFF = bit-identical to mtp-bench6.py.
