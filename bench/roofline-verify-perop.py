@@ -84,11 +84,17 @@ def main():
     layers = lm.model.layers
     gdn_layers = [ly for ly in layers if ly.is_linear]
     attn_layers = [ly for ly in layers if not ly.is_linear]
-    print(f"LOAD_S={t_load:.2f} N_LAYERS={len(layers)} N_GDN={len(gdn_layers)} N_ATTN={len(attn_layers)}")
+    n_l, n_g, n_a = len(layers), len(gdn_layers), len(attn_layers)
+    print(f"LOAD_S={t_load:.2f} NL={n_l} NG={n_g} NA={n_a}")
 
     ga0 = gdn_layers[0].linear_attn
     p0 = ga0.in_proj_qkv.weight
-    print("SHAPE_CHECK qkv.weight", tuple(p0.shape), "scales", tuple(ga0.in_proj_qkv.scales.shape))
+    print(
+        "SHAPE_CHECK qkv.weight",
+        tuple(p0.shape),
+        "scales",
+        tuple(ga0.in_proj_qkv.scales.shape),
+    )
 
     ids = tok.encode(PROMPT)
     cache = lm.make_cache()
@@ -98,7 +104,12 @@ def main():
 
     _last = ids[-1]
     for _ in range(AR_N):
-        logits, h = lm(mx.array([[_last]]), cache=cache, return_hidden=True, return_prenorm=True)
+        logits, h = lm(
+            mx.array([[_last]]),
+            cache=cache,
+            return_hidden=True,
+            return_prenorm=True,
+        )
         _last = int(mx.argmax(logits[0, -1]))
         if _last == EOS:
             break
@@ -125,7 +136,12 @@ def main():
     tape0 = getattr(_m5, "GDN_TAPE_CALLS", -1)
 
     # h4 = pre-final-norm hidden for the same 4 tokens (via tape path).
-    _, h4 = lm(mx.array([[_last, 11, 13, 29]]), cache=cache, return_hidden=True, return_prenorm=True)
+    _, h4 = lm(
+        mx.array([[_last, 11, 13, 29]]),
+        cache=cache,
+        return_hidden=True,
+        return_prenorm=True,
+    )
     mx.eval(h4)
     h4 = h4  # [1, 4, 4096]; model modules expect [B, S, H]
 
@@ -147,7 +163,12 @@ def main():
         ly = gdn_layers[i]
         xa = ly.input_layernorm(h4)
         ga = ly.linear_attn
-        outs = (ga.in_proj_qkv(xa), ga.in_proj_z(xa), ga.in_proj_b(xa), ga.in_proj_a(xa))
+        outs = (
+            ga.in_proj_qkv(xa),
+            ga.in_proj_z(xa),
+            ga.in_proj_b(xa),
+            ga.in_proj_a(xa),
+        )
         mx.eval(*outs)
         out = ga.out_proj(outs[1].reshape(1, 4, -1))
         mx.eval(out)
@@ -164,7 +185,14 @@ def main():
         b = ga.in_proj_b(xa)
         a = ga.in_proj_a(xa)
         z = ga.in_proj_z(xa).reshape(1, 4, ga.num_v_heads, ga.head_v_dim)
-        conv_state = c[0] if c[0] is not None else mx.zeros((1, ga.conv_kernel_size - 1, ga.conv_dim), dtype=h4.dtype)
+        conv_state = (
+            c[0]
+            if c[0] is not None
+            else mx.zeros(
+                (1, ga.conv_kernel_size - 1, ga.conv_dim),
+                dtype=h4.dtype,
+            )
+        )
         t0 = time.perf_counter()
         conv_input = mx.concatenate([conv_state, qkv], axis=1)
         if c.lengths is not None:
