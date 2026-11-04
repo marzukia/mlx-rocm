@@ -54,19 +54,13 @@ mtp_3 = MTP(h_2, e_2)       # requires d_2
 
 A single M=3 head call requires h_1, h_2, h_3 ready simultaneously. But h_2
 exists only after argmax(head(h_1)), and h_3 only after argmax(head(h_2)).
-The MTP layer input is [hidden, embedding], and the embedding depends on the
-previously SELECTED token — the argmax output. Batching the GEMVs would
-require materializing mtp_2/mtp_3 without the selections, which does not exist
-as a linear-algebra pass (embedding is a per-token lookup, not a linear map
-of the inputs).
+The MTP layer input is [hidden, embedding], and the embedding depends on the previously SELECTED token — the argmax output. Batching the GEMVs would require materializing mtp_2/mtp_3 without the selections, which does not exist as a linear-algebra pass (embedding is a per-token lookup, not a linear map of the inputs).
 
-Even ignoring feasibility, the stated savings do not exist in the measured
-regime:
+Even ignoring feasibility, the stated savings do not exist in the measured regime:
 - "per-call launch overhead 0.43 ms": launches are asynchronous in this
   wheel; the measured draft wall (7.3–11.0 ms) is HBM-bound (2.67 GiB of head
   traffic at ~634 GB/s ≈ 4.2 ms). There is no per-call wall to remove.
-- "shared input HBM reduction": the only input shared by the 3 GEMVs is the
-  head weight matrix itself (242 MB packed), which is read once PER ROW — an
+- "shared input HBM reduction": the only input shared by the 3 GEMVs is the head weight matrix itself (242 MB packed), which is read once PER ROW — an
   M=3 call reads exactly 3 × (K×N/4) bytes, the same as three M=1 calls. No
   traffic is saved.
 - Measured M=3/M=4 head probe costs (same run, same idle protocol; for the
@@ -130,15 +124,13 @@ is a markedly faster regime than the t1796 report (~27 t/s) — the wheel moved.
   committed stream (verify/commit is exact); with 0% acceptance the int2w run
   is pure M=1 commit forwards while B's run uses M=4 verify batches — the
   divergence is M=4-vs-M=1 kernel numerics, not a draft effect. (The r4v and
-  kfix-class wheels' B runs also diverge from each other at token 32 — wheel
-  kernel difference.)
+  kfix-class wheels' B runs also diverge from each other at token 32 — wheel kernel difference.)
 - combined vs int2w: 256/256 identical.
 
 ### 3.4 Gates
 
 - **int2w**: FAIL. Chain −1.58 ms (< 2 ms), tok/s −37% (not +4%), acceptance
-  0% vs 76.6% (not neutral). The t1796 zero-acceptance finding holds on the
-  new wheel: int2 draft quality for this 9B model is zero.
+  0% vs 76.6% (not neutral). The t1796 zero-acceptance finding holds on the new wheel: int2 draft quality for this 9B model is zero.
 - **4bit-MTP**: r4v — chain −3.61 ms, tok/s +8.1%, D1 identical (75.0→75.0),
   D2/D3 improved (58.3→63.5, 46.4→54.1): gate PASS, **adopt**. kfix-class —
   chain −4.0 ms, tok/s +1.7/+2.6%, D1 −5.5pp (76.6→71.1, D2 61.2→58.2,
