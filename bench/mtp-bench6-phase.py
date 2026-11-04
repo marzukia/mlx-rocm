@@ -16,6 +16,15 @@ Switches (mode 4 only):
         and the draft chain re-anchors on the rejected row's pre-norm
         hidden (the llama.cpp/radiance structure; the S=1 re-read is
         eliminated: 9.39 -> 6.13 GiB/step).
+    MTP6_TAPE=r5b               - R5b: r5 + the commit rebind materializes
+        the selected tape row (fresh contiguous arrays for state and
+        conv state) instead of rebinding the strided row-slice view of
+        the S=4 tape batch (the next step's GDN state input is then
+        contiguous, as in hybrid's post-correction-forward state).
+    MTP6_TAPE=r5e               - R5e: r5 + the S=4 verify GEMM is forced
+        in the verify window (mx.eval after the verify forward) instead
+        of by the first argmax in the commit window (the
+        deferred-eval-order diagnostic/fix).
     MTP6_DRAFT_HEAD=int2|bf16   - int2 = mx.fast.lm_head_int2 dequant
         GEMV + exact top-32 re-rank (requires the patched wheel);
         bf16 = the canonical full lm_head.
@@ -128,9 +137,9 @@ def main():
         legacy = os.environ.get("MTP6_ACCEPT", "savestate")
         assert legacy in ("savestate", "tape"), legacy
         tape_mode = "0" if legacy == "savestate" else "hybrid"
-    assert tape_mode in ("0", "1", "hybrid", "r5"), tape_mode
+    assert tape_mode in ("0", "1", "hybrid", "r5", "r5b", "r5e"), tape_mode
     mtptrim = os.environ.get("MTP6_MTPTRIM", "0") == "1"
-    if mode == "4" and tape_mode in ("1", "hybrid", "r5"):
+    if mode == "4" and tape_mode in ("1", "hybrid", "r5", "r5b", "r5e"):
         os.environ["MLX_ROCM_GDN_TAPE"] = "1"
         os.environ["MLX_ROCM_GDN_FUSE"] = "1"
     t0 = time.time()
@@ -382,6 +391,9 @@ def main():
                 mx.array([[prev_token, d1, d2, d3]]),
                 cache=cache, return_hidden=True, return_prenorm=True,
             )
+            if tape_mode == "r5e":
+                # R5e: force the S=4 GEMM in the verify window; the commit window then runs argmax on already-evaluated logits (cheap sync) + the rebind bookkeeping.
+                mx.eval(logits, hidden)
             acc("verify", time.perf_counter() - tv0)
             tc0 = time.perf_counter()
             l0, l1, l2, l3 = logits[0, 0], logits[0, 1], logits[0, 2], logits[0, 3]
@@ -391,7 +403,7 @@ def main():
             def commit(krow, prefix):
                 # tape: select the per-row GDN state-tape row and rebind the cache leaves (lazy). lengths is None in this model.
                 nonlocal n_tape
-                tape_avail = tape_mode in ("1", "hybrid", "r5")
+                tape_avail = tape_mode in ("1", "hybrid", "r5", "r5b", "r5e")
                 if tape_avail:
                     try:
                         st0 = lm.model.layers[0].linear_attn.last_tape[0]
@@ -402,8 +414,13 @@ def main():
                     for i, c in enumerate(cache):
                         if hasattr(c, "cache"):
                             st, cstab = lm.model.layers[i].linear_attn.last_tape
-                            c[1] = st[krow].reshape((1,) + st[krow].shape)
-                            c[0] = cstab[krow].reshape((1,) + cstab[krow].shape)
+                            if tape_mode == "r5b":
+                                # R5b: materialize the selected row (fresh contiguous arrays); the r5 rebind is a strided row-slice view of the S=4 tape batch.
+                                c[1] = st[krow].reshape((1,) + st[krow].shape).copy()
+                                c[0] = cstab[krow].reshape((1,) + cstab[krow].shape).copy()
+                            else:
+                                c[1] = st[krow].reshape((1,) + st[krow].shape)
+                                c[0] = cstab[krow].reshape((1,) + cstab[krow].shape)
                     for c in cache:
                         if isinstance(c, KVCache):
                             c.trim(3 - krow)
@@ -425,8 +442,8 @@ def main():
                 mtp_cache[0].trim(ktrim)
                 acc("commit", time.perf_counter() - tc0)
                 tc1 = time.perf_counter()
-                if tape_mode == "r5" and committed:
-                    # R5: NO S=1 correction re-forward (bookkeeping window only); ctoken = row 0 of the next verify, the draft re-anchors on the rejected row's h
+                if tape_mode in ("r5", "r5b", "r5e") and committed:
+                    # R5/R5b/R5e: NO S=1 correction re-forward (bookkeeping window only); ctoken = row 0 of the next verify, the draft re-anchors on the rejected row's h
                     pending_c = ctoken
                     h_r = hb
                     out.append(ctoken)

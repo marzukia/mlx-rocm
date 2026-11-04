@@ -142,9 +142,10 @@ def main():
     mtp_on = mode in ("1", "2", "3", "4")
     if mode == "4":
         # FIX#1: GDN state-tape commit (the model's TAPE branch is gated on these; S==4 forwards go through gdn_fused_step_tape in the wheel model file; S=1 correction forwards use the fused op). MTP6_TAPE=0      -> savestate: canonical save/restore GDN + re-forward of the accepted prefix (baseline). MTP6_TAPE=1      -> pure tape (round-1 measured, 39.16 class): tape commit + ONE S=1 correction forward (state advance), but l = the batched row logits and h = the batched S=4 row h (the next draft chain reuses the batched-row h; the correction token is emitted in the branch and re-emitted by the next argmax(l)). MTP6_TAPE=hybrid -> round-2 hybrid: tape commit + ONE S=1 correction forward; l and h are the correction forward's own (S=1 sequential pre-norm h for the next draft chain).
+        # MTP6_TAPE=r5b -> R5b: r5 + the commit rebind MATERIALIZES the selected tape row (a fresh contiguous array) instead of rebinding the strided row-slice view of the tape batch.
         tape_mode = os.environ.get("MTP6_TAPE", "1")
-        assert tape_mode in ("0", "1", "hybrid", "r5"), tape_mode
-        if tape_mode in ("1", "hybrid", "r5"):
+        assert tape_mode in ("0", "1", "hybrid", "r5", "r5b"), tape_mode
+        if tape_mode in ("1", "hybrid", "r5", "r5b"):
             os.environ["MLX_ROCM_GDN_TAPE"] = "1"
         os.environ["MLX_ROCM_GDN_FUSE"] = "1"
     t0 = time.time()
@@ -399,6 +400,9 @@ def main():
                 return_hidden=True,
                 return_prenorm=True
             )
+            if tape_mode == "r5e":
+                # R5e: force the S=4 GEMM in the verify window; the commit window then runs argmax on already-evaluated logits (cheap sync) + the rebind bookkeeping.
+                mx.eval(logits, hidden)
             l0, l1, l2, l3 = logits[0, 0], logits[0, 1], logits[0, 2], logits[0, 3]
             # batched S=4 row pre-norm hiddens (pure tape reuses these for the next draft chain on rejected steps)
             hb0, hb1, hb2, hb3 = hidden[0, 0], hidden[0, 1], hidden[0, 2], hidden[0, 3]
@@ -417,8 +421,13 @@ def main():
                         if hasattr(c, "cache"):
                             st, cstab = lm.model.layers[i].linear_attn.last_tape
                             # tape rows are B-squeezed: restore the B dim
-                            c[1] = st[krow].reshape((1,) + st[krow].shape)
-                            c[0] = cstab[krow].reshape((1,) + cstab[krow].shape)
+                            if tape_mode == "r5b":
+                                # R5b: materialize the selected row - the r5 rebind is a strided row-slice view of the S=4 tape batch; the next step's fused GDN step / S=4 GEMM window should read contiguous state (the bounded copy is ~1 MB/layer, sub-ms; it also isolates the strided-view hypothesis from the deferred-eval-order hypothesis, since r5b differs from r5 by exactly this copy).
+                                c[1] = st[krow].reshape((1,) + st[krow].shape).copy()
+                                c[0] = cstab[krow].reshape((1,) + cstab[krow].shape).copy()
+                            else:
+                                c[1] = st[krow].reshape((1,) + st[krow].shape)
+                                c[0] = cstab[krow].reshape((1,) + cstab[krow].shape)
                     for c in cache:
                         if isinstance(c, KVCache):
                             c.trim(3 - krow)
@@ -439,8 +448,8 @@ def main():
                 committed = commit(krow, prefix)
                 if os.environ.get("MTP6_MTPCACHE_TRIM", "1") == "1":
                     mtp_cache[0].trim(ktrim)
-                if tape_mode == "r5" and committed:
-                    # R5: no S=1 correction re-forward; ctoken = row 0 of the next verify, draft re-anchors on the rejected row's h
+                if tape_mode in ("r5", "r5b", "r5e") and committed:
+                    # R5/R5b/R5e: no S=1 correction re-forward; ctoken = row 0 of the next verify, draft re-anchors on the rejected row's h
                     pending_c = ctoken
                     h_r = hb
                     out.append(ctoken)
