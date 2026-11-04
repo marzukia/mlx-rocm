@@ -290,8 +290,13 @@ def main():
     win = None
     prev_k0 = False
     n_skip = 0
-    n_2draft = 0
+    n_2draft = 0  # (unused in this probe build - see S=3 note below)
     n_ng = 0
+    # fw flags: did draft i run a real MTP forward (n-gram fill skips it) -
+    # used to account mtp_cache rows on verify rejection (trim underflow guard).
+    fw1 = True
+    fw2 = True
+    fw3 = True
     ms_draft = 0.0
     ms_verify = 0.0
     ms_refwd = 0.0
@@ -332,11 +337,8 @@ def main():
                         nfill_len += 1
                     s = sum(win) if len(win) == dg_w else None
                     k = 3
-                    if s is not None and not prev_k0:
-                        if s < dg_t0:
-                            k = 0
-                        elif s < dg_t1:
-                            k = 2
+                    if s is not None and not prev_k0 and s < dg_t0:
+                        k = 0
                     if k == 0:
                         # Gated: recent acceptance history is poor -> skip the
                         # draft phase entirely, run a plain AR forward (state
@@ -360,49 +362,48 @@ def main():
                         if c1 is not None:
                             n_ng += 1
                             draft1 = c1
+                            fw1 = False
                         else:
                             emb1 = lm.model.embed_tokens(mx.array([[t]]))
                             dh1 = lm.mtp(h, emb1, mtp_cache)
                             dh_prev = dh1
                             draft1 = draft_tok(dh1)
-                        if k >= 2:
-                            # Draft token 2 (n-gram fill, else module forward)
-                            c2 = (
-                                nfill.lookup(2, [draft1])
-                                if nfill is not None else None
-                            )
-                            if c2 is not None:
-                                n_ng += 1
-                                draft2 = c2
-                            else:
-                                emb2 = lm.model.embed_tokens(
-                                    mx.array([[draft1]])
-                                )
-                                dh2 = lm.mtp(dh_prev, emb2, mtp_cache)
-                                dh_prev = dh2
-                                draft2 = draft_tok(dh2)
-                        if k >= 3:
-                            # Draft token 3 (n-gram fill, else module forward)
-                            c3 = (
-                                nfill.lookup(3, [draft1, draft2])
-                                if nfill is not None else None
-                            )
-                            if c3 is not None:
-                                n_ng += 1
-                                draft3 = c3
-                            else:
-                                emb3 = lm.model.embed_tokens(
-                                    mx.array([[draft2]])
-                                )
-                                dh3 = lm.mtp(dh_prev, emb3, mtp_cache)
-                                draft3 = draft_tok(dh3)
+                            fw1 = True
+                        # Draft token 2 (n-gram fill, else module forward)
+                        c2 = (
+                            nfill.lookup(2, [draft1])
+                            if nfill is not None else None
+                        )
+                        if c2 is not None:
+                            n_ng += 1
+                            draft2 = c2
+                            fw2 = False
+                        else:
+                            emb2 = lm.model.embed_tokens(mx.array([[draft1]]))
+                            dh2 = lm.mtp(dh_prev, emb2, mtp_cache)
+                            dh_prev = dh2
+                            draft2 = draft_tok(dh2)
+                            fw2 = True
+                        # Draft token 3 (n-gram fill, else module forward)
+                        c3 = (
+                            nfill.lookup(3, [draft1, draft2])
+                            if nfill is not None else None
+                        )
+                        if c3 is not None:
+                            n_ng += 1
+                            draft3 = c3
+                            fw3 = False
+                        else:
+                            emb3 = lm.model.embed_tokens(mx.array([[draft2]]))
+                            dh3 = lm.mtp(dh_prev, emb3, mtp_cache)
+                            draft3 = draft_tok(dh3)
+                            fw3 = True
                         ms_draft += time.time() - t_p
-                        if k == 2:
-                            n_2draft += 1
                         # State stays S_k (no target forward)
                     prev_k0 = k == 0
                 else:
                     # Arm A draft chain (bit-identical to mtp-bench6.py)
+                    fw1 = fw2 = fw3 = True
                     # Draft token 1 (from AR state)
                     emb1 = lm.model.embed_tokens(mx.array([[t]]))
                     dh1 = lm.mtp(h, emb1, mtp_cache)
@@ -553,93 +554,15 @@ def main():
                     mx.array([[t2]]), cache=cache, return_hidden=True, return_prenorm=True
                 )
                 l, h = logits[0, -1], hidden[0, -1]
-        elif (
-            mode == "4" and dgate
-            and draft1 is not None and draft2 is not None and draft3 is None
-        ):
-            # Arm B: 2-draft verify. BATCHED S=3, hybrid tape commit (same
-            # mechanism as the S=4 branch; mtp_cache advanced by at most 2).
-            d1, d2 = draft1, draft2
-            draft1 = draft2 = draft3 = None
-            verifies += 1
-            t_p = time.time()
-            logits, hidden = lm(
-                mx.array([[prev_token, d1, d2]]),
-                cache=cache,
-                return_hidden=True,
-                return_prenorm=True
-            )
-            ms_verify += time.time() - t_p
-            l0, l1, l2 = logits[0, 0], logits[0, 1], logits[0, 2]
-            hb2 = hidden[0, 2]
-
-            def commit3(krow):
-                st0 = lm.model.layers[0].linear_attn.last_tape[0]
-                if st0 is None:
-                    raise RuntimeError(
-                        "commit3 requires the tape branch (MTP6_TAPE=hybrid)"
-                    )
-                for i, c in enumerate(cache):
-                    if hasattr(c, "cache"):
-                        st, cstab = lm.model.layers[i].linear_attn.last_tape
-                        c[1] = st[krow].reshape((1,) + st[krow].shape)
-                        c[0] = cstab[krow].reshape((1,) + cstab[krow].shape)
-                for c in cache:
-                    if isinstance(c, KVCache):
-                        c.trim(2 - krow)
-
-            acc = 0
-            t2 = int(mx.argmax(l0))
-            if t2 == EOS:
-                break
-            if t2 == d1:
-                d1_acc += 1
-                acc += 1
-                out.append(t2)
-                t3 = int(mx.argmax(l1))
-                if t3 == EOS:
-                    if len(win) < dg_w:
-                        win.append(acc)
-                    break
-                if t3 == d2:
-                    d2_acc += 1
-                    acc += 1
-                    out.append(t3)
-                    # Full accept: model state (after row 2) is already in the
-                    # leaves; no rebind, no trims.
-                    l, h = l2, hb2
-                else:
-                    # draft2 rejected: commit row 1 (after D1), trim mtp_cache
-                    # by 1, ONE S=1 correction forward.
-                    t_r = time.time()
-                    commit3(1)
-                    if os.environ.get("MTP6_MTPCACHE_TRIM", "1") == "1":
-                        mtp_cache[0].trim(1)
-                    logits, hidden = lm(
-                        mx.array([[t3]]), cache=cache,
-                        return_hidden=True, return_prenorm=True
-                    )
-                    ms_refwd += time.time() - t_r
-                    l, h = logits[0, 0], hidden[0, 0]
-                    out.append(t3)
-                    n_refwd += 1
-            else:
-                # draft1 rejected: commit row 0 (after prev_token), trim
-                # mtp_cache by 2, ONE S=1 correction forward.
-                t_r = time.time()
-                commit3(0)
-                if os.environ.get("MTP6_MTPCACHE_TRIM", "1") == "1":
-                    mtp_cache[0].trim(2)
-                logits, hidden = lm(
-                    mx.array([[t2]]), cache=cache,
-                    return_hidden=True, return_prenorm=True
-                )
-                ms_refwd += time.time() - t_r
-                l, h = logits[0, 0], hidden[0, 0]
-                out.append(t2)
-                n_refwd += 1
-            if len(win) < dg_w:
-                win.append(acc)
+        elif False:  # S=3 2-draft verify: DISABLED in this probe build. The
+            # gdn_fused_step_tape kernel unrolls its row loop to the template
+            # TMAX (gdn_fused_step_tape.hip:184) and TMAX is only instantiated
+            # in {1, 2, 4} (dispatcher, same file :432/:513-534): an S=3
+            # verify runs the TMAX=4 kernel and reads a 4th row OOB ->
+            # deterministic HSA memory fault (observed 2026-11-04, arm B1).
+            # A TMAX=3 instantiation is a wheel change (follow-up); the probe
+            # gate is therefore binary (skip / full 3-draft).
+            pass
         else:
             # Verify step (from S_k, drafts D1, D2, D3). BATCHED S=4 (gdn_fused_step_tape: per-row state tapes). FIX#1: commit = index select on the state tape + trims (lazy cache-leaf rebind; NO save/restore, NO re-forward of accepted rows). MTP6_TAPE=0 -> savestate (canonical restore + re-forward of the accepted prefix).
             d1, d2, d3 = draft1, draft2, draft3
@@ -707,6 +630,11 @@ def main():
                 n_refwd += 1
 
             acc = 0
+            # mtp_cache row accounting: n_fwd rows were pushed this step (one
+            # per real draft forward; n-gram fill skips the push); a rejection
+            # at row krow keeps the accepted rows -> trim n_fwd - n_accepted.
+            # Arm A (fw all True): 3, 2, 1 - bit-identical to the original.
+            n_fwd = int(fw1) + int(fw2) + int(fw3)
             t2 = int(mx.argmax(l0))
             if t2 == EOS:
                 break
@@ -732,13 +660,13 @@ def main():
                         l, h = l3, hb3
                     else:
                         # draft3 rejected: commit row 2 (after D2), then ONE S=1 forward of the correction (the accepted prefix costs zero - tape commit).
-                        reject(2, l2, hb2, 1, [prev_token, d1, d2], t4)
+                        reject(2, l2, hb2, max(0, n_fwd - int(fw1) - int(fw2)), [prev_token, d1, d2], t4)
                 else:
                     # draft2 rejected: commit row 1 (after D1), forward t3.
-                    reject(1, l1, hb1, 2, [prev_token, d1], t3)
+                    reject(1, l1, hb1, max(0, n_fwd - int(fw1)), [prev_token, d1], t3)
             else:
                 # draft1 rejected: commit row 0 (after prev_token), forward t2.
-                reject(0, l0, hb0, 3, [prev_token], t2)
+                reject(0, l0, hb0, n_fwd, [prev_token], t2)
             if dgate and len(win) < dg_w:
                 win.append(acc)
     dt = time.time() - t1
