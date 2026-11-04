@@ -118,7 +118,7 @@ __device__ __forceinline__ T gdnt_cs_tap(
       : raw[(idx - 3) * raw_dim + raw_ch];
 }
 
-// ---- The fused decode/verify step + per-row state tapes: one block per v head, 256 threads, TMAX in {1, 2, 4}. Identical to gdn_fused_step except: (a) the per-row SSM state tape store in phase 4 (h is the row's post-update state, register-resident), and (b) the per-row conv state tape writes in phase 1 (the next row-window selection). No other codegen difference; the tape stores add no math. ----
+// ---- The fused decode/verify step + per-row state tapes: one block per v head, 256 threads, TMAX in {1, 2, 3, 4} (T=3 only under the MLX_ROCM_GDN_T3 env gate). Identical to gdn_fused_step except: (a) the per-row SSM state tape store in phase 4 (h is the row's post-update state, register-resident), and (b) the per-row conv state tape writes in phase 1 (the next row-window selection). No other codegen difference; the tape stores add no math. ----
 template <typename T, int TMAX>
 __global__ __launch_bounds__(256) void gdn_fused_step_tape_kernel(
     const T* __restrict__ q_raw,
@@ -396,7 +396,7 @@ __global__ __launch_bounds__(256) void gdn_fused_step_tape_kernel(
 }
 }  // namespace rocm
 
-// ---- host launcher ---- Instantiates TMAX in {1, 2, 4}, selected at launch from T.
+// ---- host launcher ---- Instantiates TMAX in {1, 2, 3, 4}, selected at launch from T (T=3 is admitted by use_fallback only under MLX_ROCM_GDN_T3=1, default off -> T=3 degrades to the clean error as before).
 template <int TMAX>
 int launch_gdn_fused_step_tape(
     const void* q_raw,
@@ -498,7 +498,7 @@ void GdnFusedStepTape::eval_gpu(
   conv_state_tape.set_data(
       mlx::core::rocm::malloc_async(conv_state_tape.nbytes(), encoder));
 
-  // Shape-based dims (B=1 guaranteed by use_fallback; T is 1, 2 or 4): q [1, T, key_dim]  k [1, T, key_dim]  v [1, T, value_dim] z [1, T, Hv, 128]  nw [128]  cs [3, conv_dim]  cw [conv_dim, 4]
+  // Shape-based dims (B=1 guaranteed by use_fallback; T is 1, 2, 3 or 4): q [1, T, key_dim]  k [1, T, key_dim]  v [1, T, value_dim] z [1, T, Hv, 128]  nw [128]  cs [3, conv_dim]  cw [conv_dim, 4]
   int Tlen = (int)q.shape(1);
   int key_dim = (int)q.shape(2);
   int value_dim = (int)v.shape(2);
@@ -507,7 +507,7 @@ void GdnFusedStepTape::eval_gpu(
   int num_v_heads = (int)zg.size() / head_dim / Tlen;
   int num_k_heads = key_dim / head_dim;
 
-  // TMAX is a template constant so the t loop unrolls and the conv-window ternaries fold (identical to GdnFusedStep::eval_gpu).
+  // TMAX is a template constant so the t loop unrolls and the conv-window ternaries fold (identical to GdnFusedStep::eval_gpu). T=3 (S=3, K=2 spec-decode) maps to the <3> instantiation; the shared s_beta/s_g buffers are sized [4] and the tape buffers are T-row-shaped, so <3> uses strict prefixes only.
   auto launch_one = [&](hipStream_t stream, int tmax) {
     return (tmax == 1)
         ? launch_gdn_fused_step_tape<1>(
@@ -522,6 +522,17 @@ void GdnFusedStepTape::eval_gpu(
               norm_eps_, stream)
         : (tmax == 2)
         ? launch_gdn_fused_step_tape<2>(
+              gpu_ptr<void>(q), gpu_ptr<void>(k), gpu_ptr<void>(v),
+              gpu_ptr<void>(bb), gpu_ptr<void>(aa), gpu_ptr<float>(al),
+              gpu_ptr<float>(db), gpu_ptr<void>(cs), gpu_ptr<void>(cw),
+              gpu_ptr<void>(zg), gpu_ptr<float>(st), gpu_ptr<void>(nw),
+              gpu_ptr<void>(result), gpu_ptr<void>(state_new),
+              gpu_ptr<void>(state_tape), gpu_ptr<void>(conv_state_tape),
+              key_dim, value_dim, conv_dim, 4, num_v_heads, num_k_heads,
+              head_dim, inv_scale_, eps_ * inv_scale_ * inv_scale_,
+              norm_eps_, stream)
+        : (tmax == 3)
+        ? launch_gdn_fused_step_tape<3>(
               gpu_ptr<void>(q), gpu_ptr<void>(k), gpu_ptr<void>(v),
               gpu_ptr<void>(bb), gpu_ptr<void>(aa), gpu_ptr<float>(al),
               gpu_ptr<float>(db), gpu_ptr<void>(cs), gpu_ptr<void>(cw),

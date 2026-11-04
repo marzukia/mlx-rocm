@@ -377,7 +377,7 @@ __global__ __launch_bounds__(256) void gdn_fused_step_kernel(
 }
 }  // namespace rocm
 
-// ---- host launcher ---- Instantiates TMAX in {1, 2, 4}, selected at launch from T (T=1 decode, T=2 S=2 verify, T=4 S=4 verify).
+// ---- host launcher ---- Instantiates TMAX in {1, 2, 3, 4}, selected at launch from T (T=3 admitted by use_fallback only under MLX_ROCM_GDN_T3=1, default off).
 template <int TMAX>
 int launch_gdn_fused_step(
     const void* q_raw,
@@ -480,7 +480,7 @@ void GdnFusedStep::eval_gpu(
         mlx::core::rocm::malloc_async(dbg_arr.nbytes(), encoder));
   }
 
-  // Shape-based dims (B=1 guaranteed by use_fallback; T is 1, 2 or 4): q [1, T, key_dim]  k [1, T, key_dim]  v [1, T, value_dim] z [1, T, Hv, 128]  nw [128]  cs [3, conv_dim]  cw [conv_dim, 4]
+  // Shape-based dims (B=1 guaranteed by use_fallback; T is 1, 2, 3 or 4): q [1, T, key_dim]  k [1, T, key_dim]  v [1, T, value_dim] z [1, T, Hv, 128]  nw [128]  cs [3, conv_dim]  cw [conv_dim, 4]
   int Tlen = (int)q.shape(1);
   int key_dim = (int)q.shape(2);
   int value_dim = (int)v.shape(2);
@@ -489,7 +489,7 @@ void GdnFusedStep::eval_gpu(
   int num_v_heads = (int)zg.size() / head_dim / Tlen;
   int num_k_heads = key_dim / head_dim;
 
-  // TMAX is a template constant so the t loop unrolls and the conv-window ternaries fold: the T=1 decode path compiles to exactly the original straight-line T=1 kernel (a runtime Tlen bound left a ~0.3% regression in the latency-bound AR loop), and TMAX=2 folds to the T=2 windows. T=4 (S=4 MTP verify) instantiates the same unrolled structure over 4 rows; h stays register-resident across all rows (r4d's T loop).
+  // TMAX is a template constant so the t loop unrolls and the conv-window ternaries fold: the T=1 decode path compiles to exactly the original straight-line T=1 kernel (a runtime Tlen bound left a ~0.3% regression in the latency-bound AR loop), and TMAX=2 folds to the T=2 windows. T=4 (S=4 MTP verify) instantiates the same unrolled structure over 4 rows; T=3 (S=3, K=2 spec-decode) the same over 3 rows (s_beta/s_g shared buffers are sized [4], so <3> uses a strict prefix); h stays register-resident across all rows (r4d's T loop). T=3 is reachable only under the MLX_ROCM_GDN_T3=1 env gate (use_fallback).
   auto launch_one = [&](hipStream_t stream, int tmax) {
     return (tmax == 1)
         ? launch_gdn_fused_step<1>(
@@ -506,6 +506,19 @@ void GdnFusedStep::eval_gpu(
               stream)
         : (tmax == 2)
         ? launch_gdn_fused_step<2>(
+              gpu_ptr<void>(q), gpu_ptr<void>(k), gpu_ptr<void>(v),
+              gpu_ptr<void>(bb), gpu_ptr<void>(aa), gpu_ptr<float>(al),
+              gpu_ptr<float>(db), gpu_ptr<void>(cs), gpu_ptr<void>(cw),
+              gpu_ptr<void>(zg), gpu_ptr<float>(st), gpu_ptr<void>(nw),
+              gpu_ptr<void>(result), gpu_ptr<void>(state_new), key_dim,
+              value_dim, conv_dim, 4, num_v_heads, num_k_heads, head_dim,
+              inv_scale_, eps_ * inv_scale_ * inv_scale_, norm_eps_,
+              (dbg_env != nullptr && dbg_env[0] == '1')
+                  ? dbg_arr.data<unsigned char>()
+                  : nullptr,
+              stream)
+        : (tmax == 3)
+        ? launch_gdn_fused_step<3>(
               gpu_ptr<void>(q), gpu_ptr<void>(k), gpu_ptr<void>(v),
               gpu_ptr<void>(bb), gpu_ptr<void>(aa), gpu_ptr<float>(al),
               gpu_ptr<float>(db), gpu_ptr<void>(cs), gpu_ptr<void>(cw),

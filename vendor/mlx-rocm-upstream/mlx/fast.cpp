@@ -1210,6 +1210,13 @@ bool GdnFusedStep::use_fallback(
   if (B != 1 || T > 4) {
     return true;
   }
+  // T=3 (S=3, K=2 spec-decode verify) is admitted only under MLX_ROCM_GDN_T3=1: the TMAX=3 instantiation is new codegen (default OFF), so T=3 degrades to the clear error below exactly as before the TMAX=3 addition.
+  if (T == 3) {
+    const char* t3 = std::getenv("MLX_ROCM_GDN_T3");
+    if (t3 == nullptr || t3[0] != '1') {
+      return true;
+    }
+  }
   // NOTE: MLX_ROCM_GDN_FUSE_T2=0 no longer routes T=2 to the 4-op chain (that chain is 1-D-only in gdn_prep and faults on the GPU for T>1). Lossless A/B is done with MLX_ROCM_GDN_FUSE=0 vs =1.
   if (Dk != 128 || Dv != 128) {
     return true;
@@ -1410,6 +1417,13 @@ bool GdnFusedStepTape::use_fallback(
   }
   if (B != 1 || T > 4) {
     return true;
+  }
+  // T=3 (S=3, K=2 spec-decode verify) is admitted only under MLX_ROCM_GDN_T3=1 (same gate as GdnFusedStep; default OFF -> T=3 throws the clear error below, no OOB fall-through to the TMAX=4 kernel).
+  if (T == 3) {
+    const char* t3 = std::getenv("MLX_ROCM_GDN_T3");
+    if (t3 == nullptr || t3[0] != '1') {
+      return true;
+    }
   }
   if (Dk != 128 || Dv != 128) {
     return true;
