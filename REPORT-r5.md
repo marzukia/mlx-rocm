@@ -72,7 +72,7 @@ The estimate assumed (a) the full draft saving lands and (b) acceptance is appro
 
 ## Check lines
 
-- Persona-leak grep (marzuki-*, 100.64.0.0/10, andryo@* / /home/andryo, neonvm@, 192.168.122.x, /mnt/models, *.junkyard.sh, *@ag.mrzk.io) over the branch diff vs 62651c7 and the new commits (git author lines exempt): 0 hits. PASS.
+- Persona-leak grep (the run brief's pattern set: fleet-IP block, guest-identity prefixes, home/model mount paths, junkyard scripts, mrzk.io mail) over the branch diff vs 62651c7 and the new commits (git author lines exempt): 0 hits in this run's commits; the only raw-diff matches are two pre-existing NOTES-r5.md reflow lines (committed earlier at 0a87dc3, not added by this run). PASS.
 - Line-wrap (scripts/line_wrap_check.py, one-paragraph-per-line) over REPORT-r5.md: 0 violations. PASS.
 - Format (uv run ruff format --check .): clean. PASS.
 - GPU lock protocol: fuser rc=1 at run start; runner held the lock for the whole sequence; no orphaned locks left (lock free at end).
