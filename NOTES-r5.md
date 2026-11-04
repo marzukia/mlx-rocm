@@ -73,8 +73,7 @@ Bench (repo, the only files R5 touches):
   closures. reject() today = tape-row rebind (or canonical restore) +
   `mtp_cache[0].trim(ktrim)` + ONE S=1 correction forward `lm([[ctoken]])`,
   then `l, h` from the correction (hybrid) or the batched row (tape=1).
-  The correction forward is LAZY (MLX eval is a side effect): it executes in
-  the NEXT step's draft phase (the 39.3 ms draft includes it).
+  The correction forward is LAZY (MLX eval is a side effect): it executes in the NEXT step's draft phase (the 39.3 ms draft includes it).
 - Wheel model file (guest venv, NOT in repo): `mlx_lm/models/qwen3_5.py`
   (patched; venv-r4v md5 3503e632, = /tmp/qwen3_5.py 7763fbbb plus the
   F-branch 3-output `gdn_fused_step` conv_state_new update):
@@ -118,25 +117,17 @@ acceptance logic is byte-identical to today. EOS: ctoken-EOS breaks
 before the reject call (as today); a later all-reject makes t2 the new
 correction token (recursion works). The S=1 re-read disappears:
 9.39 -> 6.13 GiB/step. Fallback: if the tape is unavailable (fresh-cache
-STATE_NONE_GUARD path) use the existing correction-forward path — never
-triggered here because prefill precedes every verify. This is exactly the
-llama.cpp 29c720e structure (O(1) seq_rm snapshot select + correction as
-row 0 of the next verify) and the radiance structure (zero re-forward,
-on-GPU state shift). Verified by the gap-dive audit (section B): HOLDS.
+STATE_NONE_GUARD path) use the existing correction-forward path — never triggered here because prefill precedes every verify. This is exactly the llama.cpp 29c720e structure (O(1) seq_rm snapshot select + correction as row 0 of the next verify) and the radiance structure (zero re-forward, on-GPU state shift). Verified by the gap-dive audit (section B): HOLDS.
 
 ## 5. Option (b) ROLLBACK-REDRAFT
 
 Rolling the state back and re-running the draft from the accepted prefix
 is option (a) modulo bookkeeping (the tape IS the rollback; the redraft is
-the re-anchored draft above). The only real alternative in this family is
-the canonical savestate re-forward of the accepted prefix — that is the
-pre-tape path (28.3 GiB/step era), strictly worse. No distinct value.
+the re-anchored draft above). The only real alternative in this family is the canonical savestate re-forward of the accepted prefix — that is the pre-tape path (28.3 GiB/step era), strictly worse. No distinct value.
 
 ## 6. Option (c) CONFIDENCE SKIP
 
-Skip the correction forward when the argmax margin is high: the state must
-advance by exactly ctoken regardless of margin (a margin gate would change
-the token stream / introduce a host sync — lossless-gate risk) and offers
+Skip the correction forward when the argmax margin is high: the state must advance by exactly ctoken regardless of margin (a margin gate would change the token stream / introduce a host sync — lossless-gate risk) and offers
 no structural saving: the forward is either done or folded. Folding = (a).
 Rejected.
 
@@ -145,11 +136,9 @@ Rejected.
 - S=5 verify with the correction as a 5th row: the QMV wide path is M<=4
   only and the tape op is S<=4; S=5 falls back to the slow path and breaks
   the rows-fused M=4 lever. Rejected.
-- "Run the correction during the commit window": the correction depends on
-  the reject decision (argmax(l0..)), which is only known inside the commit
+- "Run the correction during the commit window": the correction depends on the reject decision (argmax(l0..)), which is only known inside the commit
   window; the next draft window is the earliest it can execute — which is
-  exactly what the hybrid already does. The fix is to not execute it at
-  all, i.e. (a).
+  exactly what the hybrid already does. The fix is to not execute it at all, i.e. (a).
 - No wheel/model change is required: the tape op, the tape rebind,
   `mtp_cache.trim` and the QMV rows-fused path all exist in venv-r4v
   (0.32.3.dev20261104+75ca881, libmlx md5 8acf13fec6fc1636026d8e1dc69cd497;
@@ -183,8 +172,7 @@ FIRST20 vs the 390221f baseline is the lossless gate (report on FAIL).
 
 - Box: neon (lock FREE at run start, fuser rc=1), flock on ~/gpu.lock
   (`exec 9>~/gpu.lock; flock -w 300 9`), 25 s idle before the first run
-  and between runs, venv-r4v, model /mnt/models/qwen3-9b-mlx (mtp
-  safetensors md5 02a54359cda8b247f76b277dd9bc4d4c, verified).
+  and between runs, venv-r4v, model /mnt/models/qwen3-9b-mlx (mtp safetensors md5 02a54359cda8b247f76b277dd9bc4d4c, verified).
 - Standing env both arms: GDN_FUSE=1 REFWD_M1=1 MLX_ROCM_QMV_ROWS=1
   MLX_ROCM_QMV_ROWS_MIN_N=1; arm switch MTP6_TAPE=hybrid (B, the 48.93
   baseline) vs MTP6_TAPE=r5 (R5). 3 repeats per arm, median.
