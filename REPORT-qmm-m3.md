@@ -35,8 +35,7 @@ verified in identity.txt (pre-battery).
 
 - 4-bit only, non-hoist (inline la/lx, no `__syncthreads`), no LDS at all
   (no co-residency cap); 16B vector x-loads (8x uint4 for 2B T, 4x uint4 for
-  f32) — values and the q-major/j-minor order identical to the per-row scalar
-  traversal.
+  f32) — values and the q-major/j-minor order identical to the per-row scalar traversal.
 - Per-(row,col) math: k tiles ascending, la FMA -> lx FADD (has_bias-guarded,
   same position) -> `acc += s*la + b*lx`, warp-shfl reduction, lane-0 write —
   the EXACT per-row order, with the dequantized weight values shared (row-
@@ -115,8 +114,7 @@ led by mlp (-2.99 ms, 45% of the wall) exactly where the shared-dequant
 lever was aimed (the K=4096 N=12288 gate/up class plus the K=12288 down
 class, which the t1964 nostage result had left at 45.9% of floor); the
 unmodified control classes (norms, lm_head) are flat, which validates the
-measurement. gdn_fused (unmodified kernel) shows a -15.8% delta that is
-outside this change's reach — attribute it to run-to-run variation between
+measurement. gdn_fused (unmodified kernel) shows a -15.8% delta that is outside this change's reach — attribute it to run-to-run variation between
 the C and F probe runs (they ran ~1 min apart) rather than a causal effect;
 it does not change any gate.
 
@@ -132,8 +130,7 @@ it does not change any gate.
   pays at the K=4096 N=12288 class.
 - Bit-identity held exactly as contracted: 8/8 runs token-identical across
   arms (271 1919x19) and D1/D2 acceptance identical (159/148), with the
-  shared dequant being row-invariant and the per-(row,col) FMA order
-  unchanged.
+  shared dequant being row-invariant and the per-(row,col) FMA order unchanged.
 - The gate is default-OFF: with the env unset, the per-row path runs verbatim
   (C arm = the stock dispatch), so the change is inert unless adopted.
 - SCLK sampling is degenerate in the amdrocm-10 guest userland (no
