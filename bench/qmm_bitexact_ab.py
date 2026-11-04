@@ -17,13 +17,14 @@ import os
 
 import mlx.core as mx
 import mlx.nn as mxnn
+import numpy as np
 
 os.environ.setdefault("MLX_ROCM_QMV_ROWS", "1")
 os.environ.setdefault("MLX_ROCM_QMV_ROWS_MIN_N", "1")
 
 
 def tag_bytes(tag, arr):
-    h = hashlib.md5(arr.astype(mx.float32).to_numpy().tobytes())
+    h = hashlib.md5(np.asarray(arr.astype(mx.float32)).tobytes())
     print(f"{tag} md5={h.hexdigest()} shape={tuple(arr.shape)} max={float(mx.max(arr)):.6f}", flush=True)
 
 
