@@ -148,6 +148,36 @@ def main():
     if mtp_on:
         assert lm.mtp is not None, "no mtp module (config.mtp_num_hidden_layers?)"
         mtp_cache = [KVCache()]
+        if os.environ.get("CH_MTP_4BIT", "0") == "1":
+            # 4-bit MTP module arm (port of the mtp-bench6.py block, identical
+            # semantics): rebuild the quant module, load the 4-bit sidecar
+            # (file NOT renamed, path overridable via MTP4_SIDECAR).
+            import safetensors.numpy as _sfn
+            from mlx_lm.models.qwen3_5 import MTPModule
+
+            _side = os.environ.get("MTP4_SIDECAR") or os.path.join(MODEL, "model-mtp-4bit.safetensors")
+            assert os.path.exists(_side), _side
+            lm.mtp = MTPModule(lm.args, 1, quant=True)
+
+            def _setp(mod, path, val):
+                cur = mod
+                for p in path.split(".")[:-1]:
+                    cur = cur[int(p)] if p.isdigit() else getattr(cur, p)
+                setattr(cur, path.split(".")[-1], val)
+
+            for _k, _v in _sfn.load_file(_side).items():
+                if not _k.startswith("mtp."):
+                    continue
+                _kk = _k[4:]
+                if _kk.endswith(".qweight"):
+                    _base = _kk[: -len(".qweight")] + ".weight"
+                elif _kk.endswith(".bias"):
+                    _base = _kk[: -len(".bias")] + ".biases"
+                else:
+                    _base = _kk
+                _setp(lm.mtp, _base, mx.array(_v))
+            mx.eval(lm.mtp.parameters())
+            print(f"MTP4_ARM {os.path.basename(_side)}", flush=True)
     qh = None
     if mode == "4":
         _dh = os.environ.get("MTP6_DRAFT_HEAD", "bf16")

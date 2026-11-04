@@ -204,8 +204,8 @@ def main():
     if mode == "4":
         # FIX#1: GDN state-tape commit (the model's TAPE branch is gated on these; S==4 forwards go through gdn_fused_step_tape in the wheel model file; S=1 correction forwards use the fused op). MTP6_TAPE=0      -> savestate: canonical save/restore GDN + re-forward of the accepted prefix (baseline). MTP6_TAPE=1      -> pure tape (round-1 measured, 39.16 class): tape commit + ONE S=1 correction forward (state advance), but l = the batched row logits and h = the batched S=4 row h (the next draft chain reuses the batched-row h; the correction token is emitted in the branch and re-emitted by the next argmax(l)). MTP6_TAPE=hybrid -> round-2 hybrid: tape commit + ONE S=1 correction forward; l and h are the correction forward's own (S=1 sequential pre-norm h for the next draft chain).
         tape_mode = os.environ.get("MTP6_TAPE", "0")
-        assert tape_mode in ("0", "1", "hybrid"), tape_mode
-        if tape_mode in ("1", "hybrid"):
+        assert tape_mode in ("0", "1", "hybrid", "r5"), tape_mode
+        if tape_mode in ("1", "hybrid", "r5"):
             os.environ["MLX_ROCM_GDN_TAPE"] = "1"
         os.environ["MLX_ROCM_GDN_FUSE"] = "1"
     t0 = time.time()
@@ -216,6 +216,36 @@ def main():
     if mtp_on:
         assert lm.mtp is not None, "no mtp module (config.mtp_num_hidden_layers?)"
         mtp_cache = [KVCache()]
+        if os.environ.get("CH_MTP_4BIT", "0") == "1":
+            # 4-bit MTP module arm (port of the mtp-bench6.py block, identical
+            # semantics): rebuild the quant module, load the 4-bit sidecar
+            # (file NOT renamed, path overridable via MTP4_SIDECAR).
+            import safetensors.numpy as _sfn
+            from mlx_lm.models.qwen3_5 import MTPModule
+
+            _side = os.environ.get("MTP4_SIDECAR") or os.path.join(MODEL, "model-mtp-4bit.safetensors")
+            assert os.path.exists(_side), _side
+            lm.mtp = MTPModule(lm.args, 1, quant=True)
+
+            def _setp(mod, path, val):
+                cur = mod
+                for p in path.split(".")[:-1]:
+                    cur = cur[int(p)] if p.isdigit() else getattr(cur, p)
+                setattr(cur, path.split(".")[-1], val)
+
+            for _k, _v in _sfn.load_file(_side).items():
+                if not _k.startswith("mtp."):
+                    continue
+                _kk = _k[4:]
+                if _kk.endswith(".qweight"):
+                    _base = _kk[: -len(".qweight")] + ".weight"
+                elif _kk.endswith(".bias"):
+                    _base = _kk[: -len(".bias")] + ".biases"
+                else:
+                    _base = _kk
+                _setp(lm.mtp, _base, mx.array(_v))
+            mx.eval(lm.mtp.parameters())
+            print(f"MTP4_ARM {os.path.basename(_side)}", flush=True)
     qh = None
     if mode == "4":
         # FIX#2: int2 g128-asymmetric draft head (replaces the full bf16 lm_head per draft). OFF by default: the canonical bf16/4-bit head runs when MTP6_DRAFT_HEAD is unset; int2/int2w are explicit opt-ins (A/B the old head with MTP6_DRAFT_HEAD=bf16; int2w = the vectorized int2 kernel).
@@ -273,6 +303,9 @@ def main():
     d2_acc = 0
     d3_acc = 0
     n_refwd = 0
+    n_cdeferred = 0
+    pending_c = None
+    h_r = None
 
     # ---- arm B: dynamic draft gating + n-gram fill (MTP6_DRAFTGATE, OFF by
     #      default -> the path below is bit-identical to mtp-bench6.py) ----
@@ -324,10 +357,17 @@ def main():
             nfill_len = len(out)
         if draft1 is None:
             # Single-token step (from S_k)
-            t = int(mx.argmax(l))
-            if t == EOS:
-                break
-            out.append(t)
+            if pending_c is not None:
+                # R5: the correction is deferred; ctoken is row 0 of the next verify (already emitted at the reject). The draft chain re-anchors on the rejected row's pre-norm hidden (in the S=4 graph; zero extra target work).
+                t = pending_c
+                pending_c = None
+                h = h_r
+                h_r = None
+            else:
+                t = int(mx.argmax(l))
+                if t == EOS:
+                    break
+                out.append(t)
             if mtp_on:
                 prev_token = t
                 if dgate:
@@ -600,6 +640,7 @@ def main():
                     for c in cache:
                         if isinstance(c, KVCache):
                             c.trim(3 - krow)
+                    return True
                 else:
                     # savestate A/B (MTP6_TAPE=0): canonical restore + trim ALL verify rows + re-forward of the accepted prefix (the GDN restore makes the re-forward mandatory, so the kept rows must be dropped).
                     restore_gdn(cache, saved)
@@ -608,13 +649,21 @@ def main():
                             c.trim(4)
                     for pt in prefix:
                         lm(mx.array([[pt]]), cache=cache)
+                    return False
 
             def reject(krow, lk, hb, ktrim, prefix, ctoken):
-                nonlocal l, h, n_refwd, ms_refwd
-                # Rejected step: commit the tape row (or canonical restore + re-forward), trim mtp_cache to the accepted prefix, run ONE S=1 correction forward, then choose (l, h) for the next draft chain by mode: pure (MTP6_TAPE=1): l = the batched row logits, h = the batched S=4 row h (round-1 measured behavior; argmax(l) re-emits the correction token next). hybrid (MTP6_TAPE=hybrid): l = the correction forward's logits, h = its S=1 sequential pre-norm h (round-2 fix). savestate (MTP6_TAPE=0): l = the correction forward's logits (canonical re-forward leaves the same l).
-                commit(krow, prefix)
+                nonlocal l, h, n_refwd, ms_refwd, pending_c, h_r, n_cdeferred
+                # Rejected step: commit the tape row (or canonical restore + re-forward), trim mtp_cache to the accepted prefix, then choose (l, h) for the next draft chain by mode: pure (MTP6_TAPE=1): l = the batched row logits, h = the batched S=4 row h (round-1 measured behavior; argmax(l) re-emits the correction token next). hybrid (MTP6_TAPE=hybrid): l = the correction forward's logits, h = its S=1 sequential pre-norm h (round-2 fix). r5 (MTP6_TAPE=r5): NO S=1 correction re-forward - ctoken becomes row 0 of the next verify and the draft chain re-anchors on the rejected row's pre-norm hidden (the llama.cpp/radiance structure; the S=1 re-read is eliminated). savestate (MTP6_TAPE=0): l = the correction forward's logits (canonical re-forward leaves the same l).
+                committed = commit(krow, prefix)
                 if os.environ.get("MTP6_MTPCACHE_TRIM", "1") == "1":
                     mtp_cache[0].trim(ktrim)
+                if tape_mode == "r5" and committed:
+                    # R5: no S=1 correction re-forward; ctoken = row 0 of the next verify, draft re-anchors on the rejected row's h.
+                    pending_c = ctoken
+                    h_r = hb
+                    out.append(ctoken)
+                    n_cdeferred += 1
+                    return
                 t_r = time.time()
                 logits, hidden = lm(
                     mx.array([[ctoken]]), cache=cache,
@@ -677,9 +726,10 @@ def main():
     if mode == "4":
         import mlx_lm.models.qwen3_5 as _m5
         print(
-            "INFO TAPEMODE=%s REFWDS=%d GDN_TAPE_CALLS=%d INT2=%s" % (
+            "INFO TAPEMODE=%s REFWDS=%d CDEFERRED=%d GDN_TAPE_CALLS=%d INT2=%s" % (
                 tape_mode,
                 n_refwd,
+                n_cdeferred,
                 getattr(_m5, "GDN_TAPE_CALLS", -1),
                 "on" if qh is not None else "off",
             ),
