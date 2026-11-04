@@ -73,6 +73,50 @@ MAX_TOKENS = int(os.environ.get("MTP_MAX_TOKENS", "1024"))
 EOS = 248044
 
 
+class NgramFill:
+    """Zero-cost n-gram continuation fill (MTP6_NGRAM_S3, mode 3 S=3 arm; the
+    same class as the mode-4 NgramFill in mtp-bench6-dg.py). Mirrors
+    common_ngram_map_draft semantics (llama.cpp ngram-map.cpp:222-400):
+    key = trailing (n-1) confirmed context tokens + candidate prefix (the
+    'sampled' role); the adopted draft = the most frequent token FOLLOWING
+    the key in the context (min_hits = 1, llama.cpp:333). On a hit NO draft
+    forward runs; the MTP module KV cache (mtp_cache) then lags by the
+    skipped rows (stale-attention approximation, same class as the known
+    un-trimmed mtp_cache divergence). Context = prompt +
+    confirmed generated tokens (candidates never enter the context)."""
+
+    def __init__(self, ctx, n):
+        self.n = n
+        self.seq = list(ctx)
+        self.m = {}
+        for i in range(len(self.seq) - self.n):
+            self._add(i)
+
+    def _add(self, i):
+        key = tuple(self.seq[i:i + self.n])
+        v = self.m.get(key)
+        if v is None:
+            self.m[key] = {self.seq[i + self.n]: 1}
+        else:
+            v[self.seq[i + self.n]] = v.get(self.seq[i + self.n], 0) + 1
+
+    def update(self, t):
+        self.seq.append(t)
+        if len(self.seq) >= self.n + 1:
+            self._add(len(self.seq) - self.n - 1)
+
+    def lookup(self, i, cands):
+        # i = 1-based draft position; cands = [c1..c_{i-1}]
+        if len(self.seq) < self.n:
+            return None
+        pat = self.seq[-(self.n - i + 1):] + list(cands)
+        v = self.m.get(tuple(pat))
+        if not v:
+            return None
+        # most frequent continuation; deterministic tie-break = smallest id
+        return min(v.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+
+
 def save_gdn(cache):
     return [
         (i, c[0], c[1], c.lengths)
@@ -298,6 +342,27 @@ def main():
     pending_c = None
     h_r = None
 
+    # t1986 ngram-S3 probe: MTP6_NGRAM_S3=1 wires the mode-4 n-gram fill
+    # (NgramFill) into the S=3 (mode 3) draft chain. Default off = the
+    # canonical S=3 path runs verbatim (nfill stays None; fw1/fw2 stay True;
+    # the reject trims below reduce to the fixed 1/2 constants). A fill hit
+    # at draft position i skips i MTP forwards + head argmaxes; the verify
+    # pass is unchanged (all emitted tokens remain target-greedy, lossless).
+    ngram_s3 = mode == "3" and mtp_on and os.environ.get(
+        "MTP6_NGRAM_S3", "0"
+    ) == "1"
+    ng_n = int(os.environ.get("MTP6_NGRAM_N", "4"))
+    nfill = NgramFill(prompt_ids, ng_n) if ngram_s3 else None
+    nfill_len = 0
+    n_ng = 0
+    fw1 = True
+    fw2 = True
+    if ngram_s3:
+        print(
+            "NGRAM_S3 ON n=%d" % ng_n,
+            flush=True,
+        )
+
     def draft_tok(dh):
         if qh is not None and "wbf16" in qh:
             return int(mx.argmax(mx.matmul(dh, qh["wbf16"].T)[0, -1]))
@@ -310,6 +375,14 @@ def main():
         return lm.model.norm(x) if head_h == "postnorm" else x
     t1 = time.time()
     for _ in range(MAX_TOKENS):
+        if nfill is not None:
+            # Catch up the n-gram context over tokens emitted since the last
+            # update (the verify-step emissions, incl. the r5 deferred
+            # correction); the single-token step's t is updated at append
+            # time below (before the lookups that consume it).
+            for _tt in out[nfill_len:]:
+                nfill.update(_tt)
+            nfill_len = len(out)
         if draft1 is None:
             # Single-token step (from S_k)
             if pending_c is not None:
@@ -323,19 +396,36 @@ def main():
                 if t == EOS:
                     break
                 out.append(t)
+                if nfill is not None:
+                    nfill.update(t)
+                    nfill_len += 1
             if mtp_on:
                 prev_token = t
-                # Draft token 1 (from AR state; the trunk hidden input goes through the MTP6_HEAD_H probe gate)
-                emb1 = lm.model.embed_tokens(mx.array([[t]]))
-                dh1 = lm.mtp(hhead(h), emb1, mtp_cache)
-                draft1 = draft_tok(dh1)
+                fw1 = True
+                fw2 = True
+                # Draft token 1 (n-gram fill, else from AR state; the trunk hidden input goes through the MTP6_HEAD_H probe gate). A fill hit skips the MTP forward (fw1 = False -> the mtp_cache row accounting in the mode-3 reject trims).
+                c1 = nfill.lookup(1, []) if ngram_s3 else None
+                if c1 is not None:
+                    n_ng += 1
+                    draft1 = c1
+                    fw1 = False
+                else:
+                    emb1 = lm.model.embed_tokens(mx.array([[t]]))
+                    dh1 = lm.mtp(hhead(h), emb1, mtp_cache)
+                    draft1 = draft_tok(dh1)
                 if mode in ("3", "4"):
-                    # Draft token 2 (from MTP module given token1)
-                    emb2 = lm.model.embed_tokens(mx.array([[draft1]]))
-                    dh2 = lm.mtp(dh1, emb2, mtp_cache)
-                    draft2 = draft_tok(dh2)
+                    # Draft token 2 (n-gram fill, else from MTP module given token1); a fill hit skips the forward (fw2 = False).
+                    c2 = nfill.lookup(2, [draft1]) if ngram_s3 else None
+                    if c2 is not None:
+                        n_ng += 1
+                        draft2 = c2
+                        fw2 = False
+                    else:
+                        emb2 = lm.model.embed_tokens(mx.array([[draft1]]))
+                        dh2 = lm.mtp(dh1, emb2, mtp_cache)
+                        draft2 = draft_tok(dh2)
                 if mode == "4":
-                    # Draft token 3 (from MTP module given token2)
+                    # Draft token 3 (from MTP module given token2; the ngram_s3 gate is mode-3-only, so this path is untouched)
                     emb3 = lm.model.embed_tokens(mx.array([[draft2]]))
                     dh3 = lm.mtp(dh2, emb3, mtp_cache)
                     draft3 = draft_tok(dh3)
@@ -487,6 +577,8 @@ def main():
                 out.append(ctoken)
                 n_refwd += 1
 
+            # t1986: mtp_cache row accounting - n_fwd rows were pushed this step (one per real draft forward; an n-gram fill hit skips the push); a rejection keeps the accepted rows -> trim n_fwd - n_accepted. With fw1=fw2=True (ngram off) this reduces to the canonical 1 (d2 reject) / 2 (d1 reject) constants.
+            n_fwd = int(fw1) + int(fw2)
             t2 = int(mx.argmax(l0))
             if t2 == EOS:
                 break
@@ -502,11 +594,11 @@ def main():
                     # Full accept: the model's state (after row 1) is already in the leaves; no rebind, no trims.
                     l, h = l2, hb2
                 else:
-                    # draft2 rejected: commit row 1 (after D1), correction token t3.
-                    reject(1, l1, hb1, 1, [prev_token, d1], t3)
+                    # draft2 rejected: commit row 1 (after D1), correction token t3; mtp_cache trim = n_fwd - 1 accepted row.
+                    reject(1, l1, hb1, max(0, n_fwd - int(fw1)), [prev_token, d1], t3)
             else:
-                # draft1 rejected: commit row 0 (after prev_token), correction token t2.
-                reject(0, l0, hb0, 2, [prev_token], t2)
+                # draft1 rejected: commit row 0 (after prev_token), correction token t2; mtp_cache trim = all n_fwd rows.
+                reject(0, l0, hb0, n_fwd, [prev_token], t2)
         else:
             # Verify step (from S_k, drafts D1, D2, D3). BATCHED S=4 (gdn_fused_step_tape: per-row state tapes). FIX#1: commit = index select on the state tape + trims (lazy cache-leaf rebind; NO save/restore, NO re-forward of accepted rows). MTP6_TAPE=0 -> savestate (canonical restore + re-forward of the accepted prefix).
             d1, d2, d3 = draft1, draft2, draft3
@@ -613,6 +705,11 @@ def main():
     d2pct = 100.0 * d2_acc / d1_acc if d1_acc else 0.0
     d3pct = 100.0 * d3_acc / d2_acc if d2_acc else 0.0
     tok_step = 1.0 + (d1_acc + d2_acc + d3_acc) / verifies if verifies else 0.0
+    if ngram_s3:
+        print(
+            "INFO NGRAM_S3 n=%d NNG=%d" % (ng_n, n_ng),
+            flush=True,
+        )
     if mode in ("3", "4"):
         import mlx_lm.models.qwen3_5 as _m5
         print(
