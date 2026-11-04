@@ -11,6 +11,11 @@ Switches (mode 4 only):
         (save/restore GDN + 2-4 re-forwards on rejection); tape = the
         gdn_fused_step_tape per-row state-tape commit (lazy cache-leaf
         rebind, no re-forward). tape sets MLX_ROCM_GDN_TAPE=1.
+    MTP6_TAPE=r5                - R5: tape commit, NO S=1 correction
+        re-forward; the correction token becomes row 0 of the next verify
+        and the draft chain re-anchors on the rejected row's pre-norm
+        hidden (the llama.cpp/radiance structure; the S=1 re-read is
+        eliminated: 9.39 -> 6.13 GiB/step).
     MTP6_DRAFT_HEAD=int2|bf16   - int2 = mx.fast.lm_head_int2 dequant
         GEMV + exact top-32 re-rank (requires the patched wheel);
         bf16 = the canonical full lm_head.
@@ -117,15 +122,15 @@ def main():
     mode = os.environ.get("MLX_MTP", "0")
     assert mode in ("0", "1", "2", "3", "4"), mode
     mtp_on = mode in ("1", "2", "3", "4")
-    # MTP6_TAPE: 0=savestate (canonical), 1=pure tape (round-1 measured), hybrid (round-2: tape commit + S=1 correction forward, h from the correction forward). Legacy MTP6_ACCEPT alias: tape -> hybrid.
+    # MTP6_TAPE: 0=savestate (canonical), 1=pure tape (round-1 measured), hybrid (round-2: tape commit + S=1 correction forward, h from the correction forward), r5 (R5: tape commit, NO correction re-forward; the correction token = row 0 of the next verify, draft re-anchors on the rejected row's h). Legacy MTP6_ACCEPT alias: tape -> hybrid.
     tape_mode = os.environ.get("MTP6_TAPE", "")
     if not tape_mode:
         legacy = os.environ.get("MTP6_ACCEPT", "savestate")
         assert legacy in ("savestate", "tape"), legacy
         tape_mode = "0" if legacy == "savestate" else "hybrid"
-    assert tape_mode in ("0", "1", "hybrid"), tape_mode
+    assert tape_mode in ("0", "1", "hybrid", "r5"), tape_mode
     mtptrim = os.environ.get("MTP6_MTPTRIM", "0") == "1"
-    if mode == "4" and tape_mode in ("1", "hybrid"):
+    if mode == "4" and tape_mode in ("1", "hybrid", "r5"):
         os.environ["MLX_ROCM_GDN_TAPE"] = "1"
         os.environ["MLX_ROCM_GDN_FUSE"] = "1"
     t0 = time.time()
@@ -190,6 +195,9 @@ def main():
     d3_acc = 0
     n_refwd = 0
     n_tape = 0
+    n_cdeferred = 0
+    pending_c = None
+    h_r = None
 
     def draft_tok(dh):
         return int2_argmax(dh, qh) if qh is not None else int(mx.argmax(lm.lm_head(dh)[0, -1]))
@@ -199,10 +207,17 @@ def main():
         if draft1 is None:
             # Single-token step (from S_k)
             tb0 = time.perf_counter()
-            t = int(mx.argmax(l))
-            if t == EOS:
-                break
-            out.append(t)
+            if pending_c is not None:
+                # R5: the correction is deferred; ctoken is row 0 of the next verify (already emitted at the reject). The draft chain re-anchors on the rejected row's pre-norm hidden (in the S=4 graph; zero extra target work).
+                t = pending_c
+                pending_c = None
+                h = h_r
+                h_r = None
+            else:
+                t = int(mx.argmax(l))
+                if t == EOS:
+                    break
+                out.append(t)
             if mtp_on:
                 prev_token = t
                 # Draft token 1 (from AR state)
@@ -376,7 +391,7 @@ def main():
             def commit(krow, prefix):
                 # tape: select the per-row GDN state-tape row and rebind the cache leaves (lazy). lengths is None in this model.
                 nonlocal n_tape
-                tape_avail = tape_mode in ("1", "hybrid")
+                tape_avail = tape_mode in ("1", "hybrid", "r5")
                 if tape_avail:
                     try:
                         st0 = lm.model.layers[0].linear_attn.last_tape[0]
@@ -393,6 +408,7 @@ def main():
                         if isinstance(c, KVCache):
                             c.trim(3 - krow)
                     n_tape += 1
+                    return True
                 else:
                     restore_gdn(cache, saved)
                     for c in cache:
@@ -400,14 +416,24 @@ def main():
                             c.trim(4)
                     for pt in prefix:
                         lm(mx.array([[pt]]), cache=cache)
+                    return False
 
             def reject(krow, lk, hb, ktrim, prefix, ctoken):
                 # Rejected step: commit the tape row (or canonical restore
-                nonlocal l, h, n_refwd, did_commit
-                commit(krow, prefix)
+                nonlocal l, h, n_refwd, did_commit, pending_c, h_r, n_cdeferred
+                committed = commit(krow, prefix)
                 mtp_cache[0].trim(ktrim)
                 acc("commit", time.perf_counter() - tc0)
                 tc1 = time.perf_counter()
+                if tape_mode == "r5" and committed:
+                    # R5: NO S=1 correction re-forward (bookkeeping window only); ctoken = row 0 of the next verify, the draft re-anchors on the rejected row's h
+                    pending_c = ctoken
+                    h_r = hb
+                    out.append(ctoken)
+                    n_cdeferred += 1
+                    acc("correction", time.perf_counter() - tc1)
+                    did_commit = True
+                    return
                 logits, hidden = lm(
                     mx.array([[ctoken]]), cache=cache,
                     return_hidden=True, return_prenorm=True,
@@ -474,10 +500,11 @@ def main():
     import mlx_lm.models.qwen3_5 as _m5
 
     print(
-        "INFO TAPEMODE=%s REFWDS=%d TAPE_COMMITS=%d GDN_TAPE_CALLS=%d INT2=%s MTPTRIM=%s"
+        "INFO TAPEMODE=%s REFWDS=%d CDEFERRED=%d TAPE_COMMITS=%d GDN_TAPE_CALLS=%d INT2=%s MTPTRIM=%s"
         % (
             tape_mode,
             n_refwd,
+            n_cdeferred,
             n_tape,
             getattr(_m5, "GDN_TAPE_CALLS", -1),
             "on" if qh is not None else "off",
