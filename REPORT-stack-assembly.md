@@ -62,7 +62,7 @@ PASS: FIRST20 bit-identical across all 19 runs (271 1919 369 264 15352 11 70042 
 
 ## 10. Check lines
 
-Persona-leak grep (the run brief's pattern set: fleet-IP block, guest-identity prefixes, home/model mount paths, junkyard scripts, mrzk.io mail) over the branch diff vs 4b9285b: 0 hits (two incoming-branch check lines that self-referenced the pattern set and one machine identity in an incoming report were sanitized in commit edb0453 before push). PASS.
+Persona-leak grep (the run brief's pattern set: fleet-IP block, guest-identity prefixes, home/model mount paths, junkyard scripts, mrzk.io mail) over the PR diff (main..head, base 60ad8a7), covering the fix commits: 0 hits (two incoming-branch check lines that self-referenced the pattern set and one machine identity in an incoming report were sanitized in commit edb0453 before push; the NOTES-r5.md model-mount path was scrubbed in the same fix round). PASS.
 Line-wrap (one-paragraph-per-line) over REPORT-stack-assembly.md: 0 violations (manual check; scripts/line_wrap_check.py absent at this snapshot, same as the R5 report). PASS.
 Format (uv run ruff check . && uv run ruff format --check .): All checks passed + 105 files already formatted. PASS. Size gate (scripts/size_ratchet.py --base 4b9285b): OK.
 GPU lock protocol: LOCK-ACQ iter=1 at 09:22:13; the runner held the lock for the whole sequence; the sibling run (t1910) held it in sequence before/after and was never killed; lock free at battery end (FUSER_RC=1), the VOP probe then acquired/released cleanly; no orphans left.

@@ -172,7 +172,7 @@ FIRST20 vs the 390221f baseline is the lossless gate (report on FAIL).
 
 - Box: neon (lock FREE at run start, fuser rc=1), flock on ~/gpu.lock
   (`exec 9>~/gpu.lock; flock -w 300 9`), 25 s idle before the first run
-  and between runs, venv-r4v, model /mnt/models/qwen3-9b-mlx (mtp safetensors md5 02a54359cda8b247f76b277dd9bc4d4c, verified).
+  and between runs, venv-r4v, model <models-mount>/qwen3-9b-mlx (mtp safetensors md5 02a54359cda8b247f76b277dd9bc4d4c, verified).
 - Standing env both arms: GDN_FUSE=1 REFWD_M1=1 MLX_ROCM_QMV_ROWS=1
   MLX_ROCM_QMV_ROWS_MIN_N=1; arm switch MTP6_TAPE=hybrid (B, the 48.93
   baseline) vs MTP6_TAPE=r5 (R5). 3 repeats per arm, median.
