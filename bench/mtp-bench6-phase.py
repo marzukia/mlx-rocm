@@ -416,8 +416,8 @@ def main():
                             st, cstab = lm.model.layers[i].linear_attn.last_tape
                             if tape_mode == "r5b":
                                 # R5b: materialize the selected row (fresh contiguous arrays); the r5 rebind is a strided row-slice view of the S=4 tape batch.
-                                c[1] = st[krow].reshape((1,) + st[krow].shape).copy()
-                                c[0] = cstab[krow].reshape((1,) + cstab[krow].shape).copy()
+                                c[1] = mx.array(st[krow].reshape((1,) + st[krow].shape))
+                                c[0] = mx.array(cstab[krow].reshape((1,) + cstab[krow].shape))
                             else:
                                 c[1] = st[krow].reshape((1,) + st[krow].shape)
                                 c[0] = cstab[krow].reshape((1,) + cstab[krow].shape)

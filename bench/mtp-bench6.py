@@ -425,8 +425,8 @@ def main():
                             # tape rows are B-squeezed: restore the B dim
                             if tape_mode == "r5b":
                                 # R5b: materialize the selected row - the r5 rebind is a strided row-slice view of the S=4 tape batch; the next step's fused GDN step / S=4 GEMM window should read contiguous state (the bounded copy is ~1 MB/layer, sub-ms; it also isolates the strided-view hypothesis from the deferred-eval-order hypothesis, since r5b differs from r5 by exactly this copy).
-                                c[1] = st[krow].reshape((1,) + st[krow].shape).copy()
-                                c[0] = cstab[krow].reshape((1,) + cstab[krow].shape).copy()
+                                c[1] = mx.array(st[krow].reshape((1,) + st[krow].shape))
+                                c[0] = mx.array(cstab[krow].reshape((1,) + cstab[krow].shape))
                             else:
                                 c[1] = st[krow].reshape((1,) + st[krow].shape)
                                 c[0] = cstab[krow].reshape((1,) + cstab[krow].shape)
