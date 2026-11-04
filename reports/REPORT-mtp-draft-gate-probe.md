@@ -1,6 +1,6 @@
 # MTP draft-phase cost probe: dynamic draft gating + n-gram fill (t1811, guest neon, 2026-11-04)
 
-Worker: fleet-worker. Machine: marzuki-neon, RX 9070 XT / gfx1201, ROCm 10.1 guest userland. Model: /mnt/models/qwen3-9b-mlx (4bit, GDN-hybrid 24 GDN + 8 attention, sidecar model-mtp.safetensors md5 02a54359cda8b247f76b277dd9bc4d4c). Wheel: venv-int2w libmlx.so md5 0b8aa95df151a93404b53fee1e96d0de (78ba063, byte-identical to ~/wheelout-int2vgpr3c). Spec reference: llama.cpp @ 29c720e (draft-mtp; the spec'd dynamic gate exists but is disabled at p_min=0.0; the n-gram speculator is a separate path, not active in the t1436 anchor config).
+Worker: fleet-worker. Machine: neon (bare metal), RX 9070 XT / gfx1201, ROCm 10.1 guest userland. Model: <models-mount>/qwen3-9b-mlx (4bit, GDN-hybrid 24 GDN + 8 attention, sidecar model-mtp.safetensors md5 02a54359cda8b247f76b277dd9bc4d4c). Wheel: venv-int2w libmlx.so md5 0b8aa95df151a93404b53fee1e96d0de (78ba063, byte-identical to ~/wheelout-int2vgpr3c). Spec reference: llama.cpp @ 29c720e (draft-mtp; the spec'd dynamic gate exists but is disabled at p_min=0.0; the n-gram speculator is a separate path, not active in the t1436 anchor config).
 
 ## Result (one line)
 

@@ -109,7 +109,7 @@ SBCAR md5 02a54359cda8b247f76b277dd9bc4d4c         # pre/post all sessions
 venv-canon libmlx b1de59fda0e4fc607d620e287deeaaf8 # untouched pre/post
 ```
 
-Persona gate: grep over the full branch diff + all commit messages (patterns: marzuki-*, any 100.64.0.0/10, andryo@*/home/andryo, neonvm@, 192.168.122.x, the <models-mount> path, *.junkyard.sh): **0 hits**.
+Persona gate: grep over the full branch diff + all commit messages (the run brief's pattern set: fleet-IP block, guest-identity prefixes, home/model mount paths, junkyard scripts, mrzk.io mail): **0 hits**.
 Line-wrap audit: hard-wrapped lines in the report and in the branch commit bodies: **0**.
 Authorship: author AND committer = `jimmyateworld <jimmy@ag.mrzk.io>` on every branch commit, **0 fallbacks**.
 
