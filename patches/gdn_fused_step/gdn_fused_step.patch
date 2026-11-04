@@ -239,7 +239,7 @@ index 0244f12..c5dce89 100644
  bool RMSNormVJP::is_equivalent(const Primitive& other) const {
    const RMSNormVJP& a_other = static_cast<const RMSNormVJP&>(other);
    return eps_ == a_other.eps_;
-@@ -970,6 +1173,349 @@ array scaled_dot_product_attention(
+@@ -970,6 +1173,350 @@ array scaled_dot_product_attention(
    return fallback(std::move(inputs))[0];
  }
  
@@ -278,7 +278,8 @@ index 0244f12..c5dce89 100644
 +  if (f != nullptr && f[0] == '1') {
 +    return true;
 +  }
-+  if (B != 1 || T > 4) {
++  // T must be one of the TMAX instantiations (1, 2, 4): the launcher maps tmax 1 -> <1>, 2 -> <2>, everything else -> <4>, so admitting T=3 (S=3, K=2 spec-decode) would fall through to the TMAX=4 kernel = OOB read+write on a 3-row buffer. Reject it: it degrades to the clear error below (model default path via MLX_ROCM_GDN_FUSE=0).
++  if (B != 1 || (T != 1 && T != 2 && T != 4)) {
 +    return true;
 +  }
 +  // NOTE: MLX_ROCM_GDN_FUSE_T2=0 no longer routes T=2 to the 4-op chain
@@ -492,7 +493,7 @@ index 0244f12..c5dce89 100644
 +    Stream s) {
 +  // MLX_ROCM_GDN_TAPE=1 (DEFAULT OFF: the op is unreachable without it, so
 +  // MLX_ROCM_GDN_TAPE=0/unset is a zero-behavior-change path). Same shape
-+  // gate as GdnFusedStep (B=1, T<=4, Dk=Dv=128, kernel_size=4, GPU).
++  // gate as GdnFusedStep (B=1, T in 1/2/4, Dk=Dv=128, kernel_size=4, GPU).
 +  if (s.device == Device::cpu) {
 +    return true;
 +  }
@@ -500,7 +501,7 @@ index 0244f12..c5dce89 100644
 +  if (e == nullptr || e[0] != '1') {
 +    return true;
 +  }
-+  if (B != 1 || T > 4) {
++  if (B != 1 || (T != 1 && T != 2 && T != 4)) {
 +    return true;
 +  }
 +  if (Dk != 128 || Dv != 128) {
