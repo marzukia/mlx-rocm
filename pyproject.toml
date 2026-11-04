@@ -89,6 +89,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 "tests/test_gdn_fuse.py" = ["E501"]
 "data/t1779/probe-idx.py" = ["E501"]
 "data/t1779/probe-ssm.py" = ["E501"]
+"scripts/arstep_qmm_probe.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

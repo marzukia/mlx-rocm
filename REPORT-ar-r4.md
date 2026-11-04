@@ -31,8 +31,7 @@
 [gdidx] gather: took=0 ixs.data=0x7ca41aad1000 src=0x7ca41aad2000
 [gdidx] gather: staged node recorded, src=0x7ca41aad2000 seed=0x7cab288d0688 … mc=0
 [gdidx] gather: took=0 ixs.data=0x7ca41aad1000 src=0x7ca41aad2000
-RuntimeError: hipLaunchKernel( ... ) failed: operation failed due to a previous
-error during capture
+RuntimeError: hipLaunchKernel( ... ) failed: operation failed due to a previous error during capture
 ```
 
 - `[gdidx] load:` count: **0** (the stop condition). The bench materializes the per-step idx array in the previous step's tail — the same reachability gap R3 documented — so the `load.cpp` persistent-flag slot path never fires on this bench. R4's core delivery mechanism is therefore unverified, and the staging path it replaced crashes.
