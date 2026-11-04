@@ -43,6 +43,6 @@ run_wheel() {
   done
 }
 
-run_wheel venv-r4v
-run_wheel venv-kfix
+run_wheel $HOME/venv-r4v
+run_wheel $HOME/venv-kfix
 echo "ALL_DONE $(date -u)"
