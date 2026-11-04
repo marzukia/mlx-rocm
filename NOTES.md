@@ -50,3 +50,8 @@ Arms: A = base (venv-r4v, MTP6_TAPE=r5, S4VA absent); C = fresh control (venv-sd
 - verify wall: 44.85 -> 22.09 ms = -50.7% (gate >=30% cut PASS)
 - lossless: FIRST20 identical all arms (== R5 reference FIRST20); B-vs-C first token divergence at 32 (1-ulp SDPA argmax flip, text coherent), C-vs-A at 76 (wheel drift: m8/QMM grafts); acceptance profiles same order (D1 67-71%, D2 59-63%), no systematic degradation
 - SDPA isolated sanity (seeded random q/k/v, same inputs): S4VA vs scalar-flash out maxdiff = 0.00390625 = 1 bf16 ulp
+
+## Step 4: deliverable
+
+- REPORT-sdpa-probe.md (TL;DR + verdict ADOPT S4VA; gate PASS on both prongs)
+- branch sdpa-bandwidth-probe pushed (bare + GitHub), PR #23 opened, body cites the ticket
