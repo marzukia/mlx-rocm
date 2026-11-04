@@ -68,7 +68,14 @@ from mlx_lm.models.cache import KVCache
 MODELS = os.environ.get("MODELS", "/models")
 
 MODEL = os.environ.get("MTP_MODEL", f"{MODELS}/qwen3-9b-mlx")
-PROMPT = "Explain in great detail how a modern smartphone works, from the hardware components to the operating system, covering every subsystem. Be exhaustive."
+# t1996: MTP6_PROMPT env override (default = the canonical smartphone prompt, verbatim).
+# The t1436 llama.cpp anchor protocol used the 1-token prompt "Hello" on a diverse
+# non-degenerate trajectory (2.15/3 acceptance, no loop); matching it is the most
+# comparable non-degenerate trajectory for the S=3 re-measurement.
+PROMPT = os.environ.get(
+    "MTP6_PROMPT",
+    "Explain in great detail how a modern smartphone works, from the hardware components to the operating system, covering every subsystem. Be exhaustive.",
+)
 MAX_TOKENS = int(os.environ.get("MTP_MAX_TOKENS", "1024"))
 EOS = 248044
 
