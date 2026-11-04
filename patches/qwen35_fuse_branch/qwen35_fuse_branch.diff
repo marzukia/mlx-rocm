@@ -125,7 +125,7 @@
          cache: Optional[Any] = None,
          input_embeddings: Optional[mx.array] = None,
 +        return_prenorm: bool = False,
-    ) -> mx.array:
+     ) -> mx.array:
          if input_embeddings is not None:
              hidden_states = input_embeddings
 @@ -312,7 +403,11 @@
