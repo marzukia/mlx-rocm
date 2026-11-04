@@ -91,6 +91,61 @@ def restore_states(snap):
             c.offset = off
 
 
+def quantize_int2(w, chunk=8192):
+    """Int2 g128-group asymmetric quantization of the bf16 lm_head weights
+    (quarter-split 2-bit packing, radiance port; copied from mtp-bench6)."""
+    N, K = w.shape
+    NG, Q = K // 128, K // 4
+    packed = mx.zeros((N, Q), dtype=mx.int32)
+    scale = mx.zeros((N, NG), dtype=mx.float32)
+    zs = mx.zeros((N, NG), dtype=mx.float32)
+    for i in range(0, N, chunk):
+        j = min(i + chunk, N)
+        wf = w[i:j].astype(mx.float32).reshape(j - i, NG, 128)
+        lo = wf.min(axis=2)
+        hi = wf.max(axis=2)
+        s = mx.maximum((hi - lo) / 3.0, 1e-8)
+        z = mx.minimum(mx.maximum(mx.round(-lo / s), 0.0), 3.0)
+        q = (
+            mx.minimum(
+                mx.maximum(mx.round(wf / s[..., None] + z[..., None]), 0.0),
+                3.0,
+            )
+            .astype(mx.int32)
+            .reshape(j - i, K)
+        )
+        packed[i:j] = q[:, :Q] | (q[:, Q : 2 * Q] << 2) | (q[:, 2 * Q : 3 * Q] << 4) | (q[:, 3 * Q :] << 6)
+        scale[i:j] = s
+        zs[i:j] = z * s
+    return packed.astype(mx.uint8), scale, zs
+
+
+def int2_argmax(x, qh):
+    """Int2 draft head: int2 g128-asym dequant GEMV (mx.fast.lm_head_int2[_wide])
+    + exact bf16 re-rank of the global top-32 candidates. Returns the argmax token id."""
+    x = x.reshape(1, -1)
+    K = x.shape[1]
+    NG = K // 128
+    xf = x.reshape(NG, 128).astype(mx.float32)
+    sx = mx.sum(xf, axis=1)
+    _op = mx.fast.lm_head_int2_wide if os.environ.get("MTP6_DRAFT_HEAD", "bf16") == "int2w" else mx.fast.lm_head_int2
+    logits, cval, ccol = _op(x, qh["packed"], qh["scale"], qh["zs"], sx)
+    perm = mx.argsort(cval.reshape(-1))
+    idx = mx.take(ccol.reshape(-1), perm[-32:])
+    if "w" in qh:
+        cols = mx.take(qh["w"], idx, 0)
+    else:
+        cols = mx.dequantize(
+            mx.take(qh["wq"], idx, 0),
+            mx.take(qh["s4"], idx, 0),
+            mx.take(qh["b4"], idx, 0),
+            group_size=qh["gs"],
+            bits=qh["bits"],
+        )
+    exact = mx.sum(x.astype(mx.float32) * cols.astype(mx.float32), axis=1)
+    return int(mx.take(idx, mx.argmax(exact)))
+
+
 def main():
     import mlx_lm.models.qwen3_5 as _m5
 
@@ -103,6 +158,71 @@ def main():
     attn_layers = [lyr for lyr in layers if not lyr.is_linear]
     assert lm.mtp is not None, "no mtp module (config.mtp_num_hidden_layers?)"
     mtp_cache = [KVCache()]
+    # Arms (each independently switchable via env; B = the default, no env).
+    # CH_MTP_4BIT (NOT MTP_4BIT: that one is read by the wheel at model-init
+    # time, before load() - this switch rebuilds the module after load, with
+    # no sidecar surgery on the box).
+    _arm4 = os.environ.get("CH_MTP_4BIT", "0") == "1"
+    _arm2 = os.environ.get("MTP6_DRAFT_HEAD", "bf16") == "int2w"
+    print(f"ARMS 4BIT_MTP={_arm4} INT2W={_arm2}", flush=True)
+    if _arm4:
+        # 4-bit MTP module: rebuild the quant module, load the 4-bit sidecar
+        # (bench3-side pattern; the file is NOT renamed, path overridable).
+        import safetensors.numpy as _sfn
+        from mlx_lm.models.qwen3_5 import MTPModule
+
+        _side = os.environ.get("MTP4_SIDECAR") or os.path.join(MODEL, "model-mtp-4bit.safetensors")
+        assert os.path.exists(_side), _side
+        lm.mtp = MTPModule(lm.args, 1, quant=True)
+
+        def _setp(mod, path, val):
+            cur = mod
+            for p in path.split(".")[:-1]:
+                cur = cur[int(p)] if p.isdigit() else getattr(cur, p)
+            setattr(cur, path.split(".")[-1], val)
+
+        for _k, _v in _sfn.load_file(_side).items():
+            if not _k.startswith("mtp."):
+                continue
+            _kk = _k[4:]
+            if _kk.endswith(".qweight"):
+                _base = _kk[: -len(".qweight")] + ".weight"
+            elif _kk.endswith(".bias"):
+                _base = _kk[: -len(".bias")] + ".biases"
+            else:
+                _base = _kk
+            _setp(lm.mtp, _base, mx.array(_v))
+        mx.eval(lm.mtp.parameters())
+        print(f"MTP4_SIDECAR: {os.path.basename(_side)}", flush=True)
+    qh = None
+    if _arm2:
+        # int2w draft head: build the g128-asymmetric int2 qh from the loaded
+        # 4-bit lm_head (mtp-bench6 code; no sidecar file involved).
+        assert hasattr(mx.fast, "lm_head_int2_wide"), "int2w op not in this wheel"
+        tq0 = time.time()
+        _h = lm.lm_head
+        w_bf16 = mx.dequantize(_h.weight, _h.scales, _h.biases, group_size=_h.group_size, bits=_h.bits)
+        packed, scale, zs = quantize_int2(w_bf16)
+        mx.eval(packed, scale, zs)
+        del w_bf16
+        mx.clear_cache()
+        qh = {
+            "packed": packed,
+            "scale": scale,
+            "zs": zs,
+            "wq": _h.weight,
+            "s4": _h.scales,
+            "b4": _h.biases,
+            "bits": _h.bits,
+            "gs": _h.group_size,
+        }
+        print(f"INT2_BUILD {time.time() - tq0:.1f}s", flush=True)
+
+    def head_tok(x):
+        if qh is not None:
+            return int2_argmax(x, qh)
+        return int(mx.argmax(lm.lm_head(x.reshape(1, -1))))
+
     print(f"LOAD_S={t_load:.2f} N_LAYERS={len(layers)} N_GDN={len(gdn_layers)} N_ATTN={len(attn_layers)}")
 
     ga0 = gdn_layers[0].linear_attn
@@ -150,14 +270,14 @@ def main():
         t0 = time.perf_counter()
         emb1 = lm.model.embed_tokens(mx.array([[TOK]]))
         dh1 = lm.mtp(h[0, -1], emb1, mtp_cache)
-        d1 = mx.argmax(lm.lm_head(dh1)[0, -1])
+        d1 = head_tok(dh1[0, -1])
         emb2 = lm.model.embed_tokens(mx.array([[d1]]))
         dh2 = lm.mtp(dh1[0, -1], emb2, mtp_cache)
-        d2 = mx.argmax(lm.lm_head(dh2)[0, -1])
+        d2 = head_tok(dh2[0, -1])
         emb3 = lm.model.embed_tokens(mx.array([[d2]]))
         dh3 = lm.mtp(dh2[0, -1], emb3, mtp_cache)
-        d3 = mx.argmax(lm.lm_head(dh3)[0, -1])
-        mx.eval(d3)
+        head_tok(dh3[0, -1])
+        mx.eval(dh3)
         dt = time.perf_counter() - t0
         restore_states(snap)
         return dt
@@ -169,14 +289,14 @@ def main():
         logits, h = lm(mx.array([[TOK]]), cache=cache, return_hidden=True, return_prenorm=True)
         emb1 = lm.model.embed_tokens(mx.array([[TOK]]))
         dh1 = lm.mtp(h[0, -1], emb1, mtp_cache)
-        d1 = mx.argmax(lm.lm_head(dh1)[0, -1])
+        d1 = head_tok(dh1[0, -1])
         emb2 = lm.model.embed_tokens(mx.array([[d1]]))
         dh2 = lm.mtp(dh1[0, -1], emb2, mtp_cache)
-        d2 = mx.argmax(lm.lm_head(dh2)[0, -1])
+        d2 = head_tok(dh2[0, -1])
         emb3 = lm.model.embed_tokens(mx.array([[d2]]))
         dh3 = lm.mtp(dh2[0, -1], emb3, mtp_cache)
-        d3 = mx.argmax(lm.lm_head(dh3)[0, -1])
-        mx.eval(logits, d3)
+        head_tok(dh3[0, -1])
+        mx.eval(logits, dh3)
         dt = time.perf_counter() - t0
         restore_states(snap)
         return dt
@@ -336,8 +456,20 @@ def main():
         norm_ms_list.append(median(vals) * 1e3)
     classes["norms"] = median(norm_ms_list)
 
-    # (f) Shared 4-bit lm_head at M=1 (the correction forward computes logits).
-    class_wall("lm_head", lambda: lm.lm_head(h1))
+    # (f) Shared 4-bit lm_head at M=1 (the correction forward computes logits);
+    # the int2w arm times the int2w op instead (same slot in the chain).
+    if qh is not None:
+        class_wall("lm_head", lambda: mx.array([int2_argmax(h1[0, -1], qh)]))
+    else:
+        class_wall("lm_head", lambda: lm.lm_head(h1))
+    # (f2) Head at M=3 / M=4 (probe for the batched-argmax lever; the lever
+    # itself is infeasible under the serial MTP dataflow - see the report).
+    if qh is None:
+        _h3 = mx.stack([h1[0, -1]] * 3, axis=0)[None]
+        _h4 = mx.stack([h1[0, -1]] * 4, axis=0)[None]
+        class_wall("lm_head_m3", lambda: lm.lm_head(_h3))
+        class_wall("lm_head_m4", lambda: lm.lm_head(_h4))
+        print(f"HEAD_M3_MS={classes['lm_head_m3']:.2f} HEAD_M4_MS={classes['lm_head_m4']:.2f}", flush=True)
 
     # (g) MTP module (one call; x3 per draft chain), mtp KV cache advances 1 row.
     emb_in = lm.model.embed_tokens(mx.array([[TOK]]))
@@ -432,6 +564,11 @@ def main():
 
     out = {
         "ctx_tokens": ctx,
+        "int2_head_bytes": (
+            qh["packed"].nbytes + qh["scale"].nbytes + qh["zs"].nbytes + 1 * 4096 * 2 + 1 * (4096 // 128) * 4
+        )
+        if qh is not None
+        else None,
         "fused_draft_ms": median(fused),
         "fused_all_ms": fused,
         "correction_ms": median(corr),
@@ -444,8 +581,14 @@ def main():
             "norms": classes["norms"],
         },
         "lm_head_ms": classes["lm_head"],
+        "lm_head_m3_ms": classes.get("lm_head_m3"),
+        "lm_head_m4_ms": classes.get("lm_head_m4"),
         "mtp_head_ms": classes["mtp_head"],
         "embed_ms": classes["embed"],
+        "arm": {
+            "mtp_4bit": _arm4,
+            "int2w": _arm2,
+        },
         "classes_total_ms": {
             "qmv_gdn": classes["qmv_gdn"] * len(gdn_layers),
             "gdn_fused": classes["gdn_fused"] * len(gdn_layers),
