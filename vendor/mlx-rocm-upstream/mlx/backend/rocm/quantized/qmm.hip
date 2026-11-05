@@ -23,6 +23,7 @@ __device__ inline float load_scale_value(ScaleT raw);
 #include "mlx/backend/rocm/quantized/qmv_wide_mr3_kernel.hip"
 #include "mlx/backend/rocm/quantized/qmv_wide_mr3_gen2_kernel.hip"
 #include "mlx/backend/rocm/quantized/qmv_tiled_qgd_gen2_kernel.hip"
+#include "mlx/backend/rocm/quantized/qmv_tiled_ksplit_kernel.hip"
 #include "mlx/primitives.h"
 
 #include <hip/hip_bfloat16.h>
@@ -4477,6 +4478,78 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     // runs verbatim. 4-bit only (8-bit falls through to the stock tiled
     // launch); x dtype bf16/f16 (gated above). V1 is the no-op control arm
     // (the V1 x-staging change is already the stock tiled design).
+    // qgd-ksplit probe (t2050): 4x K-split of the stock tiled QMV for the
+    // M = 1 qmv_gdn class - the parallelism axis chartered by the gen2
+    // ceiling analysis (t2040: 512 blocks x serialized per-tile k-chains,
+    // ~128 KB in flight vs ~273 KB to saturate the 546 GB/s HBM floor).
+    // grid (M, n_tiles, 4): 4x the blocks, one column tile + one K-quarter
+    // per block, no grid-stride; per-split float partials [M, N, 4] + a
+    // second reduce kernel (per-column left fold). 4-bit only, M = 1 only;
+    // the split base K/4 must be >= 512 (one full BSK tile) and % 512 == 0
+    // (k-tile/pack alignment) - otherwise falls through to the stock tiled
+    // launch. DEFAULT OFF: env unset -> stock tiled runs verbatim.
+    static const bool ksplit_env =
+        (std::getenv("MLX_ROCM_QGD_KSPLIT") != nullptr);
+    if (ksplit_env && bits_ == 4 && M == 1) {
+      constexpr int KS = 4;
+      const int k_base = (K > 0) ? (K / KS) : 0;
+      const bool ksplit_ok =
+          (K > 0) && (K % KS == 0) && (k_base >= 512) &&
+          (k_base % 512 == 0);
+      if (ksplit_ok) {
+        array ks_partials(Shape{M, N, KS}, float32, nullptr, {});
+        ks_partials.set_data(
+            mlx::core::rocm::malloc_async(ks_partials.nbytes(), enc));
+        enc.add_temporary(ks_partials);
+        float* ks_part_ptr =
+            static_cast<float*>(gpu_ptr<void>(ks_partials));
+        const int ks_n_tiles = (N + tile_n - 1) / tile_n;
+        dim3 ks_block(host_warp, tile_n);
+        dim3 ks_grid(M, ks_n_tiles, KS);
+#define LAUNCH_QMV_TILED_KSPLIT_GS(KNAME, TT, ST)                        \
+  do {                                                                 \
+    if (group_size_ == 32) {                                            \
+      enc.add_kernel_node(                                              \
+          &rocm::KNAME<TT, ST, 32>, ks_grid, ks_block, 0u,             \
+          (const TT*)x_ptr, (const uint32_t*)w_ptr,                    \
+          (const ST*)scales_ptr, (const ST*)biases_ptr, ks_part_ptr,   \
+          M, N, K, has_bias, tile_n, k_base);                         \
+    } else if (group_size_ == 64) {                                     \
+      enc.add_kernel_node(                                              \
+          &rocm::KNAME<TT, ST, 64>, ks_grid, ks_block, 0u,             \
+          (const TT*)x_ptr, (const uint32_t*)w_ptr,                    \
+          (const ST*)scales_ptr, (const ST*)biases_ptr, ks_part_ptr,   \
+          M, N, K, has_bias, tile_n, k_base);                         \
+    } else {                                                          \
+      enc.add_kernel_node(                                              \
+          &rocm::KNAME<TT, ST, 128>, ks_grid, ks_block, 0u,           \
+          (const TT*)x_ptr, (const uint32_t*)w_ptr,                    \
+          (const ST*)scales_ptr, (const ST*)biases_ptr, ks_part_ptr,  \
+          M, N, K, has_bias, tile_n, k_base);                         \
+    }                                                                  \
+  } while (0)
+        if (x.dtype() == bfloat16) {
+          LAUNCH_QMV_TILED_KSPLIT_GS(qmv_tiled_ksplit_kernel, hip_bfloat16, hip_bfloat16);
+        } else {
+          LAUNCH_QMV_TILED_KSPLIT_GS(qmv_tiled_ksplit_kernel, __half, __half);
+        }
+#undef LAUNCH_QMV_TILED_KSPLIT_GS
+        dim3 ks_red_block(256, 1);
+        dim3 ks_red_grid((N + 255) / 256, M);
+        if (x.dtype() == bfloat16) {
+          enc.add_kernel_node(
+              &rocm::qmv_tiled_ksplit_reduce_kernel<hip_bfloat16>,
+              ks_red_grid, ks_red_block, 0u,
+              ks_part_ptr, (hip_bfloat16*)out_ptr, M, N);
+        } else {
+          enc.add_kernel_node(
+              &rocm::qmv_tiled_ksplit_reduce_kernel<__half>,
+              ks_red_grid, ks_red_block, 0u,
+              ks_part_ptr, (__half*)out_ptr, M, N);
+        }
+        return;
+      }
+    }
     static bool qgdv1 = (std::getenv("MLX_ROCM_QGD_V1") != nullptr);
     static bool qgdv2 = (std::getenv("MLX_ROCM_QGD_V2") != nullptr);
     static bool qgdv3 = (std::getenv("MLX_ROCM_QGD_V3") != nullptr);
