@@ -13,9 +13,7 @@ arm).
 **Protocol.** Guest-a (marzuki-neon, RX 9070 XT / gfx1201), flock, 25 s idle before each
 run, `MODELS=/mnt/models LD_PRELOAD=libhsa-runtime HCC_AMDGPU_TARGET=gfx1201`. venv-gen2
 = copy of venv-p3 + force-reinstall of the gen2 wheel (vendor tree @ 7ea5bca, byte-identical
-to the tree that built venv-m3k, + the four gen2 kernels). Bit-identity contract per
-variant: identical per-(row, col) FMA traversal (ascending k-tiles, la q-major / j-minor,
-per-value lx FADD guarded by has_bias, same int→float conversions, same
+to the tree that built venv-m3k, + the four gen2 kernels). Bit-identity contract per variant: identical per-(row, col) FMA traversal (ascending k-tiles, la q-major / j-minor, per-value lx FADD guarded by has_bias, same int→float conversions, same
 `acc += s*la + b*lx`, same 32-lane `shfl_down` butterfly and lane-0 store, same early
 return `col >= N` before any weight read, same shared-dequant FMA:dequant = M:1).
 Only the memory-access structure changes.
@@ -46,8 +44,7 @@ Only the memory-access structure changes.
   bytes of the launch).
 - **V2 — k-tile double buffer.** Software pipeline within the warp: the weight load of
   k-tile i+1 is issued at the top of iteration i (before the FMA of tile i) and
-  dequantized into the alternating (A/B) weight register buffers AFTER the FMA of tile i,
-  hiding the next tile's load latency under the current tile's x loads + FMA + dequant.
+  dequantized into the alternating (A/B) weight register buffers AFTER the FMA of tile i, hiding the next tile's load latency under the current tile's x loads + FMA + dequant.
 - **V3 — 32B weight loads.** The 16B weight vector load is widened to a 32B logical access
   (two consecutive 16B aligned loads; the 4-bit layout is 16B-aligned per lane for the
   stored sidecar, the window is 32B-aligned for even lanes; no weight reordering, the
@@ -62,12 +59,9 @@ Only the memory-access structure changes.
 - **V4 — load-pattern variant.** The per-row x loads of the k-tile are hoisted into
   registers and issued as ONE batched group (all rows, 16 × 16B) BEFORE the weight load,
   instead of the stock per-row interleave (x loads after the weight dequant, one row at a
-  time). Same stored layout, same per-(row, col) FMA order — only the memory issue order
-  changes (x batch ahead of the weight stream, for HBM row-buffer locality).
+  time). Same stored layout, same per-(row, col) FMA order — only the memory issue order changes (x batch ahead of the weight stream, for HBM row-buffer locality).
 
-Note on class coverage: the m3 dispatch branch is shared by ALL 4-bit M∈[2,4] QMM ops of
-the stack, so each variant kernel also serves the qmv_gdn / gdn_fused / attn qkv
-projections (that is why the per-class table below shows cross-class deltas for the
+Note on class coverage: the m3 dispatch branch is shared by ALL 4-bit M∈[2,4] QMM ops of the stack, so each variant kernel also serves the qmv_gdn / gdn_fused / attn qkv projections (that is why the per-class table below shows cross-class deltas for the
 variants; the mlp row is the 3 large MLP GEMMs, 2.718 GB).
 
 ## Per-class bandwidth probe (one session, arms C / V1 / V2 / V3b / V4b)
@@ -133,8 +127,7 @@ per the probe charter the deliverable switches to the ceiling analysis below.
 ## Ceiling analysis: why the mlp class stalls at ~60% floor
 
 The five data points of this probe, read together, say the same thing from five angles:
-the stock mr3 kernel is already at the structural limit of this access pattern, and the
-obvious "next-generation" memory reorganizations all trade one bound for a worse one.
+the stock mr3 kernel is already at the structural limit of this access pattern, and the obvious "next-generation" memory reorganizations all trade one bound for a worse one.
 
 1. **The mlp class is not bandwidth-bound in the way the floor suggests — it is
    latency/occupancy-bound under a 4-bit dequant pipeline.** C achieves 332.5 GB/s
@@ -161,8 +154,7 @@ obvious "next-generation" memory reorganizations all trade one bound for a worse
 4. **Wider weight loads don't help when the layout is 4-bit (V3).** The 16B vector
    load is already the layout's natural quantum (32 values / lane). Widening to a
    32B logical window means 8 scalar volatile loads (the backend cannot merge
-   volatile scalar loads into a vector) where the stock issues one 16B vector
-   load — 1.85× slower. (And the unclamped window was OOB at the last k-tile: a
+   volatile scalar loads into a vector) where the stock issues one 16B vector load — 1.85× slower. (And the unclamped window was OOB at the last k-tile: a
    genuine correctness find, fixed with the `k + 64 ≤ K` clamp.)
 5. **The remaining headroom to the 65% floor (60.9% → 65% ≈ 5.1% of 8.175 ms ≈
    0.42 ms) is not in the weight/x access structure.** It is in the things the
