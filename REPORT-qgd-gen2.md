@@ -13,11 +13,7 @@ BAR: a variant passes iff its qmv_gdn class reaches ≥ C's floor AND the bench 
 
 ## Headline
 
-**FAIL-as-chartered.** No variant beats C's floor at the +1% bar. All four arms are
-within the 1–2% same-session noise band (the no-op control arm Q1 itself moves
-+0.4%). The class is **latency/occupancy-bound, not HBM-bound** — the gen-2
-memory-structure changes (load width/order) cannot move it; the ceiling fix is a
-*parallelism* change (K-split), not a memory-structure change.
+**FAIL-as-chartered.** No variant beats C's floor at the +1% bar. All four arms are within the 1–2% same-session noise band (the no-op control arm Q1 itself moves +0.4%). The class is **latency/occupancy-bound, not HBM-bound** — the gen-2 memory-structure changes (load width/order) cannot move it; the ceiling fix is a *parallelism* change (K-split), not a memory-structure change.
 
 ## The misdiagnosis (session A) — and how it was caught
 
@@ -60,8 +56,7 @@ Default OFF ⇒ stock tiled kernel runs verbatim. 8-bit and unset fall through t
   wheel `mlx-0.32.3.dev20261105+2ce5d54`; post md5 `36037cae6d551ec107d550ce3bd1e9ad`
   (differs ✓); all four `MLX_ROCM_QGD_V*` env strings present; 66× `qmv_tiled_qgd_v4_kernel`
   symbol references in libmlx ✓
-- Bit-exact outputs: 5 GDN projections (in_proj_qkv/z/b/a, out_proj) with fixed seed,
-  per-arm processes — **identical** hash + first values across DEFAULT, Q1, Q2, Q3, Q4 ✓
+- Bit-exact outputs: 5 GDN projections (in_proj_qkv/z/b/a, out_proj) with fixed seed, per-arm processes — **identical** hash + first values across DEFAULT, Q1, Q2, Q3, Q4 ✓
 - Probe FUSED_VERIFY passes in every arm (rc=0) ✓
 
 ## Probe results (per-class, per-run, 25 s idle between arms, 13 config-of-record envs on in every arm)
@@ -76,9 +71,7 @@ Session B (the tiled-target build), qmv_gdn class (0.9095 GB):
 | Q3 (16B window) | 4.499 | 202.2 | 37.0% | −0.2% |
 | Q4 (batched-x) | 4.444 | 204.7 | 37.5% | −1.4% |
 
-lm_head clock control: 451.8–454.0 GB/s (0.5% spread) across all arms ✓. mlp class
-(327.8/330.8/324.7/324.3/325.6 GB/s) unchanged within 1% — the QGD dispatch does not
-touch the mlp class ✓.
+lm_head clock control: 451.8–454.0 GB/s (0.5% spread) across all arms ✓. mlp class (327.8/330.8/324.7/324.3/325.6 GB/s) unchanged within 1% — the QGD dispatch does not touch the mlp class ✓.
 
 Same-session A/B (3×C vs 3×Q4, the best arm): C = 4.520 / 4.447 / 4.452 (mean 4.473);
 Q4 = 4.458 / 4.484 / 4.484 (mean 4.475). **Q4 wins 1 of 3; mean is a dead tie.**
@@ -89,40 +82,19 @@ Session A (the wide-target build, for the record): all four arms 4.473–4.497 m
 
 ## Ceiling analysis — why the qmv_gdn class sits at 37.2%
 
-The class is **latency/occupancy-bound**, not HBM-bound — which is exactly why the
-four *memory-structure* variants (load width and ordering) produce sub-noise effects:
+The class is **latency/occupancy-bound**, not HBM-bound — which is exactly why the four *memory-structure* variants (load width and ordering) produce sub-noise effects:
 
-1. **Parallelism per wave.** Stock tiled launch: grid (M=1, min(n_tiles,
-   CUs×blocks/CU)); for N=8192, tile_n=8: n_tiles=1024, persistent grid_y≈512 → 512
-   blocks, each **grid-striding 2 column tiles serially**, each tile a 2-`__syncthreads`
-   LDS staging of 512 floats + a short 16-FMA per-lane chain + one 2×uint32
-   nontemporal weight load **with no software pipelining** (load→wait→dequant→FMA→next).
-   Per k-tile in-flight weight traffic: 512 blocks × 256 B = 128 KB; saturating
-   546 GB/s at ~500 ns HBM latency needs ~273 KB in flight. The kernel runs at ~47%
-   of the outstanding-load requirement, and the per-tile sync/staging overhead sits in
-   the serial chain. (Q2's prefetch doubles per-block in-flight traffic but the block
-   count — not the per-block chain — is what caps the wave; measured: −0.9%, a wash.)
+1. **Parallelism per wave.** Stock tiled launch: grid (M=1, min(n_tiles, CUs×blocks/CU)); for N=8192, tile_n=8: n_tiles=1024, persistent grid_y≈512 → 512 blocks, each **grid-striding 2 column tiles serially**, each tile a 2-`__syncthreads` LDS staging of 512 floats + a short 16-FMA per-lane chain + one 2×uint32 nontemporal weight load **with no software pipelining** (load→wait→dequant→FMA→next). Per k-tile in-flight weight traffic: 512 blocks × 256 B = 128 KB; saturating 546 GB/s at ~500 ns HBM latency needs ~273 KB in flight. The kernel runs at ~47% of the outstanding-load requirement, and the per-tile sync/staging overhead sits in the serial chain. (Q2's prefetch doubles per-block in-flight traffic but the block count — not the per-block chain — is what caps the wave; measured: −0.9%, a wash.)
 2. **The small-N projections** (in_proj_b/a, N=32 → 4 column tiles = 4 blocks) run on
    4 blocks of 256 threads — ~0.8% of the 512-block wave — but they carry only
    ~128 KB of the 910 MB class bytes, so they are not the class's ceiling; they are
    a separate (small) tax.
-3. **x re-reads.** Every block re-stages the 8 KB x row per k-tile: 512 blocks × 8
-   tiles × 1 KB ≈ 4 MB of x traffic per big projection (L2-resident, not HBM) — LDS
-   bandwidth + 2 syncs per tile, inside the serial chain. Q4's 16B vector staging
-   (−1.4% single-run, non-reproducing) is the only arm that touched this, and it
-   touched it within noise.
+3. **x re-reads.** Every block re-stages the 8 KB x row per k-tile: 512 blocks × 8 tiles × 1 KB ≈ 4 MB of x traffic per big projection (L2-resident, not HBM) — LDS bandwidth + 2 syncs per tile, inside the serial chain. Q4's 16B vector staging (−1.4% single-run, non-reproducing) is the only arm that touched this, and it touched it within noise.
 4. **Contrast with the classes above it:** lm_head (GEMM, 452 GB/s, 82.8% floor) has
    full 2D tiling; the mlp class (mr3, M=2..4, 326–328 GB/s, 60% floor) amortizes the
    per-row chain over M rows; the tiled M=1 kernel has neither.
 
-**The ceiling fix is a parallelism change, not a memory-structure change:** K-split
-the M=1 path — e.g. 4× K-splits turns 512 blocks×(2 tiles×8 k-iter) into 4096
-blocks×1 tile: 4× the blocks, ~512 KB in flight (1.9× the saturation requirement),
-no grid-stride serialization, one sync pair per block. (Or an mr3-style M-tiling
-is unavailable at M=1 by definition; K-split is the M=1 analog of M-tiling.) That
-is the next chartered probe for this class. If K-split cannot reach the floor, the
-residual is the 2-sync-per-tile staging pattern itself (a K-split removes it too:
-one staging per block).
+**The ceiling fix is a parallelism change, not a memory-structure change:** K-split the M=1 path — e.g. 4× K-splits turns 512 blocks×(2 tiles×8 k-iter) into 4096 blocks×1 tile: 4× the blocks, ~512 KB in flight (1.9× the saturation requirement), no grid-stride serialization, one sync pair per block. (Or an mr3-style M-tiling is unavailable at M=1 by definition; K-split is the M=1 analog of M-tiling.) That is the next chartered probe for this class. If K-split cannot reach the floor, the residual is the 2-sync-per-tile staging pattern itself (a K-split removes it too: one staging per block).
 
 ## Deliverables
 
@@ -130,8 +102,7 @@ one staging per block).
   (4-bit; Q1 no-op control / Q2 double buffer / Q3 16B window / Q4 batched-x).
 - `vendor/.../quantized/qmm.hip` — QGD dispatch in the tiled gate (bits==4, M==1,
   env set; all-default-OFF ⇒ stock verbatim). (Session A's wide-section QGD dispatch
-  + per-row wide QGD kernel were removed as dead for this model — kept in git
-  history at e94b0b4.)
++ per-row wide QGD kernel were removed as dead for this model — kept in git history at e94b0b4.)
 - `scripts/qgd-session-a.sh`, `scripts/qgd-session-b.sh` (session B also fixed
   session A's finding; session-B probe output landed in `session-a.log` via an
   un-sed'd `L=` line — the raw numbers above are from that log, timestamps 04:24–04:28Z).
@@ -139,7 +110,4 @@ one staging per block).
 
 ## Verdict
 
-**FAIL-as-chartered.** Q1 (control) +0.4%, Q2 −0.9%, Q3 −0.2%, Q4 −1.4% (non-reproducing;
-A/B mean 4.475 vs 4.473). No variant reaches ≥ C floor at the +1% bar. The qmv_gdn
-class ceiling (37.2% floor / 203 GB/s) is set by per-block K-chain serialization and insufficient in-flight loads (128 KB vs ~273 KB to saturate), not by load width or x ordering — the gen-2 memory-structure family is exhausted for this class. Next
-chartered probe: K-split M=1 (4× K-splits → 4096 blocks, one tile per block).
+**FAIL-as-chartered.** Q1 (control) +0.4%, Q2 −0.9%, Q3 −0.2%, Q4 −1.4% (non-reproducing; A/B mean 4.475 vs 4.473). No variant reaches ≥ C floor at the +1% bar. The qmv_gdn class ceiling (37.2% floor / 203 GB/s) is set by per-block K-chain serialization and insufficient in-flight loads (128 KB vs ~273 KB to saturate), not by load width or x ordering — the gen-2 memory-structure family is exhausted for this class. Next chartered probe: K-split M=1 (4× K-splits → 4096 blocks, one tile per block).
