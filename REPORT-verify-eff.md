@@ -2,8 +2,7 @@
 (mlp / qmv classes)
 
 Ticket: op-directed second-half ticket, parallel with the GDN-order sibling.
-Base: planes-exactness @ 6e8df3f. Measurement + design only — no layout
-format implemented.
+Base: planes-exactness @ 6e8df3f. Measurement + design only — no layout format implemented.
 
 ## Verdict (up front)
 
@@ -11,10 +10,7 @@ format implemented.
 actually pulled = **1.125 x the 4-bit weight bytes** (weight + bf16 scale +
 bf16 bias; scale/bias are 1/64 density per group, not 1:1 with weight). Not
 3x. The "3 streams" are real (weight/scale/bias are separate tensors),
-but the two aux streams together are 12.5% of the weight stream, so the
-layout cannot explain a ~54%/42%-of-floor class. The class cost is
-kernel efficiency (dequant ALU + memory latency/occupancy), quantified
-in section 4.
+but the two aux streams together are 12.5% of the weight stream, so the layout cannot explain a ~54%/42%-of-floor class. The class cost is kernel efficiency (dequant ALU + memory latency/occupancy), quantified in section 4.
 
 ## 1. Code-first: streams and bytes per matmul (no GPU)
 
@@ -172,9 +168,7 @@ appear to use different basis; flagged, not concluded.
    measured numbers).** The same 4-bit affine layout (weight + bf16 scale
    + bf16 bias, 1.125x weight bytes) reaches **76.8-80.2% of the
    streaming floor at M=1** on the large shapes (gate 76.8%, down 80.2%).
-   Removing the aux streams entirely (an idealized 1.0x layout that does
-   not exist at group 64 — Q4_K carries the same 1/32 scale density,
-   interleaved) would raise achieved GB/s by at most 12.5%:
+   Removing the aux streams entirely (an idealized 1.0x layout that does not exist at group 64 — Q4_K carries the same 1/32 scale density, interleaved) would raise achieved GB/s by at most 12.5%:
    mlp 42.0% -> <= 47.3%, qmv 27.0% -> <= 30.4%. It cannot close a gap
    to ~100%.
 2. **The class cost is kernel efficiency at M>=2, not bytes.** M=1 -> M=3
