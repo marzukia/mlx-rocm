@@ -6,11 +6,7 @@ Base: planes-exactness @ 6e8df3f. Measurement + design only — no layout format
 
 ## Verdict (up front)
 
-**LAYOUT HYPOTHESIS DEAD (STOP-AND-REPORT, step 2).** Per-matmul bytes
-actually pulled = **1.125 x the 4-bit weight bytes** (weight + bf16 scale +
-bf16 bias; scale/bias are 1/64 density per group, not 1:1 with weight). Not
-3x. The "3 streams" are real (weight/scale/bias are separate tensors),
-but the two aux streams together are 12.5% of the weight stream, so the layout cannot explain a ~54%/42%-of-floor class. The class cost is kernel efficiency (dequant ALU + memory latency/occupancy), quantified in section 4.
+**LAYOUT HYPOTHESIS DEAD (STOP-AND-REPORT, step 2).** Per-matmul bytes actually pulled = **1.125 x the 4-bit weight bytes** (weight + bf16 scale + bf16 bias; scale/bias are 1/64 density per group, not 1:1 with weight). Not 3x. The "3 streams" are real (weight/scale/bias are separate tensors), but the two aux streams together are 12.5% of the weight stream, so the layout cannot explain a ~54%/42%-of-floor class. The class cost is kernel efficiency (dequant ALU + memory latency/occupancy), quantified in section 4.
 
 ## 1. Code-first: streams and bytes per matmul (no GPU)
 
@@ -67,27 +63,17 @@ the arbiter.
 
 ### 1.2 The 3x question, answered numerically
 
-- Streams per matmul: **3** (weight, scale, bias) — the "3 streams" part of
-  the hypothesis is TRUE.
-- Bytes pulled per matmul: **1.125 x** weight bytes (scale 6.25% + bias
-  6.25%). llama.cpp Q4_K with interleaved scale reads ~1.0 x weight bytes
-  plus per-block super-scales. The layout delta is **1.125 x, not 3 x**.
+- Streams per matmul: **3** (weight, scale, bias) — the "3 streams" part of the hypothesis is TRUE.
+- Bytes pulled per matmul: **1.125 x** weight bytes (scale 6.25% + bias 6.25%). llama.cpp Q4_K with interleaved scale reads ~1.0 x weight bytes plus per-block super-scales. The layout delta is **1.125 x, not 3 x**.
 - The dequant+rocBLAS path (not used at verify M) would read a bf16 shadow
   (N*K*2 B = 4x code bytes), but the dispatch thresholds keep verify-M on
   QMV.
 
-**STOP-AND-REPORT trigger met:** bytes pulled (1.125 x) already equal the
-weight bytes to within 12.5% (the aux streams are group-density, not
-weight-density). A layout change removes at most the 12.5% aux-stream
-overhead, and the scale stream is not avoidable at group 64 (Q4_K carries
-the same 1/32 scale density, interleaved). It cannot close a gap from ~50%
-of floor to ~100%. Hypothesis dead — not forced further (step 2).
+**STOP-AND-REPORT trigger met:** bytes pulled (1.125 x) already equal the weight bytes to within 12.5% (the aux streams are group-density, not weight-density). A layout change removes at most the 12.5% aux-stream overhead, and the scale stream is not avoidable at group 64 (Q4_K carries the same 1/32 scale density, interleaved). It cannot close a gap from ~50% of floor to ~100%. Hypothesis dead — not forced further (step 2).
 
 ## 2. Environment / deviations (recorded)
 
-- Box: the on-box bare-metal ROCm gfx1201 (hostname/IP intentionally
-  omitted from this commit). Sidecar md5
-  02a54359cda8b247f76b277dd9bc4d4c **PASS** before any run.
+- Box: the on-box bare-metal ROCm gfx1201 (hostname/IP intentionally omitted from this commit). Sidecar md5 02a54359cda8b247f76b277dd9bc4d4c **PASS** before any run.
 - venv-verify: fresh byte-copy. **Deviation:** the ticket named `venv-r4v`
   with COR libmlx md5 8acf13fe, but on-box `venv-r4v` libmlx = fa4ace5b (a
   different wheel); `venv-r4v-p1922` libmlx = **8acf13fe (COR match)** —
@@ -106,10 +92,7 @@ of floor to ~100%. Hypothesis dead — not forced further (step 2).
   `mx.quantized_matmul(..., transpose=True, group_size=64, bits=4,
   mode="affine")` (verified against `mlx.nn.layers.quantized`'s call
   path).
-- **Deviation (model):** first probe run hit `DecoderLayer` dict-style
-  attributes + revealed the model is Qwen3-Next (GDN linear attention, 32
-  layers), not standard Qwen3 attention — the shape table above is the
-  corrected one (verified against live module shapes).
+- **Deviation (model):** first probe run hit `DecoderLayer` dict-style attributes + revealed the model is Qwen3-Next (GDN linear attention, 32 layers), not standard Qwen3 attention — the shape table above is the corrected one (verified against live module shapes).
 
 ## 3. In-session measurement (GPU, under ~/gpu.lock)
 
