@@ -4,8 +4,7 @@ Date: 2026-11-05 · Branch: `qgd-gen2-probe` (off `mlp-gen2-probe` a03b5e3) · B
 
 ## Charter
 
-Port the four gen-2 QMM memory-structure variants (V1 LDS x-staging, V2 k-tile double
-buffer, V3 32B weight loads, V4 batched-x load order) onto the kernel serving the
+Port the four gen-2 QMM memory-structure variants (V1 LDS x-staging, V2 k-tile double buffer, V3 32B weight loads, V4 batched-x load order) onto the kernel serving the
 qmv_gdn class — GDN 4 in-proj + out_proj QMMs, 24 layers, M=1, 4-bit group-64
 affine, no bias — 4.59 ms / 36.3% of the 546 GB/s floor, via `MLX_ROCM_QGD_V1..V4`
 (default OFF), build `venv-qgd` on the neon box, 5-arm per-class probe (C + V1..V4);
@@ -142,7 +141,5 @@ one staging per block).
 
 **FAIL-as-chartered.** Q1 (control) +0.4%, Q2 −0.9%, Q3 −0.2%, Q4 −1.4% (non-reproducing;
 A/B mean 4.475 vs 4.473). No variant reaches ≥ C floor at the +1% bar. The qmv_gdn
-class ceiling (37.2% floor / 203 GB/s) is set by per-block K-chain serialization and
-insufficient in-flight loads (128 KB vs ~273 KB to saturate), not by load width or
-x ordering — the gen-2 memory-structure family is exhausted for this class. Next
+class ceiling (37.2% floor / 203 GB/s) is set by per-block K-chain serialization and insufficient in-flight loads (128 KB vs ~273 KB to saturate), not by load width or x ordering — the gen-2 memory-structure family is exhausted for this class. Next
 chartered probe: K-split M=1 (4× K-splits → 4096 blocks, one tile per block).
