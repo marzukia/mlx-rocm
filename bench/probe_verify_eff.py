@@ -64,9 +64,10 @@ def streaming_floor(rounds=3, chunks=50, gib=4.0):
         mx.eval(build())
     ts = []
     for r in range(rounds):
-        t = chain_eval(build, chunks)
-        ts.append(t)
-        print(f"FLOOR:round{r}={t * 1e3:.3f}ms", flush=True)
+        t0 = time.perf_counter()
+        mx.eval(build())
+        ts.append(time.perf_counter() - t0)
+        print(f"FLOOR:round{r}={ts[-1] * 1e3:.3f}ms", flush=True)
     best = min(ts)
     gbs = chunks * gib * (1 << 30) / best / 1e9
     var = max(ts) / min(ts) - 1.0
