@@ -84,8 +84,12 @@ def gdn_layer_ids(lm):
 
 
 def norm_shape(a):
-    """Squeeze a leading batch dim of 1 so both arms' tensors share a shape."""
-    a = mx.eval(a)
+    """Squeeze a leading batch dim of 1 so both arms' tensors share a shape.
+
+    Note: mx.eval(single_array) returns None in this mlx-rocm build, so we
+    use the array directly (it computes on demand; a held reference is a
+    stable fresh allocation, verified by a separate stability probe).
+    """
     if a.ndim >= 1 and a.shape[0] == 1:
         a = a[0]
     return a
@@ -134,15 +138,16 @@ def run_batched(lm, gids, ctx_ids, vtok):
     cache = lm.make_cache()
     prefill(lm, cache, ctx_ids)
     lm(mx.array([[vtok[0], vtok[1], vtok[2], vtok[3]]]), cache=cache)
-    mx.eval(cache)
     rec, cstab = {}, {}
     for i in gids:
         la = lm.model.layers[i].linear_attn
         st, cst = getattr(la, "last_tape", (None, None))
         if st is None:
             raise RuntimeError(f"GDN tape not materialized (batched) layer {i}")
-        rec[i] = [mx.eval(st[k]) for k in range(4)]
-        cstab[i] = [mx.eval(cst[k]) for k in range(4)]
+        # hold references directly (stable fresh allocations; no mx.eval - it
+        # returns None in this build and would drop the array).
+        rec[i] = [st[k] for k in range(4)]
+        cstab[i] = [cst[k] for k in range(4)]
     return rec, cstab
 
 
@@ -153,18 +158,18 @@ def run_sequential(lm, gids, ctx_ids, vtok):
     rec, cstab, leaf_rec, leaf_conv = {}, {}, {}, {}
     for j in range(4):
         lm(mx.array([[vtok[j]]]), cache=cache)
-        mx.eval(cache)
         for i in gids:
             la = lm.model.layers[i].linear_attn
             st, cst = getattr(la, "last_tape", (None, None))
             if st is None:
                 raise RuntimeError(f"GDN tape not materialized (seq) layer {i}")
-            rec.setdefault(i, []).append(mx.eval(st[0]))
-            cstab.setdefault(i, []).append(mx.eval(cst[0]))
+            # hold references directly (stable; no mx.eval in this build).
+            rec.setdefault(i, []).append(st[0])
+            cstab.setdefault(i, []).append(cst[0])
             # cache leaves (ArraysCache: [0]=conv, [1]=recurrent) - the
             # secondary cross-check target for the per-row tape slice.
-            leaf_rec.setdefault(i, []).append(mx.eval(cache[i][1]))
-            leaf_conv.setdefault(i, []).append(mx.eval(cache[i][0]))
+            leaf_rec.setdefault(i, []).append(cache[i][1])
+            leaf_conv.setdefault(i, []).append(cache[i][0])
     return rec, cstab, leaf_rec, leaf_conv
 
 
