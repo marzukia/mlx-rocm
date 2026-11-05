@@ -7,9 +7,11 @@ One process, one model load, three same-session arms on the mlp class
   A  stock 4-bit mr3 (MLX_ROCM_QMM_M3=1)
   B  same GEMMs, weights pre-dequantized to bf16 in HBM (4x weight
      traffic, no in-loop dequant, no scale/bias gather)
-  C  stock 4-bit mr3 pointed at ONE shared 30 MB weight set (layer 0's
+  C  stock 4-bit mr3 pointed at ONE shared ~80 MB weight set (layer 0's
      buffers), L2-hot after a warm pass (isolates ALU+gather: weights
      hit L2; scales+biases ~0.75 MB also L2-hot)
+  C2 stock (RESTORED) weights, constant scale/bias (isolates the
+     per-group scale-gather ALU+traffic from the per-weight dequant)
 
 Plus context classes from the t2031 probe: qmv_gdn (5 GEMMs) and the
 pure gdn_fused tape (in_proj GEMMs precomputed and reused), to split the
@@ -75,16 +77,25 @@ for ly in layers:
     b16.append(
         [
             mx.dequantize(
-                ly.mlp.gate.weight, ly.mlp.gate.scales, ly.mlp.gate.biases,
-                bits=4, group_size=64,
+                ly.mlp.gate.weight,
+                ly.mlp.gate.scales,
+                ly.mlp.gate.biases,
+                bits=4,
+                group_size=64,
             ),
             mx.dequantize(
-                ly.mlp.up.weight, ly.mlp.up.scales, ly.mlp.up.biases,
-                bits=4, group_size=64,
+                ly.mlp.up.weight,
+                ly.mlp.up.scales,
+                ly.mlp.up.biases,
+                bits=4,
+                group_size=64,
             ),
             mx.dequantize(
-                ly.mlp.down.weight, ly.mlp.down.scales, ly.mlp.down.biases,
-                bits=4, group_size=64,
+                ly.mlp.down.weight,
+                ly.mlp.down.scales,
+                ly.mlp.down.biases,
+                bits=4,
+                group_size=64,
             ),
         ]
     )
@@ -106,9 +117,13 @@ def mlp_layer_b(ly, xa, wb):
 # ---- arm C setup (applied AFTER arm A is measured) ----------------------
 P2I = {"gate": 0, "up": 1, "down": 2}
 shared = []
+stock = []
 for p in ("gate", "up", "down"):
     q = getattr(layers[0].mlp, p)
     shared.append([q.weight, q.scales, q.biases])
+    for ly in layers:
+        qq = getattr(ly.mlp, p)
+        stock.append([qq.weight, qq.scales, qq.biases])
 
 
 def swap_c():
@@ -123,8 +138,10 @@ def swap_c():
 
 
 def swap_c2():
-    # constant scale/bias on the (shared) stock weights: isolates the
-    # per-group scale-gather ALU+traffic from the per-weight dequant.
+    # restore the STOCK weights first (C left them shared), then
+    # constant scale/bias: isolates the per-group scale-gather
+    # ALU+traffic from the per-weight dequant.
+    i = 0
     for p in ("gate", "up", "down"):
         q0 = getattr(layers[0].mlp, p)
         ones = mx.ones_like(q0.scales)
@@ -134,9 +151,11 @@ def swap_c2():
             mx.eval(z)
         for ly in layers:
             q = getattr(ly.mlp, p)
+            o = stock[i]
+            i += 1
+            q.weight = o[0]
             q.scales = ones
-            if z is not None:
-                q.biases = z
+            q.biases = z
 
 
 def mlp_layer_c(ly, xa):
@@ -146,7 +165,7 @@ def mlp_layer_c(ly, xa):
 # ---- per-layer class timing ---------------------------------------------
 def time_class(fn, tag):
     per_layer = []
-    for li, ly in enumerate(layers):
+    for ly in layers:
         xa, _ = get_hidden()
         for _ in range(2):
             mx.eval(fn(ly, xa))
@@ -159,8 +178,7 @@ def time_class(fn, tag):
         per_layer.append(median(walls))
     total = sum(per_layer)
     print(
-        f"CLASS {tag} total={total * 1e3:.4f} ms "
-        f"per_layer_ms={[f'{w * 1e3:.4f}' for w in per_layer]}",
+        f"CLASS {tag} total={total * 1e3:.4f} ms per_layer_ms={[f'{w * 1e3:.4f}' for w in per_layer]}",
         flush=True,
     )
     return total
@@ -176,20 +194,19 @@ def qmv_gdn_layer(ly, xb, x):
     mx.eval(g.out_proj(xb))
 
 
-def gdn_fused_layer(ly, xa, x):
+def gdn_fused_layer(ly, xa):
     xb = mxnn.rms_norm(xa, m=ly.norm_eps)
+    mx.eval(xb)
     g = ly.gated_delta_net
-    q, k, v = mx.split(mx.eval(g.in_proj_qkv(x)), 3)
-    b = mx.eval(g.in_proj_b(x))
-    a = mx.eval(g.in_proj_a(x))
-    z = mx.eval(g.in_proj_z(x))
+    q, k, v = mx.split(mx.eval(g.in_proj_qkv(xb)), 3)
+    b = mx.eval(g.in_proj_b(xb))
+    a = mx.eval(g.in_proj_a(xb))
+    z = mx.eval(g.in_proj_z(xb))
     cs, hs = g.conv1d.state, g.gated_deltanet.state
     cs = mx.take_along_axis(cs, (0 + mx.arange(3) + 1) % 3, axis=0)
-    c = mx.eval(g.conv1d(mx.concat([cs, x])))
+    c = mx.eval(g.conv1d(mx.concat([cs, xb])))
     c = mx.take(c, 3)
-    return mx.fast.gdn_fused_step_tape(
-        q, k, v, b, a, z, cs, hs, g.conv1d.weight, g.conv1d.bias, 3
-    )
+    return mx.fast.gdn_fused_step_tape(q, k, v, b, a, z, cs, hs, g.conv1d.weight, g.conv1d.bias, 3)
 
 
 print("=== ARM A: stock 4-bit mr3 ===", flush=True)
@@ -208,8 +225,7 @@ for nm in ("gate", "up", "down"):
         ws.append(time.perf_counter() - t0)
     ga.append(median(ws))
 print(
-    f"MLP_A_GEMM_ms gate={ga[0] * 1e3:.4f} up={ga[1] * 1e3:.4f} "
-    f"down={ga[2] * 1e3:.4f}",
+    f"MLP_A_GEMM_ms gate={ga[0] * 1e3:.4f} up={ga[1] * 1e3:.4f} down={ga[2] * 1e3:.4f}",
     flush=True,
 )
 
@@ -228,8 +244,7 @@ for i, ly in enumerate(layers):
     per_layer_B.append(median(walls))
 tB = sum(per_layer_B)
 print(
-    f"CLASS mlp_B total={tB * 1e3:.4f} ms "
-    f"per_layer_ms={[f'{w * 1e3:.4f}' for w in per_layer_B]}",
+    f"CLASS mlp_B total={tB * 1e3:.4f} ms per_layer_ms={[f'{w * 1e3:.4f}' for w in per_layer_B]}",
     flush=True,
 )
 
@@ -256,7 +271,7 @@ tC2 = time_class(lambda ly, x: mlp_layer_c(ly, x), "mlp_C2")
 print("=== context: qmv_gdn + gdn_fused ===", flush=True)
 pause("ctx")
 gdn_walls = []
-for i, ly in enumerate(layers):
+for ly in layers:
     xb, xa = get_hidden()
     for _ in range(2):
         qmv_gdn_layer(ly, xb, xa)
@@ -270,21 +285,21 @@ tG = sum(gdn_walls)
 print(f"CLASS qmv_gdn total={tG * 1e3:.4f} ms", flush=True)
 
 gf_walls = []
-for i, ly in enumerate(layers):
-    xa, x = get_hidden()
+for ly in layers:
+    xa, _ = get_hidden()
     for _ in range(2):
-        gdn_fused_layer(ly, xa, x)
+        gdn_fused_layer(ly, xa)
     ws = []
     for _ in range(5):
         t0 = time.perf_counter()
-        gdn_fused_layer(ly, xa, x)
+        gdn_fused_layer(ly, xa)
         ws.append(time.perf_counter() - t0)
     gf_walls.append(median(ws))
 print(f"CLASS gdn_fused_full total={sum(gf_walls) * 1e3:.4f} ms", flush=True)
 
 # pure fused tape: precompute qkv/b/a/z/conv inputs, time only the tape
 tape_walls = []
-for i, ly in enumerate(layers):
+for ly in layers:
     x = mx.random.normal((3, 4096))
     mx.eval(x)
     g = ly.gated_delta_net
@@ -298,15 +313,11 @@ for i, ly in enumerate(layers):
     c = mx.take(c, 3)
     hs = g.gated_deltanet.state
     for _ in range(2):
-        mx.fast.gdn_fused_step_tape(
-            q, k, v, b, a, z, c, hs, g.conv1d.weight, g.conv1d.bias, 3
-        )
+        mx.fast.gdn_fused_step_tape(q, k, v, b, a, z, c, hs, g.conv1d.weight, g.conv1d.bias, 3)
     ws = []
     for _ in range(5):
         t0 = time.perf_counter()
-        mx.fast.gdn_fused_step_tape(
-            q, k, v, b, a, z, c, hs, g.conv1d.weight, g.conv1d.bias, 3
-        )
+        mx.fast.gdn_fused_step_tape(q, k, v, b, a, z, c, hs, g.conv1d.weight, g.conv1d.bias, 3)
         ws.append(time.perf_counter() - t0)
     tape_walls.append(median(ws))
 print(

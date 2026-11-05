@@ -16,9 +16,10 @@ what variants remain open, and the concrete path to the 15.7 ms/step budget.
 
 Microbench: one H2D init of a 6 GiB f32 buffer, then `mx.sum` over the whole
 buffer per iteration (pure read), median of 20 iters (5 warm); a read+write
-copy arm for reference. Idle 2200 MHz at 25 s pre-sample; boost-to-load
-readings up to 3309 MHz (the GPU is not hard-locked in this userland - the
-same-session 25 s idle protocol is the clock control, as in the fold run).
+copy arm for reference. Clock control as in the fold run: 25 s idle before
+the run, SCLK sampled every 10 s (fold reference: idle 2200 MHz, boost-to-
+load up to 3309 MHz; the GPU is not hard-locked in this userland - this
+session's SCLK record is appended to the box log).
 
 | Arm | GB/s |
 |---|---|
@@ -44,7 +45,8 @@ at 82.7% / 451.6 GB/s in the same session):
 - **C** stock 4-bit mr3 pointed at one shared 80 MB weight set (layer 0's
   buffers, warm pass first) - isolates weight HBM traffic: if 80 MB fits the
   cache, C strips HBM weight latency from the measurement; if it does not
-  (arch-tuning L2 = 8 MB), C ~ A and the isolation is inconclusive (noted)
+  (L2 size per the session's rocminfo re-dump, _FILL_), C ~ A and the
+  isolation is inconclusive (noted)
 - **C2** stock weights, constant scale/bias (isolates the per-group
   scale-gather ALU+traffic from the per-weight dequant)
 
@@ -78,22 +80,24 @@ Kernel resources, dumped from the COR wheel's embedded code object
 
 Occupancy arithmetic (gfx1201: 32 CU, 2048 threads/CU, 64 KB LDS/CU; the
 NOTES-int2vgpr empirical VGPR boundary - 2 blocks of 1024 threads fit at
-<= 64-96 VGPR/lane, i.e. ~131072 VGPR/CU for 64-lane-worth budget - applied
-here to wave32: 131072 / (R x 32) waves):
+<= 64-96 VGPR/lane - bounds the per-CU VGPR file to
+[64, 96] x 2048 = [131072, 196608]; applied to wave32: a wave at R VGPR
+per lane consumes R x 32, so waves/CU = floor(F / (R x 32))):
 
-- TMAX=3 (212 VGPR/lane): 131072/(212x32) = 19.5 -> 19 waves = 608 threads ->
-  **2 blocks (512 threads) fit** the resource files (16 waves x 212 x 32 =
-  108,544 <= 131,072; 3 blocks = 24 waves = 162,816 > 131,072, no).
-  LDS 65536/2464 = 26 blocks - not binding. SGPR not binding.
+- TMAX=3 (212 VGPR/lane, 6784 per wave): F = 131072 -> 19 waves = 608
+  threads; F = 196608 -> 29 waves = 928 threads. So **2 blocks (512 threads,
+  16 waves = 108,544) fit at the low end; 3 blocks (24 waves = 162,816) fit
+  only at the high end**. LDS 65536/2464 = 26 blocks - not binding. SGPR
+  not binding.
 - The grid is **32 blocks** (num_v_heads) on **32 CUs** -> exactly 1 block per
-  CU. Achieved occupancy = 256/2048 = **12.5% - the claim is true, but the
-  binding constraint is the grid (32 blocks / 32 CUs), not the resource files
-  (which admit 2 blocks/CU)**.
+  CU either way. Achieved occupancy = 256/2048 = **12.5% - the claim is
+  true, and the binding constraint is the grid (32 blocks / 32 CUs), not the
+  resource files (which admit 2-3 blocks/CU across the F range)**.
 - "2 blocks per CU" is therefore only reachable by doubling the grid: 64
   blocks with half the per-block row work (the t2042 architecture: 64 blocks
   x 128 threads, h[32] per thread instead of h[64]). Per-block VGPR would
-  drop ~212 -> ~116 (h/qq/kk 64->32 elements), 131072/(116x32) = 35 waves >=
-  16 needed for 512 threads/CU - it fits.
+  drop ~212 -> ~116 (h/qq/kk 64->32 elements): 116 x 32 = 3712 per wave;
+  16 waves (512 threads) = 59,392 <= 131072 - fits across the whole F range.
 - ms at 2 blocks/CU: the per-block serial chain (T rows x {3 rms_norm passes
   with 3 syncthreads each, 64-float h update, 2 shfl_xor reductions}) halves
   with the row split, so the tape wall -> ~half of the measured tape-only
@@ -120,11 +124,11 @@ stages 512 floats of x into LDS (2048 B, 2 iterations of 256 threads),
 (host model); `grid_y = min(n_tiles, num_cus x blocks_per_cu)` =
 min(N/8, 256). For N = 8192: **grid_y = 256, not 512** - the in-lane report's
 "512 blocks" assumes 16 blocks/CU (4096 threads), which the 2048-thread
-hardware limit forbids. The actual resident count is further VGPR-capped:
-94 VGPR/lane (4-bit GS64 variant, 89-94 across group sizes) ->
-131072/(94x32) = 43.5 -> 43 waves = 1376 threads -> **5 resident blocks/CU**
-(8 blocks = 64 waves = 191,488 VGPR > 131,072). So at most **160 blocks
-resident** of the 256 launched; the rest wait in the queue.
+hardware limit forbids. The actual resident count is further VGPR-capped
+across the F range (94 VGPR/lane, 3008 per wave): F = 131072 -> 43 waves =
+1376 threads = **5 blocks/CU (160 resident)**; F = 196608 -> thread-capped at
+32 waves = 2048 threads = **8 blocks/CU (256 resident)**. So 160-256 blocks
+resident of the 256 launched; the rest (if any) wait in the queue.
 
 ### 4.3 In-flight, corrected
 
@@ -132,12 +136,12 @@ resident** of the 256 launched; the rest wait in the queue.
   is 256, not 512; (b) it counts one warp's 256 B per block when a block has
   8 warps (2048 B per k-tile); (c) only resident blocks contribute to
   in-flight (160, not the full grid).
-- Corrected in-flight potential: 160 resident blocks x 2048 B = **327 KB**
-  (512 KB if all 256 launched blocks were resident). Both are >= the 273 KB
-  requirement (546 GB/s x 500 ns HBM latency).
+- Corrected in-flight potential: 160-256 resident blocks x 2048 B =
+  **327-512 KB**. Both ends are >= the 273 KB requirement (546 GB/s x 500 ns
+  HBM latency).
 - Measured 203 GB/s (0.9095 GB / 4.59 ms) => effective in-flight =
-  203 GB/s x 500 ns = **101 KB = 31% of the 327 KB potential, 37% of the
-  273 KB requirement**.
+  203 GB/s x 500 ns = **101 KB = 20-31% of the 327-512 KB potential, 37% of
+  the 273 KB requirement**.
 - Q2 (double-buffer, 2x per-block in-flight, same block count) = -0.9% wash -
   consistent with per-k-tile in-flight already exceeding the requirement and
   the per-k-tile **serial chain** (LDS staging + 2 x `__syncthreads` per 512
@@ -168,10 +172,11 @@ The binding constraint is the per-k-tile bubble (staging + 2 sync per 512
 K-values). Two shapes remove it without changing the per-weight ALU:
 
 - **Chunked x-staging (4x)**: stage 2048 floats (8 KB LDS) per 4 k-tiles, one
-  `__syncthreads` pair per 4. Bubble per weight / 4. LDS: 5 resident
-  blocks/CU x 8 KB = 40 KB <= 64 KB - fits. Predicted duty ~500/(500+~100) =
-  83% -> ~450 GB/s -> class 0.9095 GB / 450 GB/s ~ **2.0 ms** (bracket
-  1.67-2.1; falsifier: > 2.6 ms).
+  `__syncthreads` pair per 4. Bubble per weight / 4. LDS: 8 blocks/CU x 8 KB
+  = 64 KB (exactly the LDS budget at the high end of the F range; 5 blocks:
+  40 KB) - fits, zero margin at 8. Predicted duty ~500/(500+~100) = 83% ->
+  ~450 GB/s -> class 0.9095 GB / 450 GB/s ~ **2.0 ms** (bracket 1.67-2.1;
+  falsifier: > 2.6 ms).
 - **Direct x from L2**: drop the staging; each lane reads its 16 bf16 x-values
   (32 B, x row = 8 KB, L2-hot - read by 1024 column warps) with no sync at
   all. Same predicted bracket; more load instructions, zero sync.
@@ -222,42 +227,65 @@ the ~halved-tape ceiling.
 
 ### 4.3 audit finding (double count)
 
-The gdn_fused class wall **includes the four in_proj GEMMs** (qkv 25.2 MB,
-z 8.4 MB, b/a small - 50 MB/layer x 24 = 1.2 GB at 323 GB/s ~ 3.7 ms) while
-its byte accounting (state/z/b/a/conv/norm ~102 MB) excludes them; qmv_gdn
-counts the same GEMMs once. The per-class table therefore double-counts
-~3.7-4.3 ms across the two classes; the 21.16 ms fused verify total is the
-ground truth, and the tape-only measurement (section 2 context) splits the
-4.33 into GEMM (~3.7) vs tape (~0.6) components.
+The gdn_fused class wall (4.33 ms) **includes the four in_proj GEMMs**
+(qkv / z / b / a - a strict subset of the qmv_gdn class's 5 GEMMs; the fold
+per-class sum 21.78 ms exceeds the fused verify total 21.16 ms by 0.62 ms,
+the double-counted overlap), while its byte accounting (state/z/b/a/conv/norm
+~102 MB, 4.4% of floor) excludes them and qmv_gdn counts them. The exact
+GEMM-vs-tape split is resolved by this session's three measurements (qmv_gdn
+class, gdn_fused full layer, tape-only - section 2 context); the per-class
+table must be read with the fused total as ground truth, not the class sum.
 
 ## 6. Ceiling table (per 4-bit class, COR session 21.16 ms verify)
 
 | Class | current ms | bound (verified) | ceiling ms | lever | open variant |
 |---|---|---|---|---|---|
 | mlp (24x3 QMM) | 8.41 | _FILL: arm verdict_ | _FILL_ | _FILL_ | _FILL_ |
-| qmv_gdn (24x5 QMM) | 4.59 | per-k-tile bubble chain (4.3: 101 KB effective vs 273 KB requirement; Q2 wash) | ~2.0 (4.5) | chunked 4x x-staging / direct-L2 x | K-split (predicted wash, falsifier 4.0 ms) |
+| qmv_gdn (24x5 QMM) | 4.59 | per-k-tile bubble chain (modeled from 4.2-4.3: 101 KB effective vs 273 KB requirement; Q2 wash consistent) | ~2.0 (4.5) | chunked 4x x-staging / direct-L2 x | K-split (predicted wash, falsifier 4.0 ms) |
 | gdn_fused tape | 4.33 (full layer; ~_FILL_ tape-only) | 32-block grid / 32 CU (resource files admit 2 blocks/CU; 12.5% achieved) | ~_FILL/2_ (t2042 64x128) | grid 64 x 128 threads, h[32] | t2042 build (falsifier: > 0.75x tape wall) |
 | attn (8x) | 1.70 | S4VA + 4 QMM (unmodified) | ~1.4 (QMM part) | shares the qmv_gdn lever | inherits qmv_gdn open variants |
 | norms | 1.47 | elementwise (0.1% of floor - not BW) | ~1.4 | launch/overhead | out of this lane's scope |
 | lm_head | 1.27 | 82.3% of floor - near BW-bound | ~1.25 | (staged MR, N=248320) | none open |
-| **verify total** | **21.16** | | **~11.5-12** | | |
+| **verify total** | **21.16** (class sum 21.78 - 0.62 double count) | | **~14.5-15.5** (class-lever ceiling; the fold ladder's 8.0 ms target is BELOW the class minimums - see 7) | | |
 | draft+schedule | 10.43 | draft 2.6 (3.6 GiB trunk re-read per draft token - ESTIMATE) + scheduling/launch overhead 7.8 | ~6.5-7 (ESTIMATE: overhead cut to ~4) | graph-capture/launch batching (mtp-graph-capture-probe line) | _ESTIMATE_ |
 
 ## 7. The 15.7 ms/step budget path
 
 Target: 140 t/s at tok/step 2.193 = 15.66 ms/step. Current 31.59 ms/step =
-21.16 (verify) + 10.43 (draft+schedule). Must remove **15.93 ms**:
+21.16 (verify) + 10.43 (draft+schedule). Must remove **15.93 ms**.
 
-1. **verify 21.16 -> ~12 (remove ~9.2)**: mlp 8.41 -> _FILL_ (section 2
-   lever), qmv_gdn 4.59 -> ~2.0 (section 4.5), gdn_fused tape 4.33 ->
-   _FILL/2_ (t2042), attn/norms/head ~flat at ~4.4.
+Class-ceiling arithmetic (the no-dequant 16-bit reference is lm_head at
+82.3-82.7% of floor in both in-lane sessions; a 4-bit class cannot exceed
+it without a storage-format change):
+
+| class | now | ceiling (lever) | removed |
+|---|---|---|---|
+| mlp 8.41 (59.2%) | | 6.0-6.6 (75-83% of floor, section 2 verdict) | 1.8-2.4 |
+| qmv_gdn 4.59 (36.3%) | | 2.0 (chunked x-staging / direct-L2, 4.5) | 2.6 |
+| gdn_unique 3.72 (21.16 - the five other classes) | | ~3.0 (tape halved by t2042, section 3; conv/other flat) | ~0.7 |
+| attn 1.70 (29.8%) | | 1.4 (shares the qmv lever) | 0.3 |
+| norms 1.47 + lm_head 1.27 | | flat (head is at 82.3% already) | 0 |
+| **verify** | **21.16** | **~14.5-15.5** | **~5.7-6.7** |
+
+1. **verify 21.16 -> ~14.5-15.5 (remove ~5.7-6.7)** - the full lever set of
+   this report. The fold ladder's 8.0 ms verify target is unreachable: the
+   mlp class alone has a 6.0 ms floor at the 82% no-dequant reference, and
+   the five-class minimum sum is ~13.5-14.5.
 2. **draft+schedule 10.43 -> ~6.5-7 (remove ~3.5-4)**: ESTIMATE - the draft
    2.6 ms (3.6 GiB trunk re-read) is near-fixed; the cut is
    scheduling/launch overhead (7.8 -> ~4) via the graph-capture line.
-3. Total: ~18.5-19 ms/step -> ~115-119 t/s at the 12 ms verify; the last
-   ~2.5 ms to 15.66 needs the mlp lever to hit its floor (section 2) or the
-   draft re-read to shrink - both tracked, both beyond this report's
-   verification (marked ESTIMATE in the table).
+3. **Ceiling of this stack: ~21-22.5 ms/step -> ~98-105 t/s** (at tok/step
+   2.193); with the graph-capture overhead cut, ~18.5-19.5 ms -> ~112-118 t/s.
+4. **The 140 t/s target (15.66 ms) is unreachable from the current levers.**
+   The remaining gap (>= 5.5 ms even in the best case) requires a storage-
+   format change (pre-dequantized / pre-scaled packed weights: mlp and
+   qmv_gdn at the ~82% reference would cut ~2.5-3.0 ms more, verify ->
+   ~12-12.5) plus the draft re-read shrinking - that is a new class of
+   work (a different quantization layout, not a kernel variant), marked
+   ESTIMATE here, beyond this report's verification.
+5. t2003-ladder note: its 118.7 t/s extrapolation at verify 8 ms sits on an
+   unreachable verify; the honest ceiling of the current stack is the
+   ~98-118 t/s band above.
 
 ## Check lines
 

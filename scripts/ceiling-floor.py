@@ -58,7 +58,7 @@ for _ in range(ITERS):
 rg = NBYTES / median(reads) / 1e9
 cg = 2 * NBYTES / median(cops) / 1e9
 print(
-    f"READ_GBPS={rg:.1f} READ_ALL={[f'{b / 1e9 / t:.1f}' for b, t in zip([NBYTES] * ITERS, reads)]}",
+    f"READ_GBPS={rg:.1f} READ_ALL={[f'{b / 1e9 / t:.1f}' for b, t in zip([NBYTES] * ITERS, reads, strict=False)]}",
     flush=True,
 )
 print(f"COPY_GBPS={cg:.1f} (read+write, 2x bytes)", flush=True)
