@@ -214,7 +214,9 @@ def main():
     tape_mode = "0"
     if mode in ("3", "4"):
         # T1917: the mode-3 (S=3, K=2) tape arm mirrors the mode-4 tape setup; MLX_ROCM_GDN_T3=1 enables the TMAX=3 instantiation (new wheel; the unpatched wheel's T=3 is rejected in use_fallback = clean error, no OOB).
-        tape_mode = os.environ.get("MTP6_TAPE", "1")
+        # fold t20xx: default flipped 1 -> hybrid (config-of-record; the pure-tape
+        # protocol is degenerate on every prompt tested - see REPORT-ngram-s3-remed.md).
+        tape_mode = os.environ.get("MTP6_TAPE", "hybrid")
         assert tape_mode in ("0", "1", "hybrid", "r5"), tape_mode
         if tape_mode in ("1", "hybrid", "r5"):
             os.environ["MLX_ROCM_GDN_TAPE"] = "1"
