@@ -54,12 +54,12 @@ for round in 1 2 3; do
     if [ $s = C ]; then
       anchor "canon-C_r$round" "$CANON" ""
     else
-      anchor "canon-$VNAME_r$round" "$CANON" "$VENV_EXTRA"
+      anchor "canon-${VNAME}_r${round}" "$CANON" "$VENV_EXTRA"
     fi
     if [ $s = C ]; then
       anchor "hello-C_r$round" "$HELLO" ""
     else
-      anchor "hello-$VNAME_r$round" "$HELLO" "$VENV_EXTRA"
+      anchor "hello-${VNAME}_r${round}" "$HELLO" "$VENV_EXTRA"
     fi
   done
 done

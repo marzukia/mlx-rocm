@@ -69,7 +69,12 @@ __global__ void __launch_bounds__(512) qmv_wide_mr3_v1_kernel(
   // LDS: 16 warp slabs of 1024 T values (32 lanes x WPER), one row at a
   // time. Launched with 16 * 1024 * sizeof(T) bytes (32 KB bf16/half,
   // 64 KB f32; the dispatch gate caps it at 65536).
-  extern __shared__ T xs[];
+  // Dynamic shared memory as a byte buffer (extern __shared__ is a
+  // single symbol per module and cannot be redeclared with a different
+  // type across kernels/instantiations - the stock mr kernel's sx_bytes
+  // idiom and qmv_lx's smem already own those names).
+  extern __shared__ uint8_t m3v1_lsmem[];
+  T* xs = reinterpret_cast<T*>(m3v1_lsmem);
   int lane = threadIdx.x;
   int col = blockIdx.x * MCOLS + threadIdx.y;
   int m0 = blockIdx.y * MAXM;
@@ -352,8 +357,19 @@ __global__ void __launch_bounds__(512) qmv_wide_mr3_v3_kernel(
     wv.y = pw[1];
     wv.z = pw[2];
     wv.w = pw[3];
-    uint32_t wv1x = pw[4], wv1y = pw[5], wv1z = pw[6], wv1w = pw[7];  // half 1 (accessed, elision-proofed, unused)
-    asm volatile("" : "+r"(wv1x), "+r"(wv1y), "+r"(wv1z), "+r"(wv1w));
+    // The 32B window [offset, offset+32) overruns the row end (and the
+    // buffer) by up to 16B when k + 64 > K (the stock 16B load fits
+    // exactly at the last tile: (K-32)/2 + 16 = K/2). Clamp the second
+    // half to in-row windows only (values k+32..k+63 are never used in
+    // the math - bit-identity - the clamp changes access pattern only).
+    bool full32 = (k + 64) <= K;
+    uint32_t wv1x = 0, wv1y = 0, wv1z = 0, wv1w = 0;
+    if (full32) {
+      wv1x = pw[4], wv1y = pw[5], wv1z = pw[6], wv1w = pw[7];  // half 1 (accessed, elision-proofed, unused)
+    }
+    // Input-only (read-write "r" constraints are unlowerable in AMDGPU
+    // codegen: "illegal VGPR to SGPR copy").
+    asm volatile("" : : "r"(wv1x), "r"(wv1y), "r"(wv1z), "r"(wv1w));
     const uint32_t* wp = reinterpret_cast<const uint32_t*>(&wv);
     // Stock shared-dequant: the weight tile is dequantized ONCE per
     // k-tile and MACed against all rows (FMA:dequant = M:1).

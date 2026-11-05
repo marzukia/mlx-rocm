@@ -688,6 +688,7 @@ vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_kernel.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_lx_kernel.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_rows_msg_kernel.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_tiled_kernel.hip
+vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_wide_mr3_gen2_kernel.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_wide_mr3_kernel.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/qmv_wide_mr_kernel.hip
 vendor/mlx-rocm-upstream/mlx/backend/rocm/quantized/quantized.cpp
