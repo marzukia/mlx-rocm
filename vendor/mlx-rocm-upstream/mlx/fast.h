@@ -92,6 +92,84 @@ MLX_API std::vector<array> gated_delta_update(
     const std::optional<array>& mask = std::nullopt,
     StreamOrDevice s = {});
 
+MLX_API std::vector<array> gdn_fused_step(
+    const array& q_raw,
+    const array& k_raw,
+    const array& v_raw,
+    const array& b,
+    const array& a,
+    const array& A_log,
+    const array& dt_bias,
+    const array& conv_state,
+    const array& conv_weight,
+    const array& z,
+    const array& state,
+    const array& norm_weight,
+    float inv_scale,
+    float prep_eps,
+    float norm_eps,
+    StreamOrDevice s = {});
+
+MLX_API std::vector<array> gdn_fused_step_tape(
+    const array& q_raw,
+    const array& k_raw,
+    const array& v_raw,
+    const array& b,
+    const array& a,
+    const array& A_log,
+    const array& dt_bias,
+    const array& conv_state,
+    const array& conv_weight,
+    const array& z,
+    const array& state,
+    const array& norm_weight,
+    float inv_scale,
+    float prep_eps,
+    float norm_eps,
+    StreamOrDevice s = {});
+
+
+// lm_head_int2: int2 g128-asymmetric dequant GEMV (M=1) + in-kernel per-64-column top-8 candidate emission (backend/rocm/lm_head_int2.hip). x [1, K] bf16, wq [N, K/4] u8 (quarter-split 2-bit planes), scale [N, NG] f32 = s, zs [N, NG] f32 = z*s, sx [NG] f32 = sum of x per 128-group. Returns {logits [N] f32, cand_val [N/64, 8] f32, cand_col [N/64, 8] i32}.
+MLX_API std::vector<array> lm_head_int2(
+    const array& x,
+    const array& wq,
+    const array& scale,
+    const array& zs,
+    const array& sx,
+    StreamOrDevice s = {});
+
+// lm_head_int2_wide: vectorized (wave-wide) int2 g128-asymmetric dequant GEMV (M=1) - the R4c scalar port's vectorized follow-up (backend/rocm/lm_head_int2w.hip). Same op surface as lm_head_int2; outputs are {logits [N] f32, cand_val [N/32, 8] f32, cand_col [N/32, 8] i32} (per-32-column top-8 candidate emission, refining the scalar's per-64), shape guards N%32==0 + K%512==0 (N=248320, K=4096 both exact).
+MLX_API std::vector<array> lm_head_int2_wide(
+    const array& x,
+    const array& wq,
+    const array& scale,
+    const array& zs,
+    const array& sx,
+    StreamOrDevice s = {});
+
+
+MLX_API std::vector<array> gdn_prep(
+    const array& q_raw,
+    const array& k_raw,
+    const array& v_raw,
+    const array& b,
+    const array& a,
+    const array& A_log,
+    const array& dt_bias,
+    const array& conv_state,
+    const array& conv_weight,
+    float inv_scale,
+    float eps,
+    StreamOrDevice s = {});
+
+MLX_API std::vector<array> gdn_norm_gated(
+    const array& out,
+    const array& z,
+    const array& weight,
+    float eps,
+    StreamOrDevice s = {});
+
+
 using TemplateArg = std::variant<int, bool, Dtype>;
 using ScalarArg = std::variant<bool, int, float>;
 

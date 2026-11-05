@@ -28,14 +28,16 @@ def test_env_gate_is_the_only_switch():
     assert 'getenv("MLX_ROCM_GDN_FALLBACK")' in t
     # Default path: env unset -> use_fallback true -> 4-op chain.
     assert "e == nullptr || e[0] != '1'" in t
-    # T in (1, 2, 4) is the fused range (the only TMAX instantiations); T=3 (S=3, K=2 spec-decode) and T>4 are rejected.
-    # Launcher maps tmax 1 -> <1>, 2 -> <2>, else -> <4>; T=3 falls through to the TMAX=4 kernel = OOB (3-row buffer).
-    # T=3 is unreachable: use_fallback rejects it (degrade to the clear error; default chain via MLX_ROCM_GDN_FUSE=0).
-    assert "if (B != 1 || (T != 1 && T != 2 && T != 4)) {" in t
+    # T in {1, 2, 4} is the always-fused range; T=3 (S=3, K=2 spec-decode) is admitted only under MLX_ROCM_GDN_T3=1 (the TMAX=3 instantiation is new codegen, default OFF -> T=3 degrades to the clear error, no OOB fall-through to the TMAX=4 kernel); T>4 is rejected.
+    assert 'getenv("MLX_ROCM_GDN_T3")' in t
+    assert "if (B != 1 || T > 4) {" in t
+    assert "if (T == 3) {" in t
     # The eval_gpu comment stays consistent with the admission gate.
-    assert "T is 1, 2 or 4" in t
-    # No T=3 instantiation exists for the fallthrough to reach.
-    assert "launch_gdn_fused_step<3>" not in _src()
+    assert "T is 1, 2, 3 or 4" in t
+    # The T=3 instantiation exists and is dispatched before the TMAX=4 fall-through (the tmax == 3 branch precedes the final <4>).
+    src = _src()
+    assert "launch_gdn_fused_step<3>" in src
+    assert src.index("(tmax == 3)") < src.index("launch_gdn_fused_step<4>")
 
 
 def test_conv_phase_reuses_the_4tap_sequential_sum():
@@ -63,8 +65,8 @@ def test_conv_phase_reuses_the_4tap_sequential_sum():
     assert "for (int t = 0; t < TMAX; ++t)" in src
     assert "launch_gdn_fused_step<1>" in src
     assert "launch_gdn_fused_step<2>" in src
+    assert "launch_gdn_fused_step<3>" in src
     assert "launch_gdn_fused_step<4>" in src
-    assert "launch_gdn_fused_step<3>" not in src
     # s_beta/s_g shared buffers are sized for the T=4 row count.
     assert "__shared__ T s_beta[4];" in src
     assert "__shared__ float s_g[4];" in src
