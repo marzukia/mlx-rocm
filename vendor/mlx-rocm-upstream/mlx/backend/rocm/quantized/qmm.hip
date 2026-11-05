@@ -22,7 +22,7 @@ __device__ inline float load_scale_value(ScaleT raw);
 #include "mlx/backend/rocm/quantized/qmv_rows_msg_kernel.hip"
 #include "mlx/backend/rocm/quantized/qmv_wide_mr3_kernel.hip"
 #include "mlx/backend/rocm/quantized/qmv_wide_mr3_gen2_kernel.hip"
-#include "mlx/backend/rocm/quantized/qmv_wide_qgd_gen2_kernel.hip"
+#include "mlx/backend/rocm/quantized/qmv_tiled_qgd_gen2_kernel.hip"
 #include "mlx/primitives.h"
 
 #include <hip/hip_bfloat16.h>
@@ -4332,74 +4332,6 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 #undef LAUNCH_QMV_WIDE_MR3
           return;
         }
-        // qgd-gen2 probe: next-generation per-row (M = 1) variants of the
-        // stock qmv_wide per-row kernel (the qmv_gdn class - GDN 4 in-proj
-        // + out_proj QMMs, M = 1). All DEFAULT OFF - with all four envs
-        // unset the stock per-row path runs verbatim (falls through to the
-        // qmv_wide launch below).
-        static bool qgdv1 = (std::getenv("MLX_ROCM_QGD_V1") != nullptr);
-        static bool qgdv2 = (std::getenv("MLX_ROCM_QGD_V2") != nullptr);
-        static bool qgdv3 = (std::getenv("MLX_ROCM_QGD_V3") != nullptr);
-        static bool qgdv4 = (std::getenv("MLX_ROCM_QGD_V4") != nullptr);
-        const bool qgdok = (bits_ == 4) && (M == 1);
-        if (qgdok) {
-          dim3 qgdblock(32, wcols);
-          dim3 qgdgrid((N + wcols - 1) / wcols, 1);
-          const size_t qgdv1_lds = 1024u * tbytes;  // 1024 x-values per k-tile
-          const bool qgdv1ok = qgdv1 && (qgdv1_lds <= 65536);
-          if (qgdv1ok) {
-#define LAUNCH_QMV_WIDE_QGD_V1(TT, ST, GS)                        \
-  enc.add_kernel_node(                                          \
-      &rocm::qmv_wide_qgd_v1_kernel<TT, ST, GS>, qgdgrid, qgdblock, \
-      (uint32_t)qgdv1_lds, (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr, \
-      (const ST*)biases_ptr, (TT*)out_ptr, M, N, K, has_bias)
-#define LAUNCH_QMV_WIDE_QGD_V1_GS(TT, ST)                        \
-  do {                                                            \
-    if (group_size_ == 32) { LAUNCH_QMV_WIDE_QGD_V1(TT, ST, 32); }   \
-    else if (group_size_ == 64) { LAUNCH_QMV_WIDE_QGD_V1(TT, ST, 64); } \
-    else { LAUNCH_QMV_WIDE_QGD_V1(TT, ST, 128); }              \
-  } while (0)
-            if (x.dtype() == bfloat16) {
-              LAUNCH_QMV_WIDE_QGD_V1_GS(hip_bfloat16, hip_bfloat16);
-            } else if (x.dtype() == float32) {
-              LAUNCH_QMV_WIDE_QGD_V1_GS(float, float);
-            } else {
-              LAUNCH_QMV_WIDE_QGD_V1_GS(__half, __half);
-            }
-#undef LAUNCH_QMV_WIDE_QGD_V1_GS
-#undef LAUNCH_QMV_WIDE_QGD_V1
-            return;
-          }
-          if (qgdv2 || qgdv3 || qgdv4) {
-#define LAUNCH_QMV_WIDE_QGD_GEN2(KNAME, TT, ST, GS)               \
-  enc.add_kernel_node(                                            \
-      &rocm::KNAME<TT, ST, GS>, qgdgrid, qgdblock, 0u,         \
-      (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr,           \
-      (const ST*)biases_ptr, (TT*)out_ptr, M, N, K, has_bias)
-#define LAUNCH_QMV_WIDE_QGD_GEN2_GS(KNAME, TT, ST)               \
-  do {                                                            \
-    if (group_size_ == 32) { LAUNCH_QMV_WIDE_QGD_GEN2(KNAME, TT, ST, 32); } \
-    else if (group_size_ == 64) { LAUNCH_QMV_WIDE_QGD_GEN2(KNAME, TT, ST, 64); } \
-    else { LAUNCH_QMV_WIDE_QGD_GEN2(KNAME, TT, ST, 128); }     \
-  } while (0)
-            if (qgdv2) {
-              if (x.dtype() == bfloat16) { LAUNCH_QMV_WIDE_QGD_GEN2_GS(qmv_wide_qgd_v2_kernel, hip_bfloat16, hip_bfloat16); }
-              else if (x.dtype() == float32) { LAUNCH_QMV_WIDE_QGD_GEN2_GS(qmv_wide_qgd_v2_kernel, float, float); }
-              else { LAUNCH_QMV_WIDE_QGD_GEN2_GS(qmv_wide_qgd_v2_kernel, __half, __half); }
-            } else if (qgdv3) {
-              if (x.dtype() == bfloat16) { LAUNCH_QMV_WIDE_QGD_GEN2_GS(qmv_wide_qgd_v3_kernel, hip_bfloat16, hip_bfloat16); }
-              else if (x.dtype() == float32) { LAUNCH_QMV_WIDE_QGD_GEN2_GS(qmv_wide_qgd_v3_kernel, float, float); }
-              else { LAUNCH_QMV_WIDE_QGD_GEN2_GS(qmv_wide_qgd_v3_kernel, __half, __half); }
-            } else {
-              if (x.dtype() == bfloat16) { LAUNCH_QMV_WIDE_QGD_GEN2_GS(qmv_wide_qgd_v4_kernel, hip_bfloat16, hip_bfloat16); }
-              else if (x.dtype() == float32) { LAUNCH_QMV_WIDE_QGD_GEN2_GS(qmv_wide_qgd_v4_kernel, float, float); }
-              else { LAUNCH_QMV_WIDE_QGD_GEN2_GS(qmv_wide_qgd_v4_kernel, __half, __half); }
-            }
-#undef LAUNCH_QMV_WIDE_QGD_GEN2_GS
-#undef LAUNCH_QMV_WIDE_QGD_GEN2
-            return;
-          }
-        }
         dim3 wblock(32, wcols);
         dim3 wgrid((N + wcols - 1) / wcols, M);
 #define LAUNCH_QMV_WIDE(TT, ST, GS, BV)                                      \
@@ -4539,6 +4471,56 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   if (use_tiled && tiled_bits_supported && tiled_x_dtype_ok && use_fast_qmv &&
       !can_use_batched_qmv && tile_n >= 4 &&
       mode_ == QuantizationMode::Affine) {
+    // qgd-gen2 probe: M = 1 variants of the stock tiled QMV kernel (the
+    // qmv_gdn class - GDN 4 in-proj + out_proj QMMs, no bias, M = 1). All
+    // DEFAULT OFF - with all four envs unset the stock tiled path below
+    // runs verbatim. 4-bit only (8-bit falls through to the stock tiled
+    // launch); x dtype bf16/f16 (gated above). V1 is the no-op control arm
+    // (the V1 x-staging change is already the stock tiled design).
+    static bool qgdv1 = (std::getenv("MLX_ROCM_QGD_V1") != nullptr);
+    static bool qgdv2 = (std::getenv("MLX_ROCM_QGD_V2") != nullptr);
+    static bool qgdv3 = (std::getenv("MLX_ROCM_QGD_V3") != nullptr);
+    static bool qgdv4 = (std::getenv("MLX_ROCM_QGD_V4") != nullptr);
+    const bool qgdok = (bits_ == 4) && (M == 1);
+    if (qgdok && (qgdv1 || qgdv2 || qgdv3 || qgdv4)) {
+      dim3 qgdblock(host_warp, tile_n);
+      const int qgd_n_tiles = (N + tile_n - 1) / tile_n;
+      int qgd_blocks_per_cu = (hw_info.max_threads_per_cu > 0)
+          ? (hw_info.max_threads_per_cu / (tile_n * host_warp)) : 4;
+      if (qgd_blocks_per_cu < 1) qgd_blocks_per_cu = 1;
+      int qgd_persistent_y =
+          (hw_info.num_cus > 0) ? hw_info.num_cus * qgd_blocks_per_cu : qgd_n_tiles;
+      int qgd_grid_y = (qgd_n_tiles < qgd_persistent_y) ? qgd_n_tiles : qgd_persistent_y;
+      if (qgd_grid_y < 1) qgd_grid_y = 1;
+      dim3 qgdgrid(M, qgd_grid_y);
+#define LAUNCH_QMV_TILED_QGD(KNAME, TT, ST, GS)                              \
+  enc.add_kernel_node(                                                     \
+      &rocm::KNAME<TT, ST, GS>, qgdgrid, qgdblock, 0u,                  \
+      (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr, (const ST*)biases_ptr, \
+      (TT*)out_ptr, M, N, K, has_bias, tile_n, qgd_n_tiles)
+#define LAUNCH_QMV_TILED_QGD_GS(KNAME, TT, ST)                              \
+  do {                                                                       \
+    if (group_size_ == 32) { LAUNCH_QMV_TILED_QGD(KNAME, TT, ST, 32); }       \
+    else if (group_size_ == 64) { LAUNCH_QMV_TILED_QGD(KNAME, TT, ST, 64); }  \
+    else { LAUNCH_QMV_TILED_QGD(KNAME, TT, ST, 128); }                   \
+  } while (0)
+      if (qgdv1) {
+        if (x.dtype() == bfloat16) { LAUNCH_QMV_TILED_QGD_GS(qmv_tiled_qgd_v1_kernel, hip_bfloat16, hip_bfloat16); }
+        else { LAUNCH_QMV_TILED_QGD_GS(qmv_tiled_qgd_v1_kernel, __half, __half); }
+      } else if (qgdv2) {
+        if (x.dtype() == bfloat16) { LAUNCH_QMV_TILED_QGD_GS(qmv_tiled_qgd_v2_kernel, hip_bfloat16, hip_bfloat16); }
+        else { LAUNCH_QMV_TILED_QGD_GS(qmv_tiled_qgd_v2_kernel, __half, __half); }
+      } else if (qgdv3) {
+        if (x.dtype() == bfloat16) { LAUNCH_QMV_TILED_QGD_GS(qmv_tiled_qgd_v3_kernel, hip_bfloat16, hip_bfloat16); }
+        else { LAUNCH_QMV_TILED_QGD_GS(qmv_tiled_qgd_v3_kernel, __half, __half); }
+      } else {
+        if (x.dtype() == bfloat16) { LAUNCH_QMV_TILED_QGD_GS(qmv_tiled_qgd_v4_kernel, hip_bfloat16, hip_bfloat16); }
+        else { LAUNCH_QMV_TILED_QGD_GS(qmv_tiled_qgd_v4_kernel, __half, __half); }
+      }
+#undef LAUNCH_QMV_TILED_QGD_GS
+#undef LAUNCH_QMV_TILED_QGD
+      return;
+    }
     {
       dim3 tiled_block(host_warp, tile_n);
       const int n_tiles = (N + tile_n - 1) / tile_n;
