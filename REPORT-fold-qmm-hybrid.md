@@ -58,7 +58,7 @@ The step decomposes into the fused verify wall (21.16 ms) + draft/scheduling/nor
 
 ## Check lines (as-run, 2026-11-05)
 
-- **(a) persona-leak: 0 hits.** Grep of the fold diff (`99ca874..HEAD`) + the new commit subject/body for the standard persona-term list (marzuki-* hostnames, the 100.64.0.0/10 tailnet IPv4 range, the box-adjacent service-account identity, the box home path, the box LAN IPv4 range, the literal model-mount path, *.junkyard.sh), git author lines exempt per protocol: 0 hits.
+- **(a) persona-leak: 0 hits.** Grep of the fold diff (`99ca874..HEAD`) + the new commit subject/body for the standard persona-term list (fleet hostnames, the 100.64/10 tailnet IPv4 range, the box-adjacent service-account identity, the box home path, the box LAN IPv4 range, the literal model-mount path, the personal .sh domain suffix), git author lines exempt per protocol: 0 hits.
 - **(b) line-wrap: 0 hits** - `line_wrap_check.py` (copied from the 2025 scripts) over REPORT-fold-qmm-hybrid.md + the touched .md set (REPORT-consolidate.md): 0 hard-wrapped prose lines (one paragraph per line).
 - **(c) format: PASS** - `uv run ruff format --check .` -> "117 files already formatted" (rc 0); `uv run ruff check .` -> "All checks passed!" (rc 0) with the untracked line_wrap_check.py excluded from the tree (its docstring lines trip E501; the check tooling is run, not shipped).
 - **(d) hermetic tests: PASS** - `uv run pytest -m "not gpu"` -> 25 passed, 1 skipped (rc 0, the CI-exact set); size gate `uv run python scripts/size_ratchet.py --base HEAD` -> "SIZE GATE: OK".

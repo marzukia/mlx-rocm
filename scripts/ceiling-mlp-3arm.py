@@ -44,7 +44,8 @@ def pause(tag):
 
 
 print("CONFIG mlp-3arm", flush=True)
-model, tokenizer = mlxlm.load(os.environ["CEIL_MODEL"], adapter=None)
+# fix (t2059): this venv's mlx_lm.load has no `adapter` kwarg (adapter_path)
+model, tokenizer = mlxlm.load(os.environ["CEIL_MODEL"])
 hf_config = model.config
 assert hf_config.n_layers == 24
 assert hf_config.n_heads == 32

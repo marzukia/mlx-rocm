@@ -111,7 +111,7 @@ venv-canon libmlx b1de59fda0e4fc607d620e287deeaaf8 # untouched pre/post
 
 Persona gate: grep over the full branch diff + all commit messages (the run brief's pattern set: fleet-IP block, guest-identity prefixes, home/model mount paths, junkyard scripts, mrzk.io mail): **0 hits**.
 Line-wrap audit: hard-wrapped lines in the report and in the branch commit bodies: **0**.
-Authorship: author AND committer = `jimmyateworld <jimmy@ag.mrzk.io>` on every branch commit, **0 fallbacks**.
+Authorship: author AND committer = `jimmyateworld` (fleet identity mailbox) on every branch commit, **0 fallbacks**.
 
 **CI note:** on the head of this report both CI jobs (`lint-and-check`, `size`) pass. The failures seen on earlier heads were inherited base state (verified on a `72e33a9` worktree: 982 ruff errors in vendor-python and the same two NEW BLOAT test files, `test_array.py` 2472 / `test_ops.py` 3618 > 2400, not ratcheted); the R4b lane's branch rewrite (`09ddc98`, not a descendant of `72e33a9`) is the clean line. This diff adds no gate-relevant content.
 
