@@ -40,7 +40,7 @@ def quant_op(x, w):
 
 
 def to_float_list(y):
-    return y.astype(mx.float32).reshape(-1).to_list()
+    return y.astype(mx.float32).reshape(-1).tolist()
 
 
 def op_line(name, y, refs=None, include_vals=False):
@@ -75,14 +75,38 @@ def gen_ops(model_path):
         from mlx_lm import load
 
         model, _ = load(model_path)
+        # mlx_lm Qwen3: model.language_model.model.layers (diag-s62 pattern).
+        layers = None
+        for attr in ("model", ""):
+            sub = getattr(model.language_model, attr, None) if attr else model.language_model
+            if sub is not None and hasattr(sub, "layers"):
+                layers = sub.layers
+                break
+        if layers is None:
+            print("WARN: no .layers under language_model", file=sys.stderr)
+            return
+        layer = layers[0]
+        # mlx nn.Module is a mapping here (submodules are not in __dict__
+        # or dir()); walk with the .items() mapping API, bounded depth.
         found = []
-        for name, mod in model.language_model.layers[0].__dict__.items():
-            if isinstance(mod, mnn.QuantizedLinear) and getattr(mod, "bias", None) is None:
-                found.append((name, mod))
-            elif isinstance(mod, mnn.Module):
-                for n2, m2 in mod.__dict__.items():
-                    if isinstance(m2, mnn.QuantizedLinear) and getattr(m2, "bias", None) is None:
-                        found.append((f"{name}.{n2}", m2))
+
+        def walk(obj, prefix, depth):
+            if depth > 3:
+                return
+            for name, m in obj.items():
+                if isinstance(m, mnn.QuantizedLinear):
+                    found.append((prefix + name, m))
+                elif isinstance(m, mnn.Module):
+                    walk(m, prefix + name + ".", depth + 1)
+
+        walk(layer, "", 0)
+        seen = set()
+        uniq = []
+        for name, mod in found:
+            if id(mod) not in seen:
+                seen.add(id(mod))
+                uniq.append((name, mod))
+        found = uniq
         for name, lin in found[:6]:
             if (int(lin.bits), int(lin.group_size)) != (4, 64):
                 continue
@@ -101,7 +125,7 @@ def gen_ops(model_path):
                 ),
             )
         if not found:
-            print("WARN: no bias-free 4-bit g64 QuantizedLinear in layer 0", file=sys.stderr)
+            print("WARN: no QuantizedLinear found under layer 0", file=sys.stderr)
 
 
 def read_jsonl(path):
@@ -127,7 +151,7 @@ def main():
                 name,
                 y,
                 refs=refs or None,
-                include_vals=(mode == "stock"),
+                include_vals=(mode in ("stock", "ksplit")),
             )
             print(json.dumps(line))
         print(f"OPS_DONE mode={mode}")

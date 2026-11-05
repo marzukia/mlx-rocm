@@ -28,6 +28,7 @@ export CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_V
 D=$H/qkd
 L=$D/session.log
 mkdir -p $D
+> $L
 echo "=== QKD SESSION START $(date -u) ===" | tee -a $L
 sclk() { m=$(grep "*" /sys/class/drm/card1/device/pp_dpm_sclk 2>/dev/null | head -1 | grep -oE "[0-9]+" | head -1); if [ -z "$m" ]; then m=$(timeout 15 rocm-smi --showclocks 2>/dev/null | grep -i "sclk\|GPU Clock" | head -1); fi; echo "$m"; }
 ( while true; do echo "$(date -u +%H:%M:%S) sclk=[$(sclk)]" >> $D/sclk.log; sleep 10; done ) &
@@ -52,12 +53,17 @@ rm -rf $H/vendor-ksplit
 cp -r $H/vendor-gen2 $H/vendor-ksplit
 cp $D/qmm.hip $H/vendor-ksplit/mlx/backend/rocm/quantized/qmm.hip
 cp $D/qmv_tiled_ksplit_kernel.hip $H/vendor-ksplit/mlx/backend/rocm/quantized/qmv_tiled_ksplit_kernel.hip
+# The box vendor-gen2 predates the gen2 rework's file drop (the gen2 tiled
+# kernel landed only in the session build copy) - supply it from the branch
+# copy so the treecheck compares the real file.
+cp $D/verify/qmv_tiled_qgd_gen2_kernel.hip $H/vendor-ksplit/mlx/backend/rocm/quantized/qmv_tiled_qgd_gen2_kernel.hip
 # Base-tree spot check: the 4 shared files must byte-match the branch.
 for f in qmv_tiled_kernel.hip qdequant.hpp qmv_tiled_qgd_gen2_kernel.hip qmv_wide_mr3_gen2_kernel.hip; do
   a=$(md5sum $H/vendor-ksplit/mlx/backend/rocm/quantized/$f | awk '{print $1}')
   b=$(md5sum $D/verify/$f | awk '{print $1}')
   echo "treecheck $f: ${a} ${b} $([ "$a" = "$b" ] && echo PASS || echo FAIL)" | tee -a $L
 done
+if grep -q "treecheck.*FAIL" $L; then echo "TREECHECK-FAIL: aborting before build" | tee -a $L; exit 4; fi
 cd $H/vendor-ksplit
 for f in pyproject.toml setup.py CMakeLists.txt MANIFEST.in mlx.pc.in mlx.pc.in.in; do
   [ -e "$f" ] || cp $H/vendor-m3k/$f $f
@@ -150,7 +156,7 @@ bench() { # $1 = name, $2 = extra env, $3 = extra prompt env
   echo "=== BENCH $1 $(date -u +%H:%M:%SZ) sclk=[$(sclk)] ===" | tee -a $L
   timeout 1200 env $CE $2 $3 MTP_MAX_TOKENS=322 MTP_MODEL=$MODELS/qwen3-9b-mlx $PY $D/bench6.py > "$D/raw-bench-$1.raw" 2>&1
   echo "BENCH-$1-rc=$?" | tee -a $L
-  grep -E "^(TOKS|TOKS_S|VERIFIES|TOK_PER_STEP|FIRST20|LOAD_S)" "$D/raw-bench-$1.raw" >> $L 2>&1
+  grep -E "^(MTP=|FIRST20)" "$D/raw-bench-$1.raw" >> $L 2>&1
   sleep 25
 }
 for i in 1 2 3; do
