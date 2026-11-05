@@ -95,9 +95,9 @@ def main():
     model, _ = lm.load(MODEL)
     print("LOAD:OK", flush=True)
     layer = model.model.layers[0]
-    gl = layer.mlp.gate_proj
-    dl = layer.mlp.down_proj
-    al = layer.self_attn
+    gl = layer["mlp"]["gate_proj"]
+    dl = layer["mlp"]["down_proj"]
+    la = layer["linear_attn"]
     rng = mx.random
     b = mx.bfloat16
 
@@ -107,13 +107,15 @@ def main():
     x4 = mkx(4096)
     x12 = mkx(12288)
 
+    # Qwen3-Next (GDN linear attention) model: 32 layers.
     shapes = {
-        "q": (al.q_proj, x4),
-        "k": (al.k_proj, x4),
-        "v": (al.v_proj, x4),
-        "o": (al.o_proj, x4),
-        "gate": (gl, x4),
-        "down": (dl, x12),
+        "qkv": (la["in_proj_qkv"], x4),  # 8192 x 4096
+        "z": (la["in_proj_z"], x4),  # 4096 x 4096
+        "b": (la["in_proj_b"], x4),  # 32 x 4096
+        "a": (la["in_proj_a"], x4),  # 32 x 4096
+        "o": (la["out_proj"], x4),  # 4096 x 4096
+        "gate": (gl, x4),  # 12288 x 4096
+        "down": (dl, x12),  # 4096 x 12288
     }
 
     # Per-matmul bytes (4-bit, group 64, bf16 scale + bias):
@@ -140,22 +142,29 @@ def main():
     idle("floor")
     gbs_f, var_f = streaming_floor()
 
-    # class totals per forward (48 layers) and per verify step
+    # class totals per forward (32 layers) and per verify step
     # (1x M=3 + 4x M=1, single weight pass per GEMM)
-    L = 48
+    L = 32
     nb = {
-        "q": (4096, 4096),
-        "k": (1024, 4096),
-        "v": (1024, 4096),
+        "qkv": (8192, 4096),
+        "z": (4096, 4096),
+        "b": (32, 4096),
+        "a": (32, 4096),
         "o": (4096, 4096),
         "gate": (12288, 4096),
         "down": (4096, 12288),
     }
     for M in (1, 3):
         mlp_t = 2 * results[f"M{M}-gate"][0] + results[f"M{M}-down"][0]
-        qmv_t = results[f"M{M}-q"][0] + results[f"M{M}-k"][0] + results[f"M{M}-v"][0] + results[f"M{M}-o"][0]
+        qmv_t = (
+            results[f"M{M}-qkv"][0]
+            + results[f"M{M}-z"][0]
+            + results[f"M{M}-b"][0]
+            + results[f"M{M}-a"][0]
+            + results[f"M{M}-o"][0]
+        )
         mlp_b = L * (2 * nbytes(*nb["gate"]) + nbytes(*nb["down"]))
-        qmv_b = L * sum(nbytes(*nb[s]) for s in ("q", "k", "v", "o"))
+        qmv_b = L * sum(nbytes(*nb[s]) for s in ("qkv", "z", "b", "a", "o"))
         print(f"CLASS:M{M} mlp: fwd_t={mlp_t * L * 1e3:.2f}ms fwd_gbs={mlp_b / (mlp_t * L) / 1e9:.1f}", flush=True)
         print(f"CLASS:M{M} qmv: fwd_t={qmv_t * L * 1e3:.2f}ms fwd_gbs={qmv_b / (qmv_t * L) / 1e9:.1f}", flush=True)
     # verify step (1x M3 + 4x M1)
@@ -163,11 +172,11 @@ def main():
         2 * results["M3-gate"][0] + results["M3-down"][0] + 4 * (2 * results["M1-gate"][0] + results["M1-down"][0])
     ) * L
     qmv_step = (
-        (results["M3-q"][0] + results["M3-k"][0] + results["M3-v"][0] + results["M3-o"][0])
-        + 4 * (results["M1-q"][0] + results["M1-k"][0] + results["M1-v"][0] + results["M1-o"][0])
+        (results["M3-qkv"][0] + results["M3-z"][0] + results["M3-b"][0] + results["M3-a"][0] + results["M3-o"][0])
+        + 4 * (results["M1-qkv"][0] + results["M1-z"][0] + results["M1-b"][0] + results["M1-a"][0] + results["M1-o"][0])
     ) * L
     mlp_b = L * (2 * nbytes(*nb["gate"]) + nbytes(*nb["down"]))
-    qmv_b = L * sum(nbytes(*nb[s]) for s in ("q", "k", "v", "o"))
+    qmv_b = L * sum(nbytes(*nb[s]) for s in ("qkv", "z", "b", "a", "o"))
     print(
         f"STEP: mlp t={mlp_step * 1e3:.3f}ms gbs={5 * mlp_b / mlp_step / 1e9:.1f} "
         f"pct_floor={5 * mlp_b / mlp_step / 1e9 / gbs_f * 100:.1f}%",
