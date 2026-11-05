@@ -74,11 +74,20 @@ def streaming_floor(rounds=3, chunks=50, gib=4.0):
     return gbs, var
 
 
-def time_gemm(x, w, sb, bias, rounds=2, iters=100):
+def time_gemm(x, lin, rounds=2, iters=100):
     def build():
         acc = None
         for _ in range(iters):
-            y = mx.qmatmul(x, w, sb, bias)
+            y = mx.quantized_matmul(
+                x,
+                lin["weight"],
+                scales=lin["scales"],
+                biases=lin.get("biases"),
+                transpose=True,
+                group_size=lin.group_size,
+                bits=lin.bits,
+                mode=lin.mode,
+            )
             acc = y if acc is None else acc + y
         return acc
 
@@ -129,9 +138,9 @@ def main():
             arm = f"M{M}-{name}"
             idle(arm)
             xs = x[:M]
-            n = lin.weight.shape[0]
+            n = lin["weight"].shape[0]
             k = xs.shape[1]
-            ts = time_gemm(xs, lin.weight, lin.scales, lin.biases)
+            ts = time_gemm(xs, lin)
             per = sum(ts) / len(ts)
             gb = nbytes(n, k) / per / 1e9
             results[arm] = (per, gb)
