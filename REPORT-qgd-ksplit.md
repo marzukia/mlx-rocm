@@ -2,9 +2,7 @@
 
 **Verdict: FAIL-as-chartered.** Class microbench: K 4.596 ms / 36.2% of floor
 vs C 4.418 ms / 37.7% — K is **−4.05%** on the class bar (bar: >= +1%) and
-**36.2% < 37.2%** on the floor bar. The in-flight-load hypothesis is
-falsified by measurement (512 KB in flight, 1.88x the 273 KB saturation
-requirement, did not move the class). The t2048 wash control is **confirmed**
+**36.2% < 37.2%** on the floor bar. The in-flight-load hypothesis is falsified by measurement (512 KB in flight, 1.88x the 273 KB saturation requirement, did not move the class). The t2048 wash control is **confirmed**
 (K = 4.596 ms lands inside the predicted 4.4-4.7 ms wash band; the <4.0 ms
 falsifier did not trigger). e2e is flat: 69.16 vs 69.15 t/s (default, +0.01%),
 84.22 vs 84.19 (hello, +0.04%), FIRST20 token-identical in all 12 runs
@@ -42,10 +40,7 @@ GB/s = 37.2% of the floor with ~128 KB in flight.
   shortens the chain it sits in).
 - **Prediction if in-flight-bound:** the class ceiling moves from 203 GB/s
   toward the 546 GB/s floor (82-100%). **Falsifier:** K arm < 203 GB/s minus
-  noise, or 203-273 GB/s with the in-flight window now 1.88x saturated — which
-  would mean the ceiling is the per-tile sync/staging chain itself, not the
-  outstanding-load requirement. **The falsifier is exactly what the measurement
-  returned: 197.9 GB/s (below stock 205.9) with the window 1.88x saturated.**
+  noise, or 203-273 GB/s with the in-flight window now 1.88x saturated — which would mean the ceiling is the per-tile sync/staging chain itself, not the outstanding-load requirement. **The falsifier is exactly what the measurement returned: 197.9 GB/s (below stock 205.9) with the window 1.88x saturated.**
 
 ## 2. Task 2 — the variant (code path, DEFAULT OFF)
 
@@ -156,14 +151,12 @@ The measurement says no:
 - The extra parallelism cost +0.178 ms (partial [M,N,4] float writes + the
   per-column reduce round-trip), a net −4.05% on the class and a floor drop
   37.7% -> 36.2%.
-- The class sat at ~36-38% of floor at both 512 and 2048 blocks — the bound
-  is invariant to block count, so it is not an occupancy/parallelism bound
+- The class sat at ~36-38% of floor at both 512 and 2048 blocks — the bound is invariant to block count, so it is not an occupancy/parallelism bound
   either (2048 blocks = 64 per CU, well past 16/CU).
 
 **Remaining bound, named with evidence: the per-tile `__syncthreads` staging
 chain** — the 2-sync staging pair inside the serial k-chain (8x per column
-stock, 2x per K-quarter under K-split) — plus the partial/reduce round-trip
-when the tile is split. The 2048-block measurement with the load window
+stock, 2x per K-quarter under K-split) — plus the partial/reduce round-trip when the tile is split. The 2048-block measurement with the load window
 1.88x saturated and *lower* GB/s is the direct evidence that outstanding
 loads are not the limiting quantity: the staging structure of the tile is.
 
