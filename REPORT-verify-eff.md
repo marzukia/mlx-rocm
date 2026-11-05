@@ -122,16 +122,10 @@ bits=4, mode="affine")`), 100-chain eval amortizes host overhead; floor
 `MLX_ROCM_QMM_M3=1` set (knob not present in the pinned tree — recorded;
 byte accounting unaffected).
 
-P-state snapshot (identical across arms): sclk S: 41 MHz, fclk 582 MHz,
-mclk 96 MHz (idle state; the GPU boosts under load — variance across
-rounds is the stability witness: 13.2% M1-gate, 6.3% M1-down, 6.2%
-M3-qkv, <1% on all other arms). No SCLK sampling possible (deviation
-recorded).
+P-state snapshot (identical across arms): sclk S: 41 MHz, fclk 582 MHz, mclk 96 MHz (idle state; the GPU boosts under load — variance across rounds is the stability witness: 13.2% M1-gate, 6.3% M1-down, 6.2% M3-qkv, <1% on all other arms). No SCLK sampling possible (deviation recorded).
 
 Floor (in-session): **631.8 GB/s** (4 GiB, 50-chain, 3 rounds, var 0.13%).
-Cross-check: standalone single-process run in the same context gave
-625.1 / 623.7 / 628.5 / 630.7 GB/s at 1/2/5/50 chunks (linear in chunk
-count) — consistent with the recorded 595-624 GB/s t2048 floor band.
+Cross-check: standalone single-process run in the same context gave 625.1 / 623.7 / 628.5 / 630.7 GB/s at 1/2/5/50 chunks (linear in chunk count) — consistent with the recorded 595-624 GB/s t2048 floor band.
 
 Per-GEMM achieved GB/s (bytes = 1.125 x weight, section 1.1) and % of the
 in-session floor:
@@ -164,13 +158,7 @@ appear to use different basis; flagged, not concluded.
 
 ## 4. Design / class-cost statement
 
-1. **The layout is not the cause (hypothesis dead, confirmed with
-   measured numbers).** The same 4-bit affine layout (weight + bf16 scale
-   + bf16 bias, 1.125x weight bytes) reaches **76.8-80.2% of the
-   streaming floor at M=1** on the large shapes (gate 76.8%, down 80.2%).
-   Removing the aux streams entirely (an idealized 1.0x layout that does not exist at group 64 — Q4_K carries the same 1/32 scale density, interleaved) would raise achieved GB/s by at most 12.5%:
-   mlp 42.0% -> <= 47.3%, qmv 27.0% -> <= 30.4%. It cannot close a gap
-   to ~100%.
+1. **The layout is not the cause (hypothesis dead, confirmed with measured numbers).** The same 4-bit affine layout (weight + bf16 scale + bf16 bias, 1.125x weight bytes) reaches **76.8-80.2% of the streaming floor at M=1** on the large shapes (gate 76.8%, down 80.2%). Removing the aux streams entirely (an idealized 1.0x layout that does not exist at group 64 — Q4_K carries the same 1/32 scale density, interleaved) would raise achieved GB/s by at most 12.5%: mlp 42.0% -> <= 47.3%, qmv 27.0% -> <= 30.4%. It cannot close a gap to ~100%.
 2. **The class cost is kernel efficiency at M>=2, not bytes.** M=1 -> M=3
    collapse: gate 76.8% -> 38.6%, qkv 66.6% -> 35.8%, z/o 51.0% -> 28.0%.
    The M=3 single-pass MR kernel (LDS 24 KiB, K=4096) is the dominant
@@ -180,14 +168,7 @@ appear to use different basis; flagged, not concluded.
 3. **The small GDN GEMMs (in_proj_b/a, N=32) are latency-bound (0.7-1.0%
    of floor) but negligible in bytes** (73,728 B each; 33 us per forward
    = 0.5% of the qmv class time).
-4. **No layout/format change is indicated for verify-M.** Improvement
-   levers, listed for the record (not implemented here; the K=12288
-   single-pass MR is the sibling m3f/planes workstream, not touched
-   here): (a) single-pass MR coverage for K=12288 (LDS 72 KiB gate);
-   (b) MR dequant-ALU tuning for the K=4096 shapes (occupancy / wider
-   K-blocks); (c) batching the N=32 GEMMs (model-architecture change,
-   out of scope). The bounded layout overhead (12.5%) is second-order
-   against the 2x+ kernel-efficiency gap.
+4. **No layout/format change is indicated for verify-M.** Improvement levers, listed for the record (not implemented here; the K=12288 single-pass MR is the sibling m3f/planes workstream, not touched here): (a) single-pass MR coverage for K=12288 (LDS 72 KiB gate); (b) MR dequant-ALU tuning for the K=4096 shapes (occupancy / wider K-blocks); (c) batching the N=32 GEMMs (model-architecture change, out of scope). The bounded layout overhead (12.5%) is second-order against the 2x+ kernel-efficiency gap.
 
 Class-cost statement: **mlp runs at 42.0% of the in-session streaming
 floor (265 GB/s) and qmv at 27.0% (171 GB/s) at the M=3 verify batch;
