@@ -21,6 +21,7 @@ __device__ inline float load_scale_value(ScaleT raw);
 #include "mlx/backend/rocm/quantized/qmv_wide_mr_kernel.hip"
 #include "mlx/backend/rocm/quantized/qmv_rows_msg_kernel.hip"
 #include "mlx/backend/rocm/quantized/qmv_wide_mr3_kernel.hip"
+#include "mlx/backend/rocm/quantized/qmv_wide_mr3_gen2_kernel.hip"
 #include "mlx/primitives.h"
 
 #include <hip/hip_bfloat16.h>
@@ -4247,6 +4248,67 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
         if (m3ok) {
           dim3 m3block(32, 16);
           dim3 m3grid((N + 15) / 16, (M + 3) / 4);
+          // t2031 gen2 probe: next-generation mlp-class variants of the
+          // stock mr3 kernel (REPORT-mlp-gen2.md). All DEFAULT OFF - with
+          // all four envs unset the stock mr3 kernel runs verbatim.
+          static bool m3v1 = (std::getenv("MLX_ROCM_QMM_M3_V1") != nullptr);
+          static bool m3v2 = (std::getenv("MLX_ROCM_QMM_M3_V2") != nullptr);
+          static bool m3v3 = (std::getenv("MLX_ROCM_QMM_M3_V3") != nullptr);
+          static bool m3v4 = (std::getenv("MLX_ROCM_QMM_M3_V4") != nullptr);
+          const size_t v1_lds = 16u * 1024u * tbytes;  // 16 warps x 1024 values x sizeof(T)
+          const bool v1ok = m3v1 && (v1_lds <= 65536);
+          if (v1ok) {
+#define LAUNCH_QMV_WIDE_MR3_V1(TT, ST, GS)                             \
+  enc.add_kernel_node(                                                \
+      &rocm::qmv_wide_mr3_v1_kernel<TT, ST, GS>, m3grid, m3block,  \
+      (uint32_t)v1_lds, (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr, \
+      (const ST*)biases_ptr, (TT*)out_ptr, M, N, K, has_bias)
+#define LAUNCH_QMV_WIDE_MR3_V1_GS(TT, ST)                             \
+  do {                                                                \
+    if (group_size_ == 32) { LAUNCH_QMV_WIDE_MR3_V1(TT, ST, 32); }   \
+    else if (group_size_ == 64) { LAUNCH_QMV_WIDE_MR3_V1(TT, ST, 64); } \
+    else { LAUNCH_QMV_WIDE_MR3_V1(TT, ST, 128); }                  \
+  } while (0)
+            if (x.dtype() == bfloat16) {
+              LAUNCH_QMV_WIDE_MR3_V1_GS(hip_bfloat16, hip_bfloat16);
+            } else if (x.dtype() == float32) {
+              LAUNCH_QMV_WIDE_MR3_V1_GS(float, float);
+            } else {
+              LAUNCH_QMV_WIDE_MR3_V1_GS(__half, __half);
+            }
+#undef LAUNCH_QMV_WIDE_MR3_V1_GS
+#undef LAUNCH_QMV_WIDE_MR3_V1
+            return;
+          }
+          if (m3v2 || m3v3 || m3v4) {
+#define LAUNCH_QMV_WIDE_MR3_GEN2(KNAME, TT, ST, GS)                    \
+  enc.add_kernel_node(                                                \
+      &rocm::KNAME<TT, ST, GS>, m3grid, m3block, 0u,              \
+      (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr,               \
+      (const ST*)biases_ptr, (TT*)out_ptr, M, N, K, has_bias)
+#define LAUNCH_QMV_WIDE_MR3_GEN2_GS(KNAME, TT, ST)                    \
+  do {                                                                \
+    if (group_size_ == 32) { LAUNCH_QMV_WIDE_MR3_GEN2(KNAME, TT, ST, 32); } \
+    else if (group_size_ == 64) { LAUNCH_QMV_WIDE_MR3_GEN2(KNAME, TT, ST, 64); } \
+    else { LAUNCH_QMV_WIDE_MR3_GEN2(KNAME, TT, ST, 128); }          \
+  } while (0)
+            if (m3v2) {
+              if (x.dtype() == bfloat16) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v2_kernel, hip_bfloat16, hip_bfloat16); }
+              else if (x.dtype() == float32) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v2_kernel, float, float); }
+              else { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v2_kernel, __half, __half); }
+            } else if (m3v3) {
+              if (x.dtype() == bfloat16) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v3_kernel, hip_bfloat16, hip_bfloat16); }
+              else if (x.dtype() == float32) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v3_kernel, float, float); }
+              else { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v3_kernel, __half, __half); }
+            } else {
+              if (x.dtype() == bfloat16) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v4_kernel, hip_bfloat16, hip_bfloat16); }
+              else if (x.dtype() == float32) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v4_kernel, float, float); }
+              else { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v4_kernel, __half, __half); }
+            }
+#undef LAUNCH_QMV_WIDE_MR3_GEN2_GS
+#undef LAUNCH_QMV_WIDE_MR3_GEN2
+            return;
+          }
 #define LAUNCH_QMV_WIDE_MR3(TT, ST, GS)                                 \
   enc.add_kernel_node(                                                \
       &rocm::qmv_wide_mr3_kernel<TT, ST, GS>, m3grid, m3block, 0u,   \
