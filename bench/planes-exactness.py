@@ -138,7 +138,7 @@ def run_batched(lm, gids, ctx_ids, vtok):
     rec, cstab = {}, {}
     for i in gids:
         la = lm.model.layers[i].linear_attn
-        st, cst = la.last_tape
+        st, cst = getattr(la, "last_tape", (None, None))
         if st is None:
             raise RuntimeError(f"GDN tape not materialized (batched) layer {i}")
         rec[i] = [mx.eval(st[k]) for k in range(4)]
@@ -156,7 +156,7 @@ def run_sequential(lm, gids, ctx_ids, vtok):
         mx.eval(cache)
         for i in gids:
             la = lm.model.layers[i].linear_attn
-            st, cst = la.last_tape
+            st, cst = getattr(la, "last_tape", (None, None))
             if st is None:
                 raise RuntimeError(f"GDN tape not materialized (seq) layer {i}")
             rec.setdefault(i, []).append(mx.eval(st[0]))
