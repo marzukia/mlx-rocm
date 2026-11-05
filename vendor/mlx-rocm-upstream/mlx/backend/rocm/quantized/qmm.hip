@@ -4293,17 +4293,17 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     else { LAUNCH_QMV_WIDE_MR3_GEN2(KNAME, TT, ST, 128); }          \
   } while (0)
             if (m3v2) {
-              if (x.dtype() == bfloat16) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v2_kernel, hip_bfloat16, hip_bfloat16); }
-              else if (x.dtype() == float32) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v2_kernel, float, float); }
-              else { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v2_kernel, __half, __half); }
+              if (x.dtype() == bfloat16) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(qmv_wide_mr3_v2_kernel, hip_bfloat16, hip_bfloat16); }
+              else if (x.dtype() == float32) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(qmv_wide_mr3_v2_kernel, float, float); }
+              else { LAUNCH_QMV_WIDE_MR3_GEN2_GS(qmv_wide_mr3_v2_kernel, __half, __half); }
             } else if (m3v3) {
-              if (x.dtype() == bfloat16) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v3_kernel, hip_bfloat16, hip_bfloat16); }
-              else if (x.dtype() == float32) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v3_kernel, float, float); }
-              else { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v3_kernel, __half, __half); }
+              if (x.dtype() == bfloat16) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(qmv_wide_mr3_v3_kernel, hip_bfloat16, hip_bfloat16); }
+              else if (x.dtype() == float32) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(qmv_wide_mr3_v3_kernel, float, float); }
+              else { LAUNCH_QMV_WIDE_MR3_GEN2_GS(qmv_wide_mr3_v3_kernel, __half, __half); }
             } else {
-              if (x.dtype() == bfloat16) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v4_kernel, hip_bfloat16, hip_bfloat16); }
-              else if (x.dtype() == float32) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v4_kernel, float, float); }
-              else { LAUNCH_QMV_WIDE_MR3_GEN2_GS(rocm::qmv_wide_mr3_v4_kernel, __half, __half); }
+              if (x.dtype() == bfloat16) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(qmv_wide_mr3_v4_kernel, hip_bfloat16, hip_bfloat16); }
+              else if (x.dtype() == float32) { LAUNCH_QMV_WIDE_MR3_GEN2_GS(qmv_wide_mr3_v4_kernel, float, float); }
+              else { LAUNCH_QMV_WIDE_MR3_GEN2_GS(qmv_wide_mr3_v4_kernel, __half, __half); }
             }
 #undef LAUNCH_QMV_WIDE_MR3_GEN2_GS
 #undef LAUNCH_QMV_WIDE_MR3_GEN2

@@ -39,6 +39,20 @@ cd /home/andryo/vendor-gen2
 echo "vendor-gen2-qmm-md5: $(md5sum mlx/backend/rocm/quantized/qmm.hip)" | tee -a $L
 echo "vendor-gen2-gen2-md5: $(md5sum mlx/backend/rocm/quantized/qmv_wide_mr3_gen2_kernel.hip)" | tee -a $L
 echo "vendor-gen2-mr3-md5: $(md5sum mlx/backend/rocm/quantized/qmv_wide_mr3_kernel.hip)" | tee -a $L
+# Build scaffold (the repo vendor tree is pruned: no python/, pyproject.toml,
+# CMakeLists.txt - take the fork-clone scaffold from vendor-m3k, the tree
+# that built venv-m3k; 7ea5bca = bfd2889 + report/egg-info commits only).
+for f in pyproject.toml setup.py CMakeLists.txt cmake python MANIFEST.in mlx.pc.in; do
+  cp -a /home/andryo/vendor-m3k/$f /home/andryo/vendor-gen2/$f
+done
+echo "scaffold-python-fast-md5: $(md5sum python/src/fast.cpp)" | tee -a $L
+echo "scaffold-pyproject-md5: $(md5sum pyproject.toml)" | tee -a $L
+# setup.py's get_version runs git rev-parse - make the tree a git repo (the
+# m3k build tree was a fork clone; this one is a moved snapshot).
+if [ ! -d .git ]; then
+  git init -q && git add -A && git -c user.email=gen2@local -c user.name=gen2 commit -qm "gen2 build tree (7ea5bca vendor + gen2 variants + m3k scaffold)"
+fi
+echo "vendor-gen2-git-sha: $(git rev-parse --short HEAD)" | tee -a $L
 rm -rf build
 mkdir -p /home/andryo/wheelout-gen2
 /usr/bin/python3.14 -m pip wheel . --no-deps -w /home/andryo/wheelout-gen2/ > $D/build-a.log 2>&1
