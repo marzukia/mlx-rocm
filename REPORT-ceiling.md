@@ -3,14 +3,12 @@
 Date: 2026-11-05. Base: `stack-assembly-bench` @ `7ea5bca` (the fold; 13-var
 hybrid config-of-record, 69.43 t/s canon / 84.34 hello, verify wall 21.16 ms).
 Branch: `ceiling-report`. GPU: guest-a (RX 9070 XT / gfx1201, 32 CU, 2048
-threads/CU, 64 KB LDS/CU - the NOTES-int2vgpr box record), flocked, 25 s idle
-before every measurement, SCLK sampled every 10 s, venv-m3k libmlx md5
+threads/CU, 64 KB LDS/CU - the NOTES-int2vgpr box record), flocked, 25 s idle before every measurement, SCLK sampled every 10 s, venv-m3k libmlx md5
 `a0057c22...` (the COR wheel; re-verified pre and post), sidecar md5
 `02a54359...` (verified pre and post, untouched).
 
 Purpose: the per-class ceiling table for the 4-bit MTP-3 9B decode lane - what
-each class is bound by (verified, not asserted), what each class can reach,
-what variants remain open, and the concrete path to the 15.7 ms/step budget.
+each class is bound by (verified, not asserted), what each class can reach, what variants remain open, and the concrete path to the 15.7 ms/step budget.
 
 ## 1. HBM floor (re-derived, this session)
 
@@ -42,11 +40,9 @@ at 82.7% / 451.6 GB/s in the same session):
 - **A** stock 4-bit mr3 (the COR baseline; t2031 class wall 8.41 ms)
 - **B** same GEMMs with weights pre-dequantized to bf16 in HBM (4x weight
   traffic, zero in-loop dequant, zero scale/bias gather)
-- **C** stock 4-bit mr3 pointed at one shared 80 MB weight set (layer 0's
-  buffers, warm pass first) - isolates weight HBM traffic: if 80 MB fits the
+- **C** stock 4-bit mr3 pointed at one shared 80 MB weight set (layer 0's buffers, warm pass first) - isolates weight HBM traffic: if 80 MB fits the
   cache, C strips HBM weight latency from the measurement; if it does not
-  (L2 size per the session's rocminfo re-dump, _FILL_), C ~ A and the
-  isolation is inconclusive (noted)
+  (L2 size per the session's rocminfo re-dump, _FILL_), C ~ A and the isolation is inconclusive (noted)
 - **C2** stock weights, constant scale/bias (isolates the per-group
   scale-gather ALU+traffic from the per-weight dequant)
 
@@ -162,8 +158,7 @@ the binding variable, so K-split 4 is predicted to deliver **no meaningful
 gain**: 4.4-4.7 ms (the small residual: 4x block turnover overlaps new blocks'
 first-k-tile staging with retiring blocks' last k-tile; minus the 2-pass
 partial-sum traffic (4 x N x 4 B per GEMM, ~0.2 MB for N=12288) and ~120
-extra reduce launches). **Falsifier: a K-split build < 4.0 ms refutes this
-model** (and the in-lane report's ~1.7-2.0 ms expectation, which rests on the
+extra reduce launches). **Falsifier: a K-split build < 4.0 ms refutes this model** (and the in-lane report's ~1.7-2.0 ms expectation, which rests on the
 512-block/128-KB arithmetic corrected above).
 
 ### 4.5 The open variant that the corrected model points at
