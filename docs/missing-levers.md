@@ -15,7 +15,7 @@ Sources, stated precisely so a reader can land on them:
 | quantized weight stream (GEMV/QMM) | 9.46 ms | 8.22 ms | 1.24 ms | areaB:121 |
 | non-GEMM kernels (norms, copies, elementwise, GDN, attention) | 4.9 ms | ~1.5 ms | ~3.4 ms | areaB:121 |
 | launch / commit / python gaps (eager, ~1070 dispatches) | ~1.5 ms | ~0.3 ms graphed | ~1.2 ms | areaB:123-124 ("0 HIP graph launches"); the 1070 figure is validated at `reviews/pr-2-review.md:149` (43,838/41 = 1069.2 per step) |
-| total | 15.9 ms = 63 tok/s | ~10.0 ms = ~100 tok/s | ~5.9 ms | areaB:123 (no-profiler bench, 15.9 ms/token) |
+| total | 15.9 ms = 63 tok/s | ~10.0 ms = ~100 tok/s | ~5.9 ms | areaB:119 (no-profiler bench, 15.9 ms/token) |
 
 DERIVED consequence: the largest single recoverable block is **not** the weight-streaming maths. Over half of the available headroom sits in the non-GEMM bucket. That is one bucket, not a long tail of small issues.
 
