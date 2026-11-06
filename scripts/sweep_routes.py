@@ -22,7 +22,7 @@ import subprocess
 import sys
 import time
 
-MODEL = "/mnt/models/qwen3-9b-mlx"
+MODEL = "<models-mount>/qwen3-9b-mlx"
 WEIGHTS = "/tmp/sw"  # directory of per-tensor .mx files
 ROCM_SMI = "/opt/rocm/bin/rocm-smi"
 SELF = os.path.abspath(__file__)

@@ -75,9 +75,9 @@ This is consistent with the prior F-REFWD result: F (tape + deferred commit) tok
   QMV_NO_MR=1, QMV_MR_LX=0, SDPA_S4VA=0; the 3 shape levers (QMV_ROWS,
   QMV_ROWS_MIN_N, QMM_M3) UNSET (presence-gated). No wheel change (code-first:
   both arms use the existing gdn_fused_step_tape op at TMAX=4 / TMAX=1).
-- Env on guest-a (100.78.68.72, RX 9070 XT / gfx1201, ROCm 10.1):
+- Env on guest-a (<tailnet-ip>, RX 9070 XT / gfx1201, ROCm 10.1):
   LD_PRELOAD=libhsa-runtime64.so.1, HCC_AMDGPU_TARGET=gfx1201,
-  MODELS=/mnt/models, model=/mnt/models/qwen3-9b-mlx.
+  MODELS=<models-mount>, model=<models-mount>/qwen3-9b-mlx.
 - Run: flock ~/gpu.lock, 25 s idle pre-check, probe bench/planes-exactness.py
   (3 rounds), nohup. SCLK sampling unavailable on box (no rocm-smi); idle/swap
   verified instead (swap 8191 MB stable, no non-monitor compute procs).

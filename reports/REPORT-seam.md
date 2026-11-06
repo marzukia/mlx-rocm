@@ -152,7 +152,7 @@ wheels:**
   (0000:75:00.0, 0x13c0 iGPU) never used; GPU under `env -i` with LD_PRELOAD
   of the system libhsa-runtime64.so.1 (/usr/lib/x86_64-linux-gnu) and
   HCC_AMDGPU_TARGET=gfx1201; serialized on
-  /home/andryo/gpu.lock (holder PID recorded before each hold; stale-lock
+  <box-home>/gpu.lock (holder PID recorded before each hold; stale-lock
   policy per brief). Profiler: rocprofv2 (ROCm 7.2.0 userland, /opt/rocm/bin;
   v2 binary is named `rocprofv2` on this box), `--kernel-trace`.
 - Clean rounds: pinned mtp-bench6.py (md5 54ce16ac29e6c6aad2c48a233ff70d85),

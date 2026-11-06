@@ -3,13 +3,13 @@
 - Date: 2026-11-06 (00:47-01:10 UTC), one box, single lock holds, 25 s idle between arms
 - Box: bare-metal ROCm gfx1201 box, work card verified by PCI identity: `GPU_PCI=0000:03:00.0 GPU_DEV=0x7550 ROCSMI_IDX=0 GPU_NAME=R907XTGL`; SCLK sampler reading (between-arm, shared sampler, rocm-smi -d 0): 41 MHz (idle-point sampling; the sampler is live and identity-verified, readings at idle only - no sustained load sample this run)
 - Wheel: venv-verify, libmlx md5 8acf13fec6fc1636026d8e1dc69cd497 (verified pre AND post, unmodified, not rebuilt)
-- Model: /mnt/models/qwen3-9b-mlx, sidecar md5 02a54359cda8b247f76b277dd9bc4d4c (verified pre AND post, unmodified)
+- Model: <models-mount>/qwen3-9b-mlx, sidecar md5 02a54359cda8b247f76b277dd9bc4d4c (verified pre AND post, unmodified)
 - Bench: m3k/bench/mtp-bench6.py md5 54ce16ac29e6c6aad2c48a233ff70d85 (stage 1, K1, K3 arms)
 - Protocol: the 27-token canon prompt (the bench default, verbatim), MTP_MAX_TOKENS=322 cap (iteration cap; generation runs to natural stop - 516 tokens for the K=3 COR arm, the same 516/161-verify profile as t2213's 69.43 record battery), greedy, 3 rounds x arm interleaved
 - Exact env as run (stage 1, the 13-var COR verbatim set + box plumbing):
 
   ```
-  MODELS=/mnt/models
+  MODELS=<models-mount>
   LD_LIBRARY_PATH=<venv-verify>/lib/python3.14/site-packages/mlx/lib
   LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libhsa-runtime64.so.1
   HCC_AMDGPU_TARGET=gfx1201

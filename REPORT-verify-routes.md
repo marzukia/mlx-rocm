@@ -6,7 +6,7 @@
 
 - Wheel: `mlx 0.32.3.dev20261104+75ca881` (libmlx md5 `8acf13fe`, sidecar md5 `02a54359` — verified, per ticket)
 - GPU: RX 9070 XT, gfx1201, 32 CUs (t2212 correction: **64 CUs** per rocminfo - the 32-CU figure was wrong; the 64 CUs used in t2199/t2205 are correct), warp 32, native_wmma=1 (bound device 0)
-- Model: `/mnt/models/qwen3-9b-mlx` (vocab 248320 → lm_head 248320×4096)
+- Model: `<models-mount>/qwen3-9b-mlx` (vocab 248320 → lm_head 248320×4096)
 - In-session streaming floor (both ends): **631.5 / 631.7 GB/s** (var 0.13–0.14%), consistent with the t2199 anchor of 631.8.
 
 ---

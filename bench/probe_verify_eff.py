@@ -16,7 +16,7 @@ import mlx.core as mx
 import mlx_lm as lm
 
 assert mx.rocm.is_available(), "rocm not available"
-MODEL = os.environ.get("MODEL", "/mnt/models/qwen3-9b-mlx")
+MODEL = os.environ.get("MODEL", "<models-mount>/qwen3-9b-mlx")
 ROCM_SMI = "/opt/rocm/bin/rocm-smi"
 IDLE_S = int(os.environ.get("PROBE_IDLE", "25"))
 

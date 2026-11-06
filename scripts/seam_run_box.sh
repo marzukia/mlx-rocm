@@ -3,8 +3,8 @@
 # usage: seam_run_box.sh <ar|spec> <workdir> <venv-python> <rounds>
 set -uo pipefail
 ARM="$1"; W="$2"; VPY="$3"; N="${4:-3}"
-BENCH=/home/andryo/m3k/bench/mtp-bench6.py
-LOCK=/home/andryo/gpu.lock
+BENCH=<box-home>/m3k/bench/mtp-bench6.py
+LOCK=<box-home>/gpu.lock
 SCLK=/opt/rocm-7.2.0/bin/rocm-smi
 ROCP=/opt/rocm/bin/rocprofv2
 
@@ -15,7 +15,7 @@ case "$ARM" in
 esac
 
 # base env prefix for GPU work (env -i per brief)
-ENVX="env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/home/andryo MODELS=/mnt/models HCC_AMDGPU_TARGET=gfx1201 LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libhsa-runtime64.so.1"
+ENVX="env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=<box-home> MODELS=<models-mount> HCC_AMDGPU_TARGET=gfx1201 LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libhsa-runtime64.so.1"
 
 sclk() { $SCLK --showclocks 2>/dev/null | grep -iE "sclk|pclk" | head -3; }
 
