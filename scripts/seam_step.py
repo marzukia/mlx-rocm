@@ -19,6 +19,7 @@ Spec (MLX_MTP=3, K=2): one step = one bench verify-branch iteration (the S=3
 batched forward + argmax + rejection cascade, exactly as in the bench loop body);
 a draft-branch iteration is run as warmup if the next iteration would be a draft.
 """
+
 import os
 import time
 
@@ -28,7 +29,10 @@ from mlx_lm.models.cache import KVCache
 
 MODELS = os.environ.get("MODELS", "/models")
 MODEL = os.environ.get("MTP_MODEL", f"{MODELS}/qwen3-9b-mlx")
-PROMPT = "Explain in great detail how a modern smartphone works, from the hardware components to the operating system, covering every subsystem. Be exhaustive."
+PROMPT = (
+    "Explain in great detail how a modern smartphone works, from the hardware components to the "
+    "operating system, covering every subsystem. Be exhaustive."
+)
 WARMUP = int(os.environ.get("SEAM_WARMUP", "10"))
 EOS = 248044
 MARKER_SHAPE = (17, 23)
@@ -65,10 +69,8 @@ def main():
     t_gen0 = time.time()
 
     # Prefill (identical to the bench).
-    logits, hidden = lm(
-        mx.array([prompt_ids]), cache=cache, return_hidden=True, return_prenorm=True
-    )
-    l = logits[0, -1]
+    logits, hidden = lm(mx.array([prompt_ids]), cache=cache, return_hidden=True, return_prenorm=True)
+    lg = logits[0, -1]
     h = hidden[0, -1]
     draft1 = None
     draft2 = None
@@ -80,7 +82,7 @@ def main():
         if warm >= WARMUP:
             break
         if draft1 is None:
-            t = int(mx.argmax(l))
+            t = int(mx.argmax(lg))
             if t == EOS:
                 break
             if mtp_on:
@@ -92,10 +94,8 @@ def main():
                 dh2 = lm.mtp(dh1, emb2, mtp_cache)
                 draft2 = int(mx.argmax(lm.lm_head(dh2)[0, -1]))
             else:
-                logits, hidden = lm(
-                    mx.array([[t]]), cache=cache, return_hidden=True, return_prenorm=True
-                )
-                l = logits[0, -1]
+                logits, hidden = lm(mx.array([[t]]), cache=cache, return_hidden=True, return_prenorm=True)
+                lg = logits[0, -1]
                 h = hidden[0, -1]
             warm += 1
         elif mode == "3":
@@ -108,61 +108,49 @@ def main():
                 return_hidden=True,
                 return_prenorm=True,
             )
-            l0, h0 = logits[0, 0], hidden[0, 0]
+            l0, _h0 = logits[0, 0], hidden[0, 0]
             l1, h1 = logits[0, 1], hidden[0, 1]
             l2, h2 = logits[0, 2], hidden[0, 2]
             t2 = int(mx.argmax(l0))
             if t2 == EOS:
                 break
             if t2 == d1:
-                l, h = l1, h1
+                lg, h = l1, h1
                 t3 = int(mx.argmax(l1))
                 if t3 == EOS:
                     break
                 if t3 == d2:
-                    l, h = l2, h2
+                    lg, h = l2, h2
                 else:
                     restore_gdn(cache, saved)
                     for c in cache:
                         if isinstance(c, KVCache):
                             c.trim(3)
-                    logits, hidden = lm(
-                        mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True
-                    )
-                    logits, hidden = lm(
-                        mx.array([[d1]]), cache=cache, return_hidden=True, return_prenorm=True
-                    )
-                    logits, hidden = lm(
-                        mx.array([[t3]]), cache=cache, return_hidden=True, return_prenorm=True
-                    )
-                    l, h = logits[0, -1], hidden[0, -1]
+                    logits, hidden = lm(mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True)
+                    logits, hidden = lm(mx.array([[d1]]), cache=cache, return_hidden=True, return_prenorm=True)
+                    logits, hidden = lm(mx.array([[t3]]), cache=cache, return_hidden=True, return_prenorm=True)
+                    lg, h = logits[0, -1], hidden[0, -1]
             else:
                 restore_gdn(cache, saved)
                 for c in cache:
                     if isinstance(c, KVCache):
                         c.trim(3)
-                logits, hidden = lm(
-                    mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True
-                )
-                logits, hidden = lm(
-                    mx.array([[t2]]), cache=cache, return_hidden=True, return_prenorm=True
-                )
-                l, h = logits[0, -1], hidden[0, -1]
+                logits, hidden = lm(mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True)
+                logits, hidden = lm(mx.array([[t2]]), cache=cache, return_hidden=True, return_prenorm=True)
+                lg, h = logits[0, -1], hidden[0, -1]
             warm += 1
 
     # The profiled step.
     if mode == "0":
-        t = int(mx.argmax(l))
+        t = int(mx.argmax(lg))
         if t == EOS:
             raise SystemExit("EOS in warmup; rerun")
         t_wall0 = time.perf_counter()
         marker()
-        logits, hidden = lm(
-            mx.array([[t]]), cache=cache, return_hidden=True, return_prenorm=True
-        )
-        l = logits[0, -1]
+        logits, hidden = lm(mx.array([[t]]), cache=cache, return_hidden=True, return_prenorm=True)
+        lg = logits[0, -1]
         h = hidden[0, -1]
-        _ = int(mx.argmax(l))
+        _ = int(mx.argmax(lg))
         marker()
     else:
         assert draft1 is not None, "warmup did not reach a verify step; raise SEAM_WARMUP"
@@ -177,46 +165,36 @@ def main():
             return_hidden=True,
             return_prenorm=True,
         )
-        l0, h0 = logits[0, 0], hidden[0, 0]
+        l0, _h0 = logits[0, 0], hidden[0, 0]
         l1, h1 = logits[0, 1], hidden[0, 1]
         l2, h2 = logits[0, 2], hidden[0, 2]
         t2 = int(mx.argmax(l0))
         if t2 == EOS:
             raise SystemExit("EOS at profiled step; rerun")
         if t2 == d1:
-            l, h = l1, h1
+            lg, h = l1, h1
             t3 = int(mx.argmax(l1))
             if t3 == EOS:
                 raise SystemExit("EOS at profiled step; rerun")
             if t3 == d2:
-                l, h = l2, h2
+                lg, h = l2, h2
             else:
                 restore_gdn(cache, saved)
                 for c in cache:
                     if isinstance(c, KVCache):
                         c.trim(3)
-                logits, hidden = lm(
-                    mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True
-                )
-                logits, hidden = lm(
-                    mx.array([[d1]]), cache=cache, return_hidden=True, return_prenorm=True
-                )
-                logits, hidden = lm(
-                    mx.array([[t3]]), cache=cache, return_hidden=True, return_prenorm=True
-                )
-                l, h = logits[0, -1], hidden[0, -1]
+                logits, hidden = lm(mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True)
+                logits, hidden = lm(mx.array([[d1]]), cache=cache, return_hidden=True, return_prenorm=True)
+                logits, hidden = lm(mx.array([[t3]]), cache=cache, return_hidden=True, return_prenorm=True)
+                lg, h = logits[0, -1], hidden[0, -1]
         else:
             restore_gdn(cache, saved)
             for c in cache:
                 if isinstance(c, KVCache):
                     c.trim(3)
-            logits, hidden = lm(
-                mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True
-            )
-            logits, hidden = lm(
-                mx.array([[t2]]), cache=cache, return_hidden=True, return_prenorm=True
-            )
-            l, h = logits[0, -1], hidden[0, -1]
+            logits, hidden = lm(mx.array([[prev_token]]), cache=cache, return_hidden=True, return_prenorm=True)
+            logits, hidden = lm(mx.array([[t2]]), cache=cache, return_hidden=True, return_prenorm=True)
+            lg, h = logits[0, -1], hidden[0, -1]
         marker()
     t_wall1 = time.perf_counter()
 
@@ -226,7 +204,7 @@ def main():
     print(f"STEP_WALL_MS {wall_ms:.3f}", flush=True)
     print(f"WARMUP_ITERS {warm}", flush=True)
     print(f"GEN_MS {gen_ms:.3f}", flush=True)
-    mx.eval(l)  # drain before exit
+    mx.eval(lg)  # drain before exit
 
 
 if __name__ == "__main__":

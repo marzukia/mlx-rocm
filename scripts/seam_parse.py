@@ -9,6 +9,7 @@ occupancy = duration sum / span, and the top-10 kernels by duration.
 
 Usage: python seam_parse.py trace.csv [--marker <exact kernel name substring>]
 """
+
 import argparse
 import csv
 import sys
@@ -62,15 +63,15 @@ def main() -> int:
     if not items:
         print("ERROR: no parseable rows", file=sys.stderr)
         return 2
-    items.sort(key=lambda t: (t[0] if t[0] is not None else 0))
+    items.sort(key=lambda t: t[0] if t[0] is not None else 0)
 
     if args.marker:
         marker_rows = [i for i, t in enumerate(items) if args.marker in t[2]]
         if len(marker_rows) < 2:
             print(f"ERROR: only {len(marker_rows)} marker rows (need >=2) for {args.marker!r}", file=sys.stderr)
             print("sample kernel names:", file=sys.stderr)
-            for n, _ in sorted(set((t[2], t[3]) for t in items))[:40]:
-                print(f"  {n} | {t[3]}", file=sys.stderr)
+            for n, g in sorted(set((t[2], t[3]) for t in items))[:40]:
+                print(f"  {n} | {g}", file=sys.stderr)
             return 2
         a, b = min(marker_rows), max(marker_rows)
     else:

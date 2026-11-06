@@ -41,6 +41,11 @@ target-version = "py311"
 # K=3 arm, t1224/t1225); kept byte-identical to as-run evidence; excluded.
 extend-exclude = [
     "np-rca-*.py",
+    # t2246 seam measurement: generated per-step span-bracketed variants of the
+    # pinned record bench / t2241 stepdec (make_stepspan.py output); kept
+    # byte-identical to as-run evidence; excluded from lint + format.
+    "scripts/mtp-bench6-stepspan.py",
+    "scripts/mtp-bench6-stepdec-span.py",
     "bench/mtp-bench3.py",
     "bench/mtp-bench3-side.py",
     "bench/mtp-bench5.py",
