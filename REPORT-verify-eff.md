@@ -8,6 +8,8 @@ Base: planes-exactness @ 6e8df3f. Measurement + design only — no layout format
 
 **LAYOUT HYPOTHESIS DEAD (STOP-AND-REPORT, step 2).** Per-matmul bytes actually pulled = **1.125 x the 4-bit weight bytes** (weight + bf16 scale + bf16 bias; scale/bias are 1/64 density per group, not 1:1 with weight). Not 3x. The "3 streams" are real (weight/scale/bias are separate tensors), but the two aux streams together are 12.5% of the weight stream, so the layout cannot explain a ~54%/42%-of-floor class. The class cost is kernel efficiency (dequant ALU + memory latency/occupancy), quantified in section 4.
 
+**MEASUREMENT-INTEGRITY NOTE (t2212 relabel):** all clock-state readings in this lane to date (including the section-3 P-state snapshot and every lane "SCLK 2200 pinned") were the **iGPU** (card1 = RAPHAEL, PCI 0000:75:00.0, 0x13c0), not the dGPU. The dGPU clock (card0 = 0x7550 R907XTGL, PCI 0000:03:00.0) was **never sampled** in these runs. Consequence: the GB/s arithmetic (bytes and seconds) and the wall-clock canon **STAND**; all clock-state claims ("pinned", "same clock state", "at N MHz") are **invalid**; the class efficiency percentages are **upper-bounded** until re-taken with the dGPU clock pinned/sampled. The lane samplers were fixed to PCI-identity (card0) in t2212.
+
 ## 1. Code-first: streams and bytes per matmul (no GPU)
 
 Model: Qwen3-9B-MLX — **Qwen3-Next architecture (GDN linear attention),
@@ -95,6 +97,8 @@ the arbiter.
 - **Deviation (model):** first probe run hit `DecoderLayer` dict-style attributes + revealed the model is Qwen3-Next (GDN linear attention, 32 layers), not standard Qwen3 attention — the shape table above is the corrected one (verified against live module shapes).
 
 ## 3. In-session measurement (GPU, under ~/gpu.lock)
+
+**Measurement-integrity (t2212):** the P-state snapshot below was read from card1 (the RAPHAEL iGPU, PCI 0000:75:00.0) - the dGPU (card0, 0x7550 R907XTGL) clock was never sampled in this report. All clock-state claims in this section are invalid; the wall-clock numbers and GB/s arithmetic stand; the efficiency percentages are upper-bounded until re-taken with the dGPU clock sampled (sampler fixed, t2212).
 
 Method (labeled **measured(wall)**; deviation: no `rocprofv3` / no SCLK
 sampling on this box): 25 s idle + rocm-smi P-state snapshot before each

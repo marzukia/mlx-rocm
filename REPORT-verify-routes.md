@@ -5,7 +5,7 @@
 **Verdict:** Primarily **KERNEL (implementation / occupancy)**, with a real secondary **THRESHOLD (policy)** component. Detail in §7.
 
 - Wheel: `mlx 0.32.3.dev20261104+75ca881` (libmlx md5 `8acf13fe`, sidecar md5 `02a54359` — verified, per ticket)
-- GPU: RX 9070 XT, gfx1201, 32 CUs, warp 32, native_wmma=1 (bound device 0)
+- GPU: RX 9070 XT, gfx1201, 32 CUs (t2212 correction: **64 CUs** per rocminfo - the 32-CU figure was wrong; the 64 CUs used in t2199/t2205 are correct), warp 32, native_wmma=1 (bound device 0)
 - Model: `/mnt/models/qwen3-9b-mlx` (vocab 248320 → lm_head 248320×4096)
 - In-session streaming floor (both ends): **631.5 / 631.7 GB/s** (var 0.13–0.14%), consistent with the t2199 anchor of 631.8.
 
@@ -162,3 +162,29 @@ The new-generation kernel work (mlp-gen2 t2031, qmv gen2 t2040) is closed; the k
 - Clock locking unavailable (no sudo / interactive terminal); P-state controlled via sustained prime + the burst-vs-ext control (§2), which shows the small-M GB/s is not a clock artifact.
 - `MLX_ROCM_QMV_ROWS`/`_HOIST`/`_MIN_N`/`_MR2_MIN_N`/`MLX_ROCM_QMM_M3` absent → arms (c) and (d) not measurable on this wheel.
 - GPU has 2 devices; the bound compute device is 0 (gfx1201).
+
+---
+
+## 9. t2212: E2E A/B (MR vs NO_MR), CU correction, runner fix, relabel
+
+**E2E A/B (the QMV route decision number).** Canonical 322-token protocol (27-token prompt, decode cap 322, natural stop, greedy, `MLX_MTP=3`, `MTP6_HEAD_H=postnorm`), 3 rounds x 2 arms interleaved, 25 s idle before the first arm, single lock hold, wheel 8acf13fe (venv-verify), sidecar 02a54359 (verified pre/post), libmlx 8acf13fe (pre/post identical). **Labeled deviation:** `MTP6_TAPE=0` (savestate restore + re-forward) + the model default GDN path + a one-line bench plumbing fix (GDN_FUSE only in the tape arm; bench copy md5 686c9f6e) - the 8acf13fe wheel rejects its fused GDN paths (tape and non-tape) for this shape with clean errors, and the record e9a1b89d wheel no longer exists on the box (venv-m3k is now the Nov-4 kfix build a0057c22). The between-arms delta is unaffected: both arms are identical except for `MLX_QMV_NO_MR`.
+
+| round | D (DEFAULT) tok/s | N (NO_MR=1) tok/s |
+|---|---|---|
+| 1 | 48.68 | 49.58 |
+| 2 | 48.72 | 49.62 |
+| 3 | 48.65 | 49.65 |
+| med | 48.68 | 49.62 |
+| min | 48.65 | 49.58 |
+| max | 48.72 | 49.65 |
+
+- N beats D in all 3 rounds; medians 49.62 vs 48.68 = **+0.94 tok/s (+1.93%)**. Per-round variance: D 48.65-48.72, N 49.58-49.65 (spread 0.07 each).
+- Token identity: ALLTOKS md5 identical across all 6 arms (c360b53715dba26a7aa0adf63bb0fb34); all arms TOKS=445, VERIFIES=161, TOK_PER_STEP=2.273, D1ACC=123, D2ACC=82, D3ACC=0, TAPEMODE=0, HEAD=int2/postnorm.
+- SCLK sampling (new PCI-identity sampler, dGPU card0/0x7550): 83/93 samples = `SCLK_READ_FAIL(device-busy)` (flagged hard failure, not absent data); valid samples 0-3246 MHz (unstable under load; readings above the 2400 MHz max are artifacts); idle dGPU 902 MHz. No clock lock (sudo not available); arms interleaved within one lock session 25 s apart, so clock/thermal regimes are symmetric across arms; the wall-clock delta is valid.
+- **Verdict (E2E, this wheel): the winning route is `MLX_QMV_NO_MR=1` (49.62 vs 48.68 tok/s, +1.9%)** - the MR-dispatch path (QMV MR_COLS=256 default in the 8acf13fe kernel) is slower end-to-end.
+
+**CU count (t2207 header correction).** rocminfo (ROCm runtime device properties), the compute device (Agent 2 = gfx1201, Chip ID 0x7550, "AMD Radeon RX 9070 XT"): **Compute Unit = 64** (2 SIMD/CU, 4 shader engines); the iGPU (0x13c0, gfx1036) = 2 CUs. The "32 CUs" in the t2207 lane header was wrong; the 64 CUs used in t2199/t2205 were right. Any occupancy figure that divided in-flight bytes by 32 CUs is off by a factor of 2 (64 is the correct denominator - the occupancy pressure is half of what 32 CUs suggests).
+
+**Runner sampler fix (t2212).** All 10 lane runner scripts sampled **card1 = the RAPHAEL iGPU** (PCI 0000:75:00.0, 0x13c0) - every "SCLK 2200 pinned" reading in this lane was the iGPU's. All 10 scripts are untracked on-box artifacts (no tracked file matches in this branch); the fix was applied to the on-box copies: they now source a shared sampler that verifies PCI identity first (card0 device id = 0x7550 + rocm-smi GPU[0] SKU = R907XTGL; hard fail on mismatch), samples with `rocm-smi -d 0` (sysfs card0 fallback; "Device or resource busy" = flagged hard failure, not absent data), and records `GPU_PCI=0000:03:00.0 GPU_DEV=0x7550 ROCSMI_IDX=0` in the output header. Fixed list: `frf-work-frf-battery.sh`, `frf-work-s2.sh`, `m3-full-runner.sh`, `m3-micro-runner.sh`, `p3-full.sh`, `p3-smoke.sh`, `rebench3.sh`, `roofline-draft-driver.sh`, `run_llama.sh`, `run_ours.sh` (all `bash -n` OK; zero card1 references remain; sampler unit test: identity line + live reading).
+
+**Relabel (measurement integrity).** `REPORT-verify-eff.md` carries the relabel note: every clock-state claim in that report (including the section-3 P-state snapshot) is invalid (it was the iGPU); the GB/s arithmetic (bytes and seconds) and the wall-clock canon stand; the efficiency percentages are upper-bounded until re-taken with the dGPU clock sampled.
