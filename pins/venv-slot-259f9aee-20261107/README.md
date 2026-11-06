@@ -15,4 +15,4 @@ Identity block (record 92.23 t/s @1024 auto, stamp commit 0cb21ec):
 - bench/mtp-bench6-stepdec-slot.py md5 b00dec6b083428516b804b26f345d3de (the record producer, pinned in-tree, tree copy = as-run)
 - sidecar model-mtp.safetensors md5 02a54359cda8b247f76b277dd9bc4d4c (box-local, not tracked)
 - mlx_lm qwen3_5.py md5 ff7c8d0e47a606e55a7eb1266ba7f4b1 (box-local, not tracked)
-- record stream a55aac5c (TOKS_S 92.85/92.71/92.36 median 92.71 re-measure 2026-11-06 20:34-20:43Z, DPM auto, TPK 2.080, D1 355/69.3% D2 198/55.8% REFWDS=0)
+- record stream a55aac5c21d2acf636d01c0f88b89856 (ALLTOKS md5; TOKS_S 92.85/92.71/92.36 median 92.71 re-measure 2026-11-06 20:34-20:43Z, DPM auto, TPK 2.080, D1 355/69.3% D2 198/55.8% REFWDS=0)
