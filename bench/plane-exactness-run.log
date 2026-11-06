@@ -2,8 +2,8 @@
 LOCK_ACQUIRED 20:51:32
 --- pre-idle snapshot ---
     PID USER     %CPU COMMAND
-1279243 andryo    100 ps
-1279244 andryo    100 head
+1279243 user      100 ps
+1279244 user      100 head
    1572 syslog    0.0 rsyslogd
    1465 root      0.0 tailscaled
 swap_used_MB=8191
