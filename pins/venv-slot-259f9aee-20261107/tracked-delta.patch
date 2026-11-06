@@ -1,0 +1,49 @@
+diff --git a/python/src/fast.cpp b/python/src/fast.cpp
+index 88a58d9..1923d21 100644
+--- a/python/src/fast.cpp
++++ b/python/src/fast.cpp
+@@ -584,6 +584,44 @@ void init_fast(nb::module_& parent_module) {
+                 at accepted prefix krow rebinds the cache leaves to slot
+                 row krow - no S=1 correction re-forward).
+         )");
++  m.def(
++      "lm_head_int2",
++      &mlx::core::fast::lm_head_int2,
++      "x"_a,
++      "wq"_a,
++      "scale"_a,
++      "zs"_a,
++      "sx"_a,
++      "stream"_a = nb::none(),
++      R"(
++            int2 g128-asymmetric dequant GEMV (M=1) for the MTP draft
++            head (backend/rocm/lm_head_int2.hip). x [1, K] bf16, wq
++            [N, K/4] u8, scale/zs [N, K/128] f32, sx [K/128] f32.
++
++            Returns:
++                Tuple of (logits [N] f32, cand_val [N/64, 8] f32,
++                cand_col [N/64, 8] i32) - the in-kernel per-64-column
++                top-8 candidate emission.
++        )");
++  m.def(
++      "lm_head_int2_wide",
++      &mlx::core::fast::lm_head_int2_wide,
++      "x"_a,
++      "wq"_a,
++      "scale"_a,
++      "zs"_a,
++      "sx"_a,
++      "stream"_a = nb::none(),
++      R"(
++            Vectorized (wave-wide) int2 g128-asymmetric dequant GEMV
++            (M=1) (backend/rocm/lm_head_int2w.hip). Same surface as
++            lm_head_int2; per-32-column top-8 emission. Requires
++            N%32==0 and K%512==0.
++
++            Returns:
++                Tuple of (logits [N] f32, cand_val [N/32, 8] f32,
++                cand_col [N/32, 8] i32).
++        )");
+   m.def(
+       "metal_kernel",
+       [](const std::string& name,

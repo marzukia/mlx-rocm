@@ -64,51 +64,16 @@ import json
 import os
 import time
 
-# t2261 PH battery (cloudy ruling 11-06 12:5xZ): per-verify-step GPU span
-# (span.so) + roctx markers for the rocprofv3 kernel CSV join (7.2.4
-# userspace stack, env-driven via LD_PRELOAD) + t_q host marker after the
-# S=3 lm() return (enqueue/evalwait split). All no-ops when the libs are
-# absent. No added syncs: span_end runs on the drained queue (each verify
-# step drains via the int(argmax) syncs).
-import ctypes as _ct
-_SP = None
-if os.environ.get("SPAN", "1") == "1":
-    _SP = _ct.CDLL(os.environ.get("SPAN_SO", "/opt/fleet/span.so"))
-    _SP.span_init.argtypes = []
-    _SP.span_init.restype = _ct.c_int
-    _SP.span_begin.argtypes = []
-    _SP.span_end.argtypes = []
-    _SP.span_end.restype = _ct.c_double
-
-def _span_begin():
-    if _SP is not None:
-        _SP.span_begin()
-
-def _span_end():
-    return _SP.span_end() if _SP is not None else -1.0
-
-_ROCTX = None
-if os.environ.get("ROCTX", "1") == "1":
-    try:
-        _ROCTX = _ct.CDLL(os.environ.get(
-            "ROCTX_SO",
-            "/opt/fleet/librocprofiler-sdk-roctx.so"))
-        _ROCTX.roctxRangeStartA.argtypes = [_ct.c_char_p]
-        _ROCTX.roctxRangeStartA.restype = None
-        _ROCTX.roctxRangeStop.argtypes = []
-        _ROCTX.roctxRangeStop.restype = None
-        print("ROCTX_INIT_OK", flush=True)
-    except OSError as _e:
-        _ROCTX = None
-        print("ROCTX_DISABLED %s" % _e, flush=True)
-
-def _mstart(i):
-    if _ROCTX is not None:
-        _ROCTX.roctxRangeStartA(("ph_v%04d" % i).encode())
-
-def _mend():
-    if _ROCTX is not None:
-        _ROCTX.roctxRangeStop()
+# t2261 PH battery profiling (span.so + roctx markers, env-driven, all
+# no-ops when the libs are absent): split to bench/mtp6_ph_span.py for the
+# size gate (830 > 800 non-blank - "split, do not ratchet"); box as-run
+# copy (md5 d12fae08) keeps the inline form, untouched (tree-copy only).
+# Module-load side effects (lib loads, ROCTX_INIT_OK/ROCTX_DISABLED) run at this import.
+import mtp6_ph_span as _phs
+_span_begin = _phs._span_begin
+_span_end = _phs._span_end
+_mstart = _phs._mstart
+_mend = _phs._mend
 
 
 import mlx.core as mx
