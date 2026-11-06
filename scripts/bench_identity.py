@@ -181,8 +181,13 @@ def build_block(
         lines.append("model: NOT REQUESTED (no --models; provenance incomplete)")
         missing.append("models")
     elif models.is_dir():
-        for path in sorted(p for p in models.rglob("*") if p.suffix in MODEL_SUFFIXES):
+        digested = sorted(p for p in models.rglob("*") if p.suffix in MODEL_SUFFIXES)
+        for path in digested:
             lines.append(f"model: path={path} md5={md5_file(path)} sha256={sha256_file(path)}")
+        if not digested:
+            # A directory with nothing digest-able is as unproven as a missing one.
+            lines.append(f"model: MISSING (no {'/'.join(MODEL_SUFFIXES)} files under {models})")
+            missing.append("models")
     else:
         lines.append(f"model: MISSING ({models})")
         missing.append("models")

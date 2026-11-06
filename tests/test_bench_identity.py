@@ -117,3 +117,16 @@ def test_forgotten_venv_never_pins_a_system_wheel() -> None:
 
 def test_missing_inputs_make_exit_code_two() -> None:
     assert bench_identity.main([]) == 2
+
+
+def test_requested_model_dir_with_no_digestable_files_is_marked(tmp_path: Path) -> None:
+    """An empty or wrong file-type model dir must not pass as proven provenance."""
+    empty = tmp_path / "models"
+    empty.mkdir()
+    (empty / "notes.txt").write_text("no weights here")
+
+    lines, missing = bench_identity.build_block(None, empty, [])
+    text = "\n".join(lines)
+
+    assert "models" in missing
+    assert "model: MISSING (no" in text
