@@ -29,7 +29,7 @@ while i < N:
             "import ctypes as _ct",
             "_SP = None",
             'if os.environ.get("SPAN", "1") == "1":',
-            '    _SP = _ct.CDLL(os.environ.get("SPAN_SO", "/home/andryo/t2246/span.so"))',
+            '    _SP = _ct.CDLL(os.environ.get("SPAN_SO", os.path.expanduser("~/t2246/span.so")))',
             "    _SP.span_init.argtypes = []",
             "    _SP.span_init.restype = _ct.c_int",
             "    _SP.span_begin.argtypes = []",

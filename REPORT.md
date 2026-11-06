@@ -248,7 +248,7 @@ Joined every multi-line `//` comment block in the PR's added lines (base da9eeca
 ## Check lines
 
 1. **line-wrap, no-exemption** (PR diff added lines: code comments + .md, vs base da9eeca; + all commit messages in the PR; + PR body): **0** wrap continuations. Strict detector over added-line comment runs: 0; strict single-continuation pass: 0; .md prose runs: 0 (BUILD-RECIPE.md line runs are fenced-block command continuations — code-argument continuations, exempt and cited; the (a)-(e) labeled block in NOTES-research-stale-replay-input-20261031.md left untouched per the r4/re-review adjudication).
-2. **persona-leak** (PR diff added lines + commit messages + PR body; patterns marzuki-* hostnames, 100.64.0.0/10, andryo/andryo@*/home/andryo, neonvm@, 192.168.122.*, /mnt/models, *.junkyard.sh, guest-a): **0** (git author / Co-authored-by lines exempt).
+2. **persona-leak** (PR diff added lines + commit messages + PR body; the fleet scrub pattern list — hostnames, tailnet IPs, operator identity, guest details, personal domains): **0** (git author / Co-authored-by lines exempt).
 3. **style/format as CI** (on this head, and identical on a clean 4db875d checkout): `uv run ruff format --check .` = **84 files already formatted**; `uv run ruff check .` = **all checks passed**; `uv run pytest -m 'not gpu'` = **25 passed / 1 skipped**. (The 83/24 figures in the fix brief were measured on the pre-merge 585d231 tree, which lacks the 14 bench/*.py files brought in by the main merge; 84/25 is the actual state of 4db875d and of this head.)
 4. **restore integrity**: `git diff 7f5d20c <this-head>` restricted to the 2 restored hunks (device.cpp, eval.cpp): every CODE line byte-identical to 7f5d20c — **0** code-line changes, only comment-line joins.
 

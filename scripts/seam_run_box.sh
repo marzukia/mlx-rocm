@@ -2,7 +2,7 @@
 # t2231 seam run on the box (re-dispatch of the cancelled instance).
 # usage: seam_run_box.sh <ar|spec> <workdir> <venv-python> <rounds>
 # t2246 deltas vs the t2231 version:
-#  - LOCK is /home/andryo/gpu-bench.lock (the fleet lock; the t2231 version
+#  - LOCK is $HOME/gpu-bench.lock (the fleet lock; the t2231 version
 #    used gpu.lock, which t2223/t2241 do not take -> co-tenancy risk).
 #  - holder policy: record holder PIDs before each hold; all pids dead ->
 #    BROKE-STALE-LOCK (flock releases on process death), proceed.
