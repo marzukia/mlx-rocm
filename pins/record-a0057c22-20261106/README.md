@@ -1,6 +1,6 @@
 # Record tree pin - wheel a0057c22 (venv-m3k), 2026-11-06
 
-The source tree that produces the record wheel (libmlx md5 a0057c22, 69.43 tok/s config) exists ONLY as a box-local worktree on neon (/home/andryo/vendor-m3k). HEAD 75ca881b2e82f7b4069c8564a203792aa16d8a29 is absent from the fleet mirror and from the GH fork. This branch pins it:
+The source tree that produces the record wheel (libmlx md5 a0057c22, 69.43 tok/s config) exists ONLY as a box-local worktree on neon (worktree 'vendor-m3k' under the box home; path scrubbed per the standing persona rule). HEAD 75ca881b2e82f7b4069c8564a203792aa16d8a29 is absent from the fleet mirror and from the GH fork. This branch pins it:
 
 - head-75ca881.tar.gz: git archive of HEAD (clean base tree)
 - tracked-delta.patch: git diff HEAD (82 files, +6336/-694: the T3 route + the four levers QMM_M3/SDPA_S4VA/QMV_ROWS/REFWD_M1 + everything else perf-relevant)

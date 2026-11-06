@@ -73,7 +73,7 @@ import time
 import ctypes as _ct
 _SP = None
 if os.environ.get("SPAN", "1") == "1":
-    _SP = _ct.CDLL(os.environ.get("SPAN_SO", "/home/andryo/t2246/span.so"))
+    _SP = _ct.CDLL(os.environ.get("SPAN_SO", "/opt/fleet/span.so"))
     _SP.span_init.argtypes = []
     _SP.span_init.restype = _ct.c_int
     _SP.span_begin.argtypes = []
@@ -92,7 +92,7 @@ if os.environ.get("ROCTX", "1") == "1":
     try:
         _ROCTX = _ct.CDLL(os.environ.get(
             "ROCTX_SO",
-            "/home/andryo/rcp/new724/tree/opt/rocm-7.2.4/lib/librocprofiler-sdk-roctx.so"))
+            "/opt/fleet/librocprofiler-sdk-roctx.so"))
         _ROCTX.roctxRangeStartA.argtypes = [_ct.c_char_p]
         _ROCTX.roctxRangeStartA.restype = None
         _ROCTX.roctxRangeStop.argtypes = []
