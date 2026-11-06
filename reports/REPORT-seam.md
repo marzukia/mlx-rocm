@@ -171,8 +171,7 @@ not on the box. Fallback (recorded decision): **HIP event brackets**.
   t2241): AR = venv-verify, MTP=0, 1024-token run; SPEC = venv-m3k, the
   t2241 13-var record config verbatim, MTP_MAX_TOKENS=322.
 - Window: per-step stats over iteration index 16..47 (32 steps); t2241
-  cross-check from its own H1.json (token-indexed 16..48 window — see
-  caveat 3.7.3).
+  cross-check from its own H1.json (token-indexed 16..48 window — see caveat 3.7.3).
 - Identity: libmlx md5 `a0057c22…` (venv-m3k) and `8acf13fe…` (venv-verify)
   unchanged from the t2241 pre-run md5s; model md5
   `02a54359…` unchanged.
@@ -204,8 +203,7 @@ the 13-var record config (`MTP6_TAPE=hybrid MTP6_HEAD_H=postnorm
 MTP6_DRAFTGATE=1 MTP6_DGATE_T0=16 MTP6_NGRAM=1 MTP6_NGRAM_N=4` + five
 `MLX_ROCM_*` kernel flags). The bare defaults (tape=1, prenorm head) produce
 a different drafter (D1PCT 99.6) and greedy 9B falls into a 1919-repeat
-de-generation by token ~3 — a reminder that the record config is part of the
-protocol, not an optional optimization.
+de-generation by token ~3 — a reminder that the record config is part of the protocol, not an optional optimization.
 
 ### 3.2 AR arm (MTP=0, venv-verify lane wheel, 1024-token runs)
 
@@ -264,15 +262,10 @@ at or below measurement resolution. Two facts make the verdict robust:
    floor") would leave 15.48 - 11.3 = 4.18 ms of between-kernel time;
    fact 1 shows at most ~0.05 ms of it can be host-side, and the rest
    would have to be hardware kernel-transition latency of ~4.7 µs per op
-   (~900 ops) with the queue full — above the pipelined dispatch
-   overhead the ticket's own single-matmul-at-78%-of-floor results already
-   exclude (a single matmul reaches 76.8-80.2% of floor with no visible
-   launch gap). So the kernel sum is ≈ 14.5-15.5 ms ≈ the step wall.
+   (~900 ops) with the queue full — above the pipelined dispatch overhead the ticket's own single-matmul-at-78%-of-floor results already exclude (a single matmul reaches 76.8-80.2% of floor with no visible launch gap). So the kernel sum is ≈ 14.5-15.5 ms ≈ the step wall.
 
 Equivalently, step-level memory efficiency = 8.78/15.48 ≈ 57% of floor:
-the "missing" 6.7 ms vs the 11.3 ms expectation is per-op kernel
-inefficiency (GDN state updates, quantized dequant ops, norms, small
-kernels running well below the matmul's 78%), not between-kernel time.
+the "missing" 6.7 ms vs the 11.3 ms expectation is per-op kernel inefficiency (GDN state updates, quantized dequant ops, norms, small kernels running well below the matmul's 78%), not between-kernel time.
 
 ### 3.6 Profiler-overhead delta
 
@@ -310,19 +303,14 @@ the ticket's floor arithmetic predicted; the 6.7 ms delta is per-op kernel
 inefficiency (57% step-level memory efficiency vs the 78% single-matmul
 reference), i.e. the kernels are the problem.
 
-Consequences for the levers (section 1.3), ranked by what this profile
-actually supports:
+Consequences for the levers (section 1.3), ranked by what this profile actually supports:
 
 1. **Per-op kernel efficiency is the lever.** qMLX fused MLP
    (gate+up+SiLU+mul in one kernel; mlp is 38.9% of the verify wall) and
-   quantized-format work (MXFP4-class) attack the measured 57%-of-floor
-   step efficiency directly.
+   quantized-format work (MXFP4-class) attack the measured 57%-of-floor step efficiency directly.
 2. **GraphDecodePilot (one graph launch per step) is a small lever on this
 evidence**: with host-side gaps ≈ 0, a single launch per step can only
-   recover hardware kernel-transition overhead (order ~1 ms at most, and
-   unmeasured here — see caveat 3.7.1), not the 6.7 ms inefficiency. It
-   remains worth arming (env-gated, zero-risk fallback) but should not be
-   expected to close the gap to the 88 t/s anchor.
+   recover hardware kernel-transition overhead (order ~1 ms at most, and unmeasured here — see caveat 3.7.1), not the 6.7 ms inefficiency. It remains worth arming (env-gated, zero-risk fallback) but should not be expected to close the gap to the 88 t/s anchor.
 3. The 88 t/s anchor arithmetic (11.3 ms at 78%) is refuted as a
    same-step target: it assumed every op class runs at the single-matmul
    efficiency; the measured step says the non-matmul op classes run well
@@ -330,7 +318,6 @@ evidence**: with host-side gaps ≈ 0, a single launch per step can only
 
 What remains unmeasurable on this box (for the record): exact kernel sum,
 kernel counts per step, per-kernel breakdown, SCLK per round (the dGPU
-sampler read fails on busy sysfs in this guest). A future run on a
-rocprofv3-capable stack (ROCm 10.x Rust runtime or a host with HSA
+sampler read fails on busy sysfs in this guest). A future run on a rocprofv3-capable stack (ROCm 10.x Rust runtime or a host with HSA
 `queue_intercept`) would convert the 3.5 argument into a direct
 measurement.
