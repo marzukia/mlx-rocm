@@ -78,10 +78,42 @@ def test_digest_is_stable_for_identical_content(tmp_path: Path) -> None:
 
 def test_main_writes_block_to_out_path(tmp_path: Path) -> None:
     venv = _make_venv(tmp_path / "venv", b"x")
+    models = _make_models(tmp_path / "models")
     out = tmp_path / "nested" / "identity.txt"
 
-    code = bench_identity.main(["--venv", str(venv), "--out", str(out)])
+    code = bench_identity.main(["--venv", str(venv), "--models", str(models), "--out", str(out)])
 
     assert code == 0
     assert out.is_file()
     assert "identity_digest:" in out.read_text()
+
+
+def test_host_is_redacted_by_default_and_opt_in_when_asked() -> None:
+    default_lines, _ = bench_identity.build_block(None, None, [])
+    opt_in_lines, _ = bench_identity.build_block(None, None, [], include_host=True)
+
+    assert any(line.startswith("host: redacted") for line in default_lines)
+    assert not any("host: redacted" in line for line in opt_in_lines)
+    assert any(line.startswith("host: ") for line in opt_in_lines)
+
+
+def test_models_not_requested_is_marked_not_silently_absent() -> None:
+    lines, missing = bench_identity.build_block(None, None, [])
+    text = "\n".join(lines)
+
+    assert "models" in missing
+    assert "model: NOT REQUESTED" in text
+
+
+def test_forgotten_venv_never_pins_a_system_wheel() -> None:
+    """A missing --venv must be a MISSING field, never a confidently pinned wrong wheel."""
+    lines, missing = bench_identity.build_block(None, None, [])
+    text = "\n".join(lines)
+
+    assert "libmlx" in missing
+    assert "libmlx: MISSING" in text
+    assert "libmlx: path=" not in text
+
+
+def test_missing_inputs_make_exit_code_two() -> None:
+    assert bench_identity.main([]) == 2
