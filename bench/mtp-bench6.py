@@ -214,12 +214,17 @@ def main():
     tape_mode = "0"
     if mode in ("3", "4"):
         # T1917: the mode-3 (S=3, K=2) tape arm mirrors the mode-4 tape setup; MLX_ROCM_GDN_T3=1 enables the TMAX=3 instantiation (new wheel; the unpatched wheel's T=3 is rejected in use_fallback = clean error, no OOB).
-        # fold t20xx: default flipped 1 -> hybrid (config-of-record; the pure-tape
-        # protocol is degenerate on every prompt tested - see REPORT-ngram-s3-remed.md).
-        tape_mode = os.environ.get("MTP6_TAPE", "hybrid")
-        assert tape_mode in ("0", "1", "hybrid", "r5"), tape_mode
-        if tape_mode in ("1", "hybrid", "r5"):
-            os.environ["MLX_ROCM_GDN_TAPE"] = "1"
+        tape_mode = os.environ.get("MTP6_TAPE", "1")
+        assert tape_mode in ("0", "1", "hybrid", "r5", "slot"), tape_mode
+        if tape_mode in ("1", "hybrid", "r5", "slot"):
+            if tape_mode == "slot":
+                # SLOT (Phase B): the slot op snapshots the commit rows; the
+                # tape env stays OFF so the model dispatch (SLOT branch first,
+                # then TAPE) selects gdn_fused_step_slot for 2<=S<=4.
+                os.environ["MLX_ROCM_GDN_SLOT"] = "1"
+                os.environ["MLX_ROCM_GDN_TAPE"] = "0"
+            else:
+                os.environ["MLX_ROCM_GDN_TAPE"] = "1"
             os.environ["MLX_ROCM_GDN_T3"] = "1"
         os.environ["MLX_ROCM_GDN_FUSE"] = "1"
     # T1917 head probe env gates (all no-retraining; model weights unchanged):
@@ -535,7 +540,7 @@ def main():
 
             def commit(krow, prefix):
                 # Select the per-row GDN state-tape row (the state AFTER row krow) and rebind the cache leaves to the tape slice (lazy; no copies, no sync). Same structure as the mode-4 commit; the S=3 tape rows are indices 0, 1.
-                tape_avail = tape_mode in ("1", "hybrid", "r5")
+                tape_avail = tape_mode in ("1", "hybrid", "r5", "slot")
                 if tape_avail:
                     try:
                         st0 = lm.model.layers[0].linear_attn.last_tape[0]
@@ -547,8 +552,8 @@ def main():
                         if hasattr(c, "cache"):
                             st, cstab = lm.model.layers[i].linear_attn.last_tape
                             # tape rows are B-squeezed: restore the B dim
-                            c[1] = st[krow].reshape((1,) + st[krow].shape)
-                            c[0] = cstab[krow].reshape((1,) + cstab[krow].shape)
+                            c[1] = st[krow:krow+1]
+                            c[0] = cstab[krow:krow+1]
                     for c in cache:
                         if isinstance(c, KVCache):
                             c.trim(2 - krow)
@@ -568,7 +573,7 @@ def main():
                 committed = commit(krow, prefix)
                 if os.environ.get("MTP6_MTPCACHE_TRIM", "1") == "1":
                     mtp_cache[0].trim(ktrim)
-                if tape_mode == "r5" and committed:
+                if tape_mode in ("r5", "slot") and committed:
                     # R5: no S=1 correction re-forward; ctoken = row 0 of the next verify, draft re-anchors on the rejected row's h
                     pending_c = ctoken
                     h_r = hb
@@ -627,7 +632,7 @@ def main():
 
             def commit(krow, prefix):
                 # Select the per-row GDN state-tape row (the state AFTER row krow) and rebind the cache leaves to the tape slice (lazy; no copies, no sync). lengths is None in this model (advance() is a no-op), so no lengths fix-up.
-                tape_avail = tape_mode in ("1", "hybrid", "r5")
+                tape_avail = tape_mode in ("1", "hybrid", "r5", "slot")
                 if tape_avail:
                     try:
                         st0 = lm.model.layers[0].linear_attn.last_tape[0]
@@ -639,8 +644,8 @@ def main():
                         if hasattr(c, "cache"):
                             st, cstab = lm.model.layers[i].linear_attn.last_tape
                             # tape rows are B-squeezed: restore the B dim
-                            c[1] = st[krow].reshape((1,) + st[krow].shape)
-                            c[0] = cstab[krow].reshape((1,) + cstab[krow].shape)
+                            c[1] = st[krow:krow+1]
+                            c[0] = cstab[krow:krow+1]
                     for c in cache:
                         if isinstance(c, KVCache):
                             c.trim(3 - krow)
@@ -661,7 +666,7 @@ def main():
                 committed = commit(krow, prefix)
                 if os.environ.get("MTP6_MTPCACHE_TRIM", "1") == "1":
                     mtp_cache[0].trim(ktrim)
-                if tape_mode == "r5" and committed:
+                if tape_mode in ("r5", "slot") and committed:
                     # R5: no S=1 correction re-forward; ctoken = row 0 of the next verify, draft re-anchors on the rejected row's h
                     pending_c = ctoken
                     h_r = hb
