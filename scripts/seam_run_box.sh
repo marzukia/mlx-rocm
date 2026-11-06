@@ -26,6 +26,10 @@ esac
 
 ENVX="env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=<box-home> MODELS=<models-mount> HCC_AMDGPU_TARGET=gfx1201 LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libhsa-runtime64.so.1"
 
+# in-lock card settle + busy gate (runs as the first statement of every round script;
+# no quoting needed: the device ids are single tokens).
+SETTLE='ok=1; for f in /sys/class/drm/card[0-9]/device; do v=$(cat $f 2>/dev/null); [ -z $v ] && ok=0; done; n=0; while [ $ok -ne 1 ] && [ $n -lt 10 ]; do sleep 3; n=$((n+1)); ok=1; for f in /sys/class/drm/card[0-9]/device; do v=$(cat $f 2>/dev/null); [ -z $v ] && ok=0; done; done; [ $ok = 1 ] || { echo SYSFS-BUSY-HARD-FAIL; exit 41; }'
+
 sclk() { $SCLK --showclocks 2>/dev/null | grep -iE "sclk|pclk" | head -3; }
 
 # sustained clock sampler: inside the lock hold, before the workload
@@ -56,19 +60,15 @@ holder_check() {
   fi
 }
 
-# sysfs busy = HARD FAILURE: an exclusively-held card returns empty device reads.
-sysfs_check() {
-  local f v n=0
+# sanity check, only when the lock is free (a live co-tenant makes the read
+# empty by design - that is the wait case, not the fail case).
+sysfs_sanity() {
+  local f v
   for f in /sys/class/drm/card[0-9]/device; do
     [ -e "$f" ] || continue
-    n=$((n+1))
     v=$(cat "$f" 2>/dev/null)
-    if [ -z "$v" ]; then
-      echo "SYSFS-BUSY-HARD-FAIL $f"
-      exit 41
-    fi
+    if [ -z "$v" ]; then echo "SYSFS-BUSY (lock free but card busy - waiting on flock)"; fi
   done
-  [ "$n" -ge 1 ] || { echo "SYSFS-BUSY-HARD-FAIL (no card nodes)"; exit 41; }
 }
 
 cotentancy() {
@@ -80,9 +80,9 @@ cotentancy() {
 hold() { # $1 round-script path, $2 log path
   local t0 t1
   t0=$(date +%s)
-  sysfs_check
   holder_check
   cotenancy
+  if [ -z "$(fuser "$LOCK" 2>/dev/null | tr -d ' ')" ]; then sysfs_sanity; fi
   flock "$LOCK" -c "bash $1" > "$2" 2>&1
   echo "exit=$? hold-wait-sec=$(( $(date +%s) - t0 ))"
 }
@@ -94,6 +94,7 @@ echo "== CALIB $ARM $(date -u +%H:%M:%S)"
 rm -rf "$W/calib_$ARM"
 cat > "$W/calib_$ARM.sh" <<EOF
 #!/bin/bash
+${SETTLE}
 $ENVX /opt/rocm/bin/rocprofv2 --kernel-trace -o $W/calib_$ARM "$VPY" <box-home>/seam-t2231-calib.py
 EOF
 chmod +x "$W/calib_$ARM.sh"
@@ -109,6 +110,7 @@ for i in $(seq 1 $N); do
   echo "== CLEAN $ARM round $i $(date -u +%H:%M:%S)"
   cat > "$W/round_$ARM_c$i.sh" <<EOF
 #!/bin/bash
+${SETTLE}
 $ENVX $AENV MTP_MAX_TOKENS=322 "$VPY" $BENCH
 EOF
   chmod +x "$W/round_$ARM_c$i.sh"
@@ -124,6 +126,7 @@ for i in $(seq 1 $N); do
   rm -rf "$W/profout_$ARM_$i"
   cat > "$W/round_$ARM_p$i.sh" <<EOF
 #!/bin/bash
+${SETTLE}
 $ENVX $AENV /opt/rocm/bin/rocprofv2 --kernel-trace -o $W/profout_$ARM_$i "$VPY" $W/seam_step.py
 EOF
   chmod +x "$W/round_$ARM_p$i.sh"
