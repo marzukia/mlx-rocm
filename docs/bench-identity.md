@@ -14,8 +14,8 @@ uv run python scripts/bench_identity.py --venv .venv --models ./models --bench b
 
 Fields:
 
-- `--venv`: the venv root whose wheel is under test. The venv's own interpreter is asked for the MLX version, so a host interpreter cannot answer on the wheel's behalf.
-- `--models`: a model directory. Every `.safetensors`, `.json` and `.npz` file under it is digested, so a sidecar that changed format between two runs cannot pass as the same input.
+- `--venv`: the venv root whose wheel is under test. There is no system-wheel fallback: a forgotten `--venv` marks `libmlx` as `MISSING` rather than pinning an unrelated wheel. The venv's own interpreter is asked for the MLX version, so a host interpreter cannot answer on the wheel's behalf.
+- `--models`: a model directory (required for a complete block; omitting it marks the field `NOT REQUESTED` and exits 2). Every `.safetensors`, `.json` and `.npz` file under it is digested, so a sidecar that changed format between two runs cannot pass as the same input.
 - `--bench`: one or more bench files to digest. A bench edited between arms is a different experiment.
 - `--out`: write to a file. Without it the block goes to stdout.
 
@@ -23,7 +23,7 @@ Exit code 0 means the block is complete. Exit code 2 means a requested input was
 
 ## What the block contains
 
-- Host and machine, so an architecture difference cannot hide in a comparison.
+- Host and machine, so an architecture difference cannot hide in a comparison. The hostname is redacted unless `--include-host` is passed, because reports in this repo are public and a hostname is operational information. Machine and kernel are always recorded.
 - The wheel: path, md5 and sha256. Both digests are emitted because existing reports in this repo quote md5 prefixes; sha256 is there for anything that needs collision resistance.
 - The MLX version as reported by the venv's interpreter.
 - GPU identity by PCI address and vendor/device id, plus the marketing names when ROCm tooling is present.
