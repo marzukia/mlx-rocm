@@ -5,18 +5,13 @@ not inside them. Verified arithmetic: AR reference 16.93 ms/step, 59.10 t/s
 (t2222 session); one pass over trunk weights ~5.54 GB; in-session streaming floor
 ~631 GB/s → 8.8 ms floor; single large matmul in isolation hits 76.8-80.2% of
 floor (t2199/t2207) → if every op ran at 78%, the step would be 8.8/0.78 =
-11.3 ms = 88 t/s ≈ llama.cpp non-speculative anchor 87 t/s. EXPECTED: AR kernel
-sum ~11 ms vs step wall ~17 ms. If the kernel sum is already ~17 ms the
+11.3 ms = 88 t/s ≈ llama.cpp non-speculative anchor 87 t/s. EXPECTED: AR kernelsum ~11 ms vs step wall ~17 ms. If the kernel sum is already ~17 ms the
 hypothesis is DEAD — the kernels are the problem.
 
 Token bases: AR = 1 tok/step vs record spec = 2.193 tok/step. Different bases:
 stated whenever tok/s is compared.
 
-## 1. Code-first: graph-decode state on the two wheels (no GPU)
-
-Question: which is true NOW on the lane wheel (venv-verify, libmlx 8acf13fe) and
-the record wheel (venv-m3k, libmlx a0057c22): (a) capture+replay armed (one
-graph launch per step), (b) capture-then-relaunch-every-step, or (c) eager with
+## 1. Code-first: graph-decode state on the two wheels (no GPU)Question: which is true NOW on the lane wheel (venv-verify, libmlx 8acf13fe) andthe record wheel (venv-m3k, libmlx a0057c22): (a) capture+replay armed (onegraph launch per step), (b) capture-then-relaunch-every-step, or (c) eager with
 one launch per op.
 
 ### 1.1 The machine, as it stands in the committed vendor source
@@ -85,9 +80,7 @@ note) contains exactly ONE live graph path for decode, and it is the
 
   i.e. there is no rebuild-every-eval graph path in flight.
 
-- The bench/serve path matters: `gpu_set_graph_decode_mode(bool)` (eval.cpp:738)
-  is the only C entry that set the old dormant machine, and it is declared in
-  NO header (grep over the whole vendor tree: the only occurrences are the
+- The bench/serve path matters: `gpu_set_graph_decode_mode(bool)` (eval.cpp:738)  is the only C entry that set the old dormant machine, and it is declared in  NO header (grep over the whole vendor tree: the only occurrences are the
   definition and its own comment). The free-function bridge
   `mlx::core::decode_capture_begin/end_record/replay/destroy`
   (device.cpp:2464-2480) likewise has zero in-tree callers. WORKSTATE.md:66
@@ -109,8 +102,7 @@ MLX_ROCM_SDPA_S4VA=1 MLX_ROCM_REFWD_M1=1 MLX_QMV_MR_LX=0 MTP_MAX_TOKENS=322;
 record 13-var: MLX_MTP=3 MTP6_TAPE=hybrid MLX_ROCM_GDN_TAPE=1
 MLX_ROCM_GDN_T3=1 MTP6_HEAD_H=postnorm MTP6_DRAFTGATE=1 MTP6_DGATE_T0=16
 MTP6_NGRAM=1 MTP6_NGRAM_N=4 MLX_ROCM_SDPA_S4VA=1 MLX_ROCM_QMV_ROWS=1
-MLX_ROCM_REFWD_M1=1 MLX_QMV_MR_LX=0 MLX_ROCM_QMM_M3=1 MTP_MAX_TOKENS=322).
-**CONFIRMED on the box (2026-11-06), state (c) EAGER, one launch per op, both
+MLX_ROCM_REFWD_M1=1 MLX_QMV_MR_LX=0 MLX_ROCM_QMM_M3=1 MTP_MAX_TOKENS=322).**CONFIRMED on the box (2026-11-06), state (c) EAGER, one launch per op, both
 wheels:**
 
 - Wheel provenance: both dist-infos say `mlx-0.32.3.dev20261104+75ca881`
@@ -135,9 +127,7 @@ wheels:**
   deliberately: e.g. `90x [g1] graph decode: armed (small steps 852/876 ops);
   capturing next`, `58x [g1] graph decode: step captured+launched (ops=876,
   slot=0, active)`, `18x [g1] graph decode: replay step discarded (ops=860,
-  big=0, div=1)` — evidence the capture+replay machine arms when enabled).
-- Predicted measurement signature of the eager state: hundreds-to-thousands of
-  kernel launches per step (a graph-armed step would be ONE graph launch per
+  big=0, div=1)` — evidence the capture+replay machine arms when enabled).- Predicted measurement signature of the eager state: hundreds-to-thousands of  kernel launches per step (a graph-armed step would be ONE graph launch per
   step). Checked by the measured kernel count per step in section 3.
 
   Note the design answer for the state question: the in-tree design is (a)
@@ -166,18 +156,14 @@ wheels:**
   policy per brief). Profiler: rocprofv2 (ROCm 7.2.0 userland, /opt/rocm/bin;
   v2 binary is named `rocprofv2` on this box), `--kernel-trace`.
 - Clean rounds: pinned mtp-bench6.py (md5 54ce16ac29e6c6aad2c48a233ff70d85),
-  no profiler, MTP_MAX_TOKENS=322 per arm — step wall from these rounds.
-- Profiled rounds: a per-step driver (scripts/seam_step.py) replicating the bench
+  no profiler, MTP_MAX_TOKENS=322 per arm — step wall from these rounds.- Profiled rounds: a per-step driver (scripts/seam_step.py) replicating the bench
   loop body exactly, warmup + ONE marker-bracketed step, under rocprof-v2
   kernel trace; per step: kernel-duration sum, kernel count, profiled wall.
   Profiler overhead = profiled step wall minus clean step wall (measured delta).
 - SCLK sampled 25 s idle before the sample; per-arm P-state recorded;
   bench_identity.py pre and post per arm.
 
-## 3. Results
-
-(measurement pending — kernel sums, walls, seams, kernel counts, per-round
-variance, profiler-overhead delta, identity blocks, SCLK/P-state, telemetry
+## 3. Results(measurement pending — kernel sums, walls, seams, kernel counts, per-roundvariance, profiler-overhead delta, identity blocks, SCLK/P-state, telemetry
 caveats)
 
 ## 4. Verdict
