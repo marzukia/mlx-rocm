@@ -81,6 +81,16 @@ READ (audit section C item 6): `lm_head_int2.hip` exists in the vendor tree line
 ## The order of work
 
 1. Confirm the call-count table on the current wheel. The shape is known from an older wheel; this run should confirm or correct it and be short, not a rediscovery.
-2. Attack the call count in the two fattest buckets by launches, not by kernel weight: 260 GEMV calls per token against a ~121-matmul layer count, and 153 norm plus 145 copy launches per token. Fewer, larger calls is the lever the table points at.
+2. Do NOT attack the call count: it reconciles exactly to 249 expected launches and the launch axis is a few percent (see the correction section).
 3. Dense fused gate/up if the elementwise and norm share confirms it is worth it; the framework exists (`fast.h`) and only the dense case is missing.
 4. Wheel build plus A/B for the int2 head, in parallel if the pool allows.
+
+## Correction — the GEMV call count is not a defect
+
+An earlier draft of this document treated "260 quantized-matmul launches per token where a 24-layer dense model implies ~121" as a lead. That inference was wrong, and the error was mine: 121 assumed one matmul per layer and omitted the 96 MLP linears, the 32 full-attention linears and the GDN gate/beta/alpha projections.
+
+READ, `reports/gemv-callcount.md` (branch `gemv-callcount-analysis` @ `ae69da1`): the in-tree architecture is 32 hybrid layers (24 GDN, 8 full attention at interval 4). Each GDN layer issues in_proj_qkv (fused) + in_proj_z + in_proj_b + in_proj_a + out_proj + 3 MLP linears; each full-attention layer issues q/gate + k + v + o + 3 MLP linears; plus lm_head. Expected = **249 launches per forward**. Observed 12,450 = 249 x 50 exactly, and the "260 per token" was a divisor artifact (the profiled region held 50 single-token forwards, not 48). Delta from expected: zero. The count is wheel-invariant.
+
+The same report prices the launch axis honestly: fusing qkvz (-24), beta/alpha (-24), gate_up (-32) and the full-attention KV writes (-16) takes 249 to 153 launches, a 24% cut, all load-time weight merges that are mathematically identical — and it measures the total launch overhead at only ~0.2-0.5 ms of a ~4.65 ms per-token fixed floor. A few percent.
+
+Consequence for this document: the launch axis is a few percent, not a headline. Graph capture and call-count reduction drop to the bottom of the list, and the two live levers are the weight stream's 76%-of-ceiling efficiency and the non-GEMM kernel cost itself. The 9.46 ms GEMV row is bandwidth and layout on 249 real matmuls, not a redundancy.
