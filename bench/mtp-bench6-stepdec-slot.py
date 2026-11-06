@@ -382,7 +382,7 @@ def main():
         if qh is not None and "wbf16" in qh:
             return int(mx.argmax(mx.matmul(dh, qh["wbf16"].T)[0, -1]))
         return int2_argmax(dh, qh) if qh is not None else int(
-            mx.argmax(lm.lm_head(dh)[0, -1])
+            mx.argmax(lm.lm_head(dh.astype(mx.bfloat16))[0, -1])
         )
 
     def hhead(x):
