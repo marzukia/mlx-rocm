@@ -28,7 +28,7 @@ ENVX="env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin H
 
 # in-lock card settle + busy gate (runs as the first statement of every round script;
 # no quoting needed: the device ids are single tokens).
-SETTLE='ok=1; for f in /sys/class/drm/card[0-9]/device/device; do v=$(cat $f 2>/dev/null); [ -z $v ] && ok=0; done; n=0; while [ $ok -ne 1 ] && [ $n -lt 10 ]; do sleep 3; n=$((n+1)); ok=1; for f in /sys/class/drm/card[0-9]/device/device; do v=$(cat $f 2>/dev/null); [ -z $v ] && ok=0; done; done; [ $ok = 1 ] || echo SYSFS-READ-EMPTY (GPU in low-power state; proceeding - workload wakes the device)'
+SETTLE='ok=1; for f in /sys/class/drm/card[0-9]/device/device; do v=$(cat $f 2>/dev/null); [ -z $v ] && ok=0; done; n=0; while [ $ok -ne 1 ] && [ $n -lt 10 ]; do sleep 3; n=$((n+1)); ok=1; for f in /sys/class/drm/card[0-9]/device/device; do v=$(cat $f 2>/dev/null); [ -z $v ] && ok=0; done; done; [ $ok = 1 ] || echo "SYSFS-READ-EMPTY: GPU in low-power state; proceeding - workload wakes the device"'
 
 sclk() { $SCLK --showclocks 2>/dev/null | grep -iE "sclk|pclk" | head -3; }
 
