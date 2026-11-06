@@ -35,8 +35,9 @@ md5block() { # $1 label; prints md5 lines for bench/venv-lib/model sidecar
   echo "--- md5 $1 ---"
   md5sum "$BENCH" "$VLIB" <models-mount>/qwen3-9b-mlx/model-mtp.safetensors
   # card identity: card0 must be 0x7550 (work dGPU), card1 0x13c0 (iGPU, never used)
-  for c in /sys/class/drm/card*/device; do
-    echo "card-identity $(basename $(dirname $c)) $(cat $c/vendor 2>/dev/null | xargs) $(cat $c/device 2>/dev/null | xargs)"
+  for d in /sys/class/drm/card[0-9]; do
+    [ -e "$d/device" ] || continue
+    echo "card-identity $(basename $d) $(cat $d/device/vendor 2>/dev/null | xargs) $(cat $d/device/device 2>/dev/null | xargs)"
   done
 }
 
@@ -57,14 +58,17 @@ holder_check() {
 
 # sysfs busy = HARD FAILURE: an exclusively-held card returns empty device reads.
 sysfs_check() {
-  local f v
-  for f in /sys/class/drm/card*/device/device; do
+  local f v n=0
+  for f in /sys/class/drm/card[0-9]/device; do
+    [ -e "$f" ] || continue
+    n=$((n+1))
     v=$(cat "$f" 2>/dev/null)
     if [ -z "$v" ]; then
-      echo "SYSFS-BUSY-HARD-FAIL $?"
+      echo "SYSFS-BUSY-HARD-FAIL $f"
       exit 41
     fi
   done
+  [ "$n" -ge 1 ] || { echo "SYSFS-BUSY-HARD-FAIL (no card nodes)"; exit 41; }
 }
 
 cotentancy() {
@@ -90,11 +94,12 @@ echo "== CALIB $ARM $(date -u +%H:%M:%S)"
 rm -rf "$W/calib_$ARM"
 cat > "$W/calib_$ARM.sh" <<EOF
 #!/bin/bash
-$(ENVX) /opt/rocm/bin/rocprofv2 --kernel-trace -o $W/calib_$ARM "$VPY" <box-home>/seam-t2231-calib.py
+$ENVX /opt/rocm/bin/rocprofv2 --kernel-trace -o $W/calib_$ARM "$VPY" <box-home>/seam-t2231-calib.py
 EOF
 chmod +x "$W/calib_$ARM.sh"
 hold "$W/calib_$ARM.sh" "$W/calib_$ARM.log"
 grep -acE "BOOT|M1|M2|M3" "$W/calib_$ARM.log" | sed 's/^/calib-marker-prints: /'
+grep -q "M3" "$W/calib_$ARM.log" || { echo "CALIB-FAIL: marker prints missing; aborting arm"; exit 42; }
 ls "$W/calib_$ARM" 2>/dev/null | head -5
 
 echo "=== SCLK-IDLE pre $(date -u +%H:%M:%S)"
@@ -104,7 +109,7 @@ for i in $(seq 1 $N); do
   echo "== CLEAN $ARM round $i $(date -u +%H:%M:%S)"
   cat > "$W/round_$ARM_c$i.sh" <<EOF
 #!/bin/bash
-$(ENVX) $AENV MTP_MAX_TOKENS=322 "$VPY" $BENCH
+$ENVX $AENV MTP_MAX_TOKENS=322 "$VPY" $BENCH
 EOF
   chmod +x "$W/round_$ARM_c$i.sh"
   ( sampler "$W/clean_$ARM_$i.sclk" ) &
@@ -119,7 +124,7 @@ for i in $(seq 1 $N); do
   rm -rf "$W/profout_$ARM_$i"
   cat > "$W/round_$ARM_p$i.sh" <<EOF
 #!/bin/bash
-$(ENVX) $AENV /opt/rocm/bin/rocprofv2 --kernel-trace -o $W/profout_$ARM_$i "$VPY" $W/seam_step.py
+$ENVX $AENV /opt/rocm/bin/rocprofv2 --kernel-trace -o $W/profout_$ARM_$i "$VPY" $W/seam_step.py
 EOF
   chmod +x "$W/round_$ARM_p$i.sh"
   ( sampler "$W/prof_$ARM_$i.sclk" ) &
