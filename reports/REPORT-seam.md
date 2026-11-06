@@ -110,11 +110,40 @@ record 13-var: MLX_MTP=3 MTP6_TAPE=hybrid MLX_ROCM_GDN_TAPE=1
 MLX_ROCM_GDN_T3=1 MTP6_HEAD_H=postnorm MTP6_DRAFTGATE=1 MTP6_DGATE_T0=16
 MTP6_NGRAM=1 MTP6_NGRAM_N=4 MLX_ROCM_SDPA_S4VA=1 MLX_ROCM_QMV_ROWS=1
 MLX_ROCM_REFWD_M1=1 MLX_QMV_MR_LX=0 MLX_ROCM_QMM_M3=1 MTP_MAX_TOKENS=322).
-Code prediction, to be confirmed on the box (libmlx `strings` for the pilot
-strings + the bench log's `graph decode:` lines): **state (c) eager, one launch
-per op** on both wheels — which is also what the measured kernel count per step
-should show (hundreds-to-thousands of kernels/step; a graph-armed step would be
-ONE graph launch per step).
+**CONFIRMED on the box (2026-11-06), state (c) EAGER, one launch per op, both
+wheels:**
+
+- Wheel provenance: both dist-infos say `mlx-0.32.3.dev20261104+75ca881`
+  (= the vendor.json base); the lane wheel was built from the `vendor-r4v`
+  lane build tree (tmax3r-build.sh: "vendor-r4v (the lane build tree)"), the
+  record wheel from `vendor-m3k` (build-m3k.log: wheel
+  `mlx-0.32.3.dev20261104+75ca881`, `libmlx-md5: a0057c22...` = the in-box
+  venv-m3k libmlx, md5-verified both pre-run below). Both libmlx binaries carry
+  the pilot: `strings | grep -c "graph decode:"` = **17** on each wheel
+  (including `graph decode: capture begin failed; staying eager`).
+- The pilot's env gate is never set by the measured configs: `grep GRAPH_DECODE`
+  over the current battery scripts (t2212-ab.sh, t2213-oobfix-battery.sh,
+  tmax3r-build.sh, verify_eff_run.sh) = **zero hits**; `MLX_ROCM_GRAPH_DECODE=1`
+  exists only in the old diagnostic runners (diag.sh, diag2/3/4.sh, gd2/gd3
+  runner, gd4fix-r4-run.sh).
+- The bench logs confirm: the current battery logs (t2190-oobfix/*.log —
+  t2213 battery) contain **0** `graph decode:` / `[g1]` lines (e.g. PRE-can.log
+  goes straight from the `[mlx-rocm] bound HIP device 0: gfx1201 ...` boot
+  lines to `INFO TAPEMODE=hybrid REFWDS=... MTP=4 LOAD=... GEN=...`); the only
+  `graph decode:` lines on the box are from the old G1/G2 diagnostic sessions
+  (t1788/G1.log, r4x-r4/PG.log, r4v-r3chk/INST_G.log, where the gate was set
+  deliberately: e.g. `90x [g1] graph decode: armed (small steps 852/876 ops);
+  capturing next`, `58x [g1] graph decode: step captured+launched (ops=876,
+  slot=0, active)`, `18x [g1] graph decode: replay step discarded (ops=860,
+  big=0, div=1)` — evidence the capture+replay machine arms when enabled).
+- Predicted measurement signature of the eager state: hundreds-to-thousands of
+  kernel launches per step (a graph-armed step would be ONE graph launch per
+  step). Checked by the measured kernel count per step in section 3.
+
+  Note the design answer for the state question: the in-tree design is (a)
+  capture-once-then-replay (one graph launch per step, exec-cache via
+  hipGraphExecUpdate), NOT the WORKSTATE-era per-step re-capture (b); and (a)
+  exists but is off (env-gated) in both measured wheels.
 
 ### 1.3 Levers named (not implemented)
 
@@ -129,10 +158,13 @@ ONE graph launch per step).
 
 ## 2. Method
 
-- Box: neon, dGPU card0 (PCI device id 0x7550) only; card1 (0x13c0 iGPU) never
-  used; GPU under `env -i` with LD_PRELOAD of the system libhsa-runtime64.so.1
-  and HCC_AMDGPU_TARGET=gfx1201; serialized on /home/andryo/gpu.lock (holder PID
-  recorded before each hold; stale-lock policy per brief).
+- Box: neon, dGPU card0 (PCI 0000:03:00.0, device id 0x7550) only; card1
+  (0000:75:00.0, 0x13c0 iGPU) never used; GPU under `env -i` with LD_PRELOAD
+  of the system libhsa-runtime64.so.1 (/usr/lib/x86_64-linux-gnu) and
+  HCC_AMDGPU_TARGET=gfx1201; serialized on
+  /home/andryo/gpu.lock (holder PID recorded before each hold; stale-lock
+  policy per brief). Profiler: rocprofv2 (ROCm 7.2.0 userland, /opt/rocm/bin;
+  v2 binary is named `rocprofv2` on this box), `--kernel-trace`.
 - Clean rounds: pinned mtp-bench6.py (md5 54ce16ac29e6c6aad2c48a233ff70d85),
   no profiler, MTP_MAX_TOKENS=322 per arm — step wall from these rounds.
 - Profiled rounds: a per-step driver (scripts/seam_step.py) replicating the bench

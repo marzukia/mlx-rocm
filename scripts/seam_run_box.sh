@@ -53,6 +53,9 @@ for i in $(seq 1 $N); do
   grep -E "TOKS_S|INFO TAPEMODE" "$W/clean_$ARM_$i.log" | tail -3
 done
 
+# co-tenancy note: the pending prior-dispatch run (t2231 nongemm_run.sh) waits on
+# gpu-bench.lock (held by the stuck tmax3r probe), so it cannot start inside our
+# gpu.lock window; the stuck probe is host-bound (gpu_busy ~3% ambient).
 for i in $(seq 1 $N); do
   echo "== PROF $ARM round $i $(date -u +%H:%M:%S)"
   echo "HOLDER: $(fuser $LOCK 2>&1 | head -1 || true)"
