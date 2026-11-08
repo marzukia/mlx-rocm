@@ -46,7 +46,7 @@ The 92.23 t/s record (stamp commit 0cb21ec; venv-slot, libmlx md5 259f9aeefe3ec0
 |---|---|
 | `WORKSTATE.md` (root) | folded into this README (file deleted) |
 | `REPORT-consolidate.md` (root) | `docs/audit/pr22-consolidation.md` |
-| root `REPORT-*.md` (26 files) + `NOTES*.md` (5 files) | folded into the four stream digests (files deleted) |
+| root `REPORT-*.md` (20 files) + `NOTES*.md` (5 files) | folded into the four stream digests (files deleted) |
 | `reports/` (19 files: 17 .md, 1 .txt, 1 .log) | `docs/audit/` (verbatim; .md reflowed) |
 | `reviews/` (4 files) | `docs/audit/` (verbatim, reflowed) |
 | `patch/refwd-m1-port.patch` | `docs/audit/reference/refwd-m1-port.patch` (prepared but never applied, and not hunk-wellformed under the patches/ gate — kept as a record, not a live patch) |
