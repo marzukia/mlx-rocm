@@ -492,6 +492,234 @@ class GatedDeltaUpdate : public Custom {
  private:
 };
 
+class GdnFusedStep : public Custom {
+ public:
+  GdnFusedStep(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback,
+      float inv_scale,
+      float eps,
+      float norm_eps)
+      : Custom(stream, std::move(fallback)),
+        inv_scale_(inv_scale),
+        eps_(eps),
+        norm_eps_(norm_eps) {}
+
+  static bool use_fallback(
+      int B,
+      int T,
+      int Dk,
+      int Dv,
+      int Hv,
+      int Hk,
+      int kernel_size,
+      Stream s);
+
+  DEFINE_DEFAULT_IS_EQUIVALENT()
+
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    return {inputs[9].shape(), inputs[10].shape()};  // z, state
+  }
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(GdnFusedStep);
+
+ private:
+  float inv_scale_;
+  float eps_;
+  float norm_eps_;
+};
+class GdnFusedStepTape : public Custom {
+ public:
+  GdnFusedStepTape(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback,
+      float inv_scale,
+      float eps,
+      float norm_eps)
+      : Custom(stream, std::move(fallback)),
+        inv_scale_(inv_scale),
+        eps_(eps),
+        norm_eps_(norm_eps) {}
+
+  static bool use_fallback(
+      int B,
+      int T,
+      int Dk,
+      int Dv,
+      int Hv,
+      int Hk,
+      int kernel_size,
+      Stream s);
+
+  DEFINE_DEFAULT_IS_EQUIVALENT()
+
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    int T = (int)inputs[9].shape(1);
+    int Hv = (int)inputs[9].shape(2);
+    int key_dim = (int)inputs[0].shape(2);
+    int value_dim = (int)inputs[2].shape(2);
+    int conv_dim = 2 * key_dim + value_dim;
+    return {inputs[9].shape(),
+            inputs[10].shape(),
+            {T, Hv, 128, 128},
+            {T, 3, conv_dim}};
+  }
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(GdnFusedStepTape);
+
+ private:
+  float inv_scale_;
+  float eps_;
+  float norm_eps_;
+};
+// LMHeadInt2: int2 g128-asymmetric dequant GEMV (M=1) + in-kernel per-64-column top-8 candidate emission (see backend/rocm/lm_head_int2.hip). Inputs: x [M, K] bf16, wq [N, K/4] u8, scale [N, NG] f32 (per-group s), zs [N, NG] f32 (z*s), sx [NG] f32 (sum of x per 128-group). Outputs: logits [N] f32, cand_val [N/64, 8] f32, cand_col [N/64, 8] i32.
+class LMHeadInt2 : public Custom {
+ public:
+  LMHeadInt2(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback)
+      : Custom(stream, std::move(fallback)) {}
+
+  static bool use_fallback(Stream s);
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(LMHeadInt2);
+
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    int N = (int)inputs[1].shape(0);
+    int NG = (int)inputs[4].shape(0);
+    (void)NG;
+    return {Shape{N}, Shape{N / 64, 8}, Shape{N / 64, 8}};
+  }
+};
+// LMHeadInt2W: vectorized (wave-wide) int2 g128-asymmetric dequant GEMV (M=1) - the R4c scalar port's vectorized follow-up (see backend/rocm/lm_head_int2w.hip). Same inputs/contract as LMHeadInt2; candidate arrays are [N/32, 8] (per-32-column top-8, refining the scalar's per-64) with shape guards N%32 + K%512.
+class LMHeadInt2W : public Custom {
+ public:
+  LMHeadInt2W(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback)
+      : Custom(stream, std::move(fallback)) {}
+
+  static bool use_fallback(Stream s);
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(LMHeadInt2W);
+
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    int N = (int)inputs[1].shape(0);
+    int NG = (int)inputs[4].shape(0);
+    (void)NG;
+    return {Shape{N}, Shape{N / 32, 8}, Shape{N / 32, 8}};
+  }
+};
+class GdnPrep : public Custom {
+ public:
+  GdnPrep(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback,
+      int key_dim,
+      int value_dim,
+      int conv_dim,
+      int kernel_size,
+      float inv_scale,
+      float eps)
+      : Custom(stream, std::move(fallback)),
+        key_dim_(key_dim),
+        value_dim_(value_dim),
+        conv_dim_(conv_dim),
+        kernel_size_(kernel_size),
+        inv_scale_(inv_scale),
+        eps_(eps) {}
+
+  DEFINE_DEFAULT_IS_EQUIVALENT()
+
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    return {
+        inputs[0].shape(),  // q_normed
+        inputs[1].shape(),  // k_normed
+        inputs[2].shape(),  // v_conv
+        inputs[3].shape(),  // beta
+        inputs[4].shape()   // g
+    };
+  }
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(GdnPrep);
+
+ private:
+  int key_dim_;
+  int value_dim_;
+  int conv_dim_;
+  int kernel_size_;
+  float inv_scale_;
+  float eps_;
+};
+
+class GdnNormGated : public Custom {
+ public:
+  GdnNormGated(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback,
+      float eps)
+      : Custom(stream, std::move(fallback)),
+        eps_(eps) {}
+
+  DEFINE_DEFAULT_IS_EQUIVALENT()
+
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    return {inputs[0].shape()};
+  }
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(GdnNormGated);
+
+ private:
+  float eps_;
+};
+
+
 class Quantize : public Custom {
  public:
   explicit Quantize(
@@ -595,5 +823,7 @@ class CustomKernel : public Primitive {
   int shared_memory_;
   CompileOptions::Data compile_options_;
 };
+
+
 
 } // namespace mlx::core::fast

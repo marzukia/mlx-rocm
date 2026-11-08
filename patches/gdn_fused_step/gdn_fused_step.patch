@@ -2,7 +2,7 @@ diff --git a/mlx/backend/rocm/CMakeLists.txt b/mlx/backend/rocm/CMakeLists.txt
 index 49d4985f..fc535622 100644
 --- a/mlx/backend/rocm/CMakeLists.txt
 +++ b/mlx/backend/rocm/CMakeLists.txt
-@@ -159,6 +159,7 @@ set(HIP_SOURCES
+@@ -159,6 +159,7 @@
      ${CMAKE_CURRENT_SOURCE_DIR}/reduce/init_reduce.hip
      ${CMAKE_CURRENT_SOURCE_DIR}/rms_norm.hip
      ${CMAKE_CURRENT_SOURCE_DIR}/gdn_prep.hip
@@ -511,7 +511,7 @@ index 00000000..cc2b8b03daab1cd5d9e7524ac5aed0cf986cbbfe
 +        mlx::core::rocm::malloc_async(dbg_arr.nbytes(), encoder));
 +  }
 +
-+  // Shape-based dims (B=1 guaranteed by use_fallback; T is 1, 2 or 4):
++  // Shape-based dims (B=1 guaranteed by use_fallback; T is 1, 2, 3 or 4):
 +  //   q [1, T, key_dim]  k [1, T, key_dim]  v [1, T, value_dim]
 +  //   z [1, T, Hv, 128]  nw [128]  cs [3, conv_dim]  cw [conv_dim, 4]
 +  int Tlen = (int)q.shape(1);
@@ -522,7 +522,7 @@ index 00000000..cc2b8b03daab1cd5d9e7524ac5aed0cf986cbbfe
 +  int num_v_heads = (int)zg.size() / head_dim / Tlen;
 +  int num_k_heads = key_dim / head_dim;
 +
-+  // TMAX is a template constant so the t loop unrolls and the conv-window ternaries fold: the T=1 decode path compiles to exactly the original straight-line T=1 kernel (a runtime Tlen bound left a ~0.3% regression in the latency-bound AR loop), and TMAX=2 folds to the T=2 windows. T=4 (S=4 MTP verify) instantiates the same unrolled structure over 4 rows; h stays register-resident across all rows (r4d's T loop).
++  // TMAX is a template constant so the t loop unrolls and the conv-window ternaries fold: the T=1 decode path compiles to exactly the original straight-line T=1 kernel (a runtime Tlen bound left a ~0.3% regression in the latency-bound AR loop), and TMAX=2 folds to the T=2 windows. T=4 (S=4 MTP verify) instantiates the same unrolled structure over 4 rows; T=3 (S=3, K=2 spec-decode) the same over 3 rows (s_beta/s_g sized [4] -> strict prefix); h stays register-resident across all rows (r4d's T loop). T=3 is reachable only under the MLX_ROCM_GDN_T3=1 env gate.
 +  auto launch_one = [&](hipStream_t stream, int tmax) {
 +    return (tmax == 1)
 +        ? launch_gdn_fused_step<1>(
@@ -539,6 +539,19 @@ index 00000000..cc2b8b03daab1cd5d9e7524ac5aed0cf986cbbfe
 +              stream)
 +        : (tmax == 2)
 +        ? launch_gdn_fused_step<2>(
++              gpu_ptr<void>(q), gpu_ptr<void>(k), gpu_ptr<void>(v),
++              gpu_ptr<void>(bb), gpu_ptr<void>(aa), gpu_ptr<float>(al),
++              gpu_ptr<float>(db), gpu_ptr<void>(cs), gpu_ptr<void>(cw),
++              gpu_ptr<void>(zg), gpu_ptr<float>(st), gpu_ptr<void>(nw),
++              gpu_ptr<void>(result), gpu_ptr<void>(state_new), key_dim,
++              value_dim, conv_dim, 4, num_v_heads, num_k_heads, head_dim,
++              inv_scale_, eps_ * inv_scale_ * inv_scale_, norm_eps_,
++              (dbg_env != nullptr && dbg_env[0] == '1')
++                  ? dbg_arr.data<unsigned char>()
++                  : nullptr,
++              stream)
++        : (tmax == 3)
++        ? launch_gdn_fused_step<3>(
 +              gpu_ptr<void>(q), gpu_ptr<void>(k), gpu_ptr<void>(v),
 +              gpu_ptr<void>(bb), gpu_ptr<void>(aa), gpu_ptr<float>(al),
 +              gpu_ptr<float>(db), gpu_ptr<void>(cs), gpu_ptr<void>(cw),
@@ -585,7 +598,7 @@ diff --git a/mlx/fast.cpp b/mlx/fast.cpp
 index 0244f122..488bdd72 100644
 --- a/mlx/fast.cpp
 +++ b/mlx/fast.cpp
-@@ -5,0 +5,1 @@
+@@ -5,0 +5 @@
 +#include "mlx/backend/gpu/copy.h"
 @@ -123,0 +124,191 @@
 +array rms_norm_residual(
@@ -791,7 +804,7 @@ index 0244f122..488bdd72 100644
 +bool KVAppend::is_equivalent(const Primitive& other) const {
 +  const KVAppend& a_other = static_cast<const KVAppend&>(other);
 +  return offset_ == a_other.offset_;
-@@ -973,0 +1176,221 @@
+@@ -973,0 +1176,227 @@
 +namespace {
 +
 +// Non-row-contiguous inputs get a row-contiguous copy (same helper as gdu.cpp); already-contiguous inputs pass through unchanged.
@@ -826,8 +839,14 @@ index 0244f122..488bdd72 100644
 +  if (f != nullptr && f[0] == '1') {
 +    return true;
 +  }
-+  // T must be one of the TMAX instantiations (1, 2, 4): the launcher maps tmax 1 -> <1>, 2 -> <2>, everything else -> <4>, so admitting T=3 (S=3, K=2 spec-decode) would fall through to the TMAX=4 kernel = OOB read+write on a 3-row buffer. Reject it: it degrades to the clear error below (model default path via MLX_ROCM_GDN_FUSE=0).
-+  if (B != 1 || (T != 1 && T != 2 && T != 4)) {
++  // T=3 (S=3, K=2 spec-decode verify) is admitted only under MLX_ROCM_GDN_T3=1: the TMAX=3 instantiation is new codegen (default OFF), so T=3 degrades to the clear error below exactly as before the TMAX=3 addition.
++  if (T == 3) {
++    const char* t3 = std::getenv("MLX_ROCM_GDN_T3");
++    if (t3 == nullptr || t3[0] != '1') {
++      return true;
++    }
++  }
++  if (B != 1 || T > 4) {
 +    return true;
 +  }
 +  // NOTE: MLX_ROCM_GDN_FUSE_T2=0 no longer routes T=2 to the 4-op chain (that chain is 1-D-only in gdn_prep and faults on the GPU for T>1).
@@ -1098,7 +1117,7 @@ diff --git a/mlx/fast.h b/mlx/fast.h
 index f750e938..4ad7e566 100644
 --- a/mlx/fast.h
 +++ b/mlx/fast.h
-@@ -91,6 +91,25 @@ MLX_API std::vector<array> gdn_norm_gated(
+@@ -91,6 +91,25 @@
      float eps,
      StreamOrDevice s = {});
  
@@ -1128,7 +1147,7 @@ diff --git a/mlx/fast_primitives.h b/mlx/fast_primitives.h
 index 2dcb149b..413d5f1c 100644
 --- a/mlx/fast_primitives.h
 +++ b/mlx/fast_primitives.h
-@@ -508,6 +508,51 @@ class GdnNormGated : public Custom {
+@@ -508,6 +508,51 @@
  };
  
  
@@ -1184,7 +1203,7 @@ diff --git a/python/src/fast.cpp b/python/src/fast.cpp
 index 4fd40d92..4194eb9f 100644
 --- a/python/src/fast.cpp
 +++ b/python/src/fast.cpp
-@@ -449,6 +449,37 @@ void init_fast(nb::module_& parent_module) {
+@@ -449,6 +449,37 @@
                  The normalized + gated output.
          )");
  
