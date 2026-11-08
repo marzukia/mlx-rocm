@@ -57,8 +57,7 @@ run-1024 (09:44Z kill). Guest path placeholder in repo content = /models (real g
 ## Status (latest, g1x72-g1x75 era)
 
 Fault characterization (reproduced cleanly, g1x72/g1x75, GPROBE_N=6/4):
-- The fault is DETERMINISTIC on the SECOND decode capture+launch (first capture
-  always fine), and slot-order-independent (slot-swap experiment g1x70 was
+- The fault is DETERMINISTIC on the SECOND decode capture+launch (first capture always fine), and slot-order-independent (slot-swap experiment g1x70 was
   inconclusive at GPROBE_N=3 — only 1 capture; at GPROBE_N=6 the swap build
   faults identically on the 2nd capture). Both captures are FRESH
   instantiates (two-slot double buffer, each slot's first end_record).
@@ -69,10 +68,7 @@ Fault characterization (reproduced cleanly, g1x72/g1x75, GPROBE_N=6/4):
 - g1t trace: capture 1 arena_hw=0 (no decode-arena allocations — buffers came
   from the normal pool, VA 0x7600f.../0x7606...), capture 2 arena_hw=496640
   (485KB, arena-based VAs 0x760014800000+off). Both ovf=0. Full [nd]
-  value-diff of the two captures: 3970/9372 values differ (earlier K686-only
-  diff was misleading). The second graph is self-consistent (its baked VAs are
-  mapped at launch: arena is one 2GB hipMalloc), so the faulting VA is not a
-  direct node arg from the arena.
+value-diff of the two captures: 3970/9372 values differ (earlier K686-only diff was misleading). The second graph is self-consistent (its baked VAs are mapped at launch: arena is one 2GB hipMalloc), so the faulting VA is not a direct node arg from the arena.
 - kp[5] (arg_reduce_partial in_strides.data_[0]) = 0x7fff014b0740 (host stack
   pointer where a numeric stride is expected) in BOTH captures — by-value struct
   copy is suspicious, but that node has ndim=0 (kp[6] low 4B=0) so strides are
@@ -85,8 +81,7 @@ Fault characterization (reproduced cleanly, g1x72/g1x75, GPROBE_N=6/4):
   after the first N at g1b_noop (copy.hip) via
   hipGraphExecKernelNodeSetParams (ROCm 10.1 HIP has no hipGraphRemoveNode).
   Plan: no-bisect baseline (expect fault) -> keep=344 -> narrow. Note:
-  neutralizing a node can make downstream nodes fault on garbage (mapped, so
-  no VA fault) — direction of bisection error is bounded.
+neutralizing a node can make downstream nodes fault on garbage (mapped, so no VA fault) — direction of bisection error is bounded.
 
 ## Guest state at digest time (13:52Z)
 
@@ -97,8 +92,7 @@ Fault characterization (reproduced cleanly, g1x72/g1x75, GPROBE_N=6/4):
   WAIT for it (sibling run-1026 phase2-gdn may also take the lock); bench only with
   flock -w 1800 max.
 - Abench iterations (all in /models/tmp/): A0 (11:27, MEASURED baseline: 71.01 tok/s,
-  29k ctx, 147 toks, decode median 13246us, max-step 120959us HSA-fault stall,
-  stall-free ~75.4) -> A1 (empty) -> A1d (12:24 debug, 5.5MB err) -> A1e (12:59 node-dump,
+29k ctx, 147 toks, decode median 13246us, max-step 120959us HSA-fault stall, stall-free ~75.4) -> A1 (empty) -> A1d (12:24 debug, 5.5MB err) -> A1e (12:59 node-dump,
   19MB err, 1 MEMORY_FAULT with node dump) -> A1f (13:11) -> A1g (13:25) — A1f/A1g DIED
   with `hipMalloc failed (device VRAM exhausted); managed/GTT fallback disabled:
   out of memory size=8589934592` on the warm pass (8GiB request). OOM mode, not the
@@ -109,10 +103,7 @@ Fault characterization (reproduced cleanly, g1x72/g1x75, GPROBE_N=6/4):
   arg slots x 8B into a `decode_capture_persist_alloc` block; g1yf2 arena trace shows
   heavy offset wrap/reuse: `same_off_entries` growing, `wrap_n=1330`, repeated
   `free off=0` — the persistent copy's arena space is likely recycled while the graph
-  still references it, so at replay the "persistent" block holds garbage -> a computed
-  device VA (src + idx*row_size) faults outside the arena. The faulting VA is a
-  computed address, not a direct node arg (run-1024 finding, now corroborated, not yet
-  root-caused).
+still references it, so at replay the "persistent" block holds garbage -> a computed device VA (src + idx*row_size) faults outside the arena. The faulting VA is a computed address, not a direct node arg (run-1024 finding, now corroborated, not yet root-caused).
 
 ## Build / install state (guest)
 
@@ -125,8 +116,7 @@ Fault characterization (reproduced cleanly, g1x72/g1x75, GPROBE_N=6/4):
   neutralization added by run-1059, build g1xb6 in flight). Needs
   LD_LIBRARY_PATH=/opt/rocm/core-10.1/lib. Probe requires
   MLX_ROCM_GRAPH_DECODE=1 to arm the graph (pilot gate).
-- Bench harness: /models/tmp/gd-lev1-bench.py (greedy 200-tok, warm pass
-  discarded, per-step argmax host read) + gd-lev1-run.sh. Model /models/qwen3-9b-mlx
+- Bench harness: /models/tmp/gd-lev1-bench.py (greedy 200-tok, warm pass discarded, per-step argmax host read) + gd-lev1-run.sh. Model /models/qwen3-9b-mlx
   (qwen3-9b 4bit). ggraph-probe.py = 6-step graph probe (GPROBE_N).
 - Baseline reference: A0 = 71.01 tok/s @29k ctx; ungraphed AR ref 62.4 tok/s @14tok
   window (9B guest, warm).
@@ -146,17 +136,12 @@ Probe env gotcha: graph decode pilot is gated on MLX_ROCM_GRAPH_DECODE=1
 arms — early g1xb0/b1/b2/b3 "clean" runs were graph-OFF (invalid).
 
 Re-verified with current wheel + MLX_ROCM_GRAPH_DECODE=1:
-- probe-g1xb4 (no bisect): FAULT at STEP 3 (616ms, HSA_STATUS_ERROR_MEMORY_FAULT),
-  hang until timeout. Fault still alive in the latest wheel.
+- probe-g1xb4 (no bisect): FAULT at STEP 3 (616ms, HSA_STATUS_ERROR_MEMORY_FAULT), hang until timeout. Fault still alive in the latest wheel.
 - probe-g1xb5 (MLX_G1_BISECT=0, all 688 kernel nodes -> g1b_noop): STILL FAULTS
   at STEP 3. BISECT=1 also faults (g1xad). So the fault is independent of kernel
-  execution (0 or 1 live kernel both fault) — it is in a node type G1B never
-  neutralized or in launch-time param machinery.
+execution (0 or 1 live kernel both fault) — it is in a node type G1B never neutralized or in launch-time param machinery.
 - Graph has ZERO memcpy nodes (no hipGraphAddMemcpyNode anywhere; no [nd] M lines)
-  but hipMemsetAsync exists on the eval stream (matmul.cpp:1461/2040,
-  moe_swiglu.cpp) — during stream capture these record GRAPH MEMSET nodes, which
-  are invisible to the [nd] dump (dumps only Kernel+Memcpy) and to G1B (kernels
-  only). Prime suspect: a memset node writing a buffer whose VA is dead at replay
+but hipMemsetAsync exists on the eval stream (matmul.cpp:1461/2040, moe_swiglu.cpp) — during stream capture these record GRAPH MEMSET nodes, which are invisible to the [nd] dump (dumps only Kernel+Memcpy) and to G1B (kernels only). Prime suspect: a memset node writing a buffer whose VA is dead at replay
   (normal-pool buffer freed post-capture, or arena offset recycled).
   (allocator.cpp:685 hipMemset(0x7F) is MLX_GRAPH_POISON_FREE-gated only.)
 
@@ -198,17 +183,14 @@ Plan (next, post-rebuild g1xc1):
   stalls 611ms = the faulting op; AMD_LOG trace (g1xbA, 31M lines) shows the
   last graph launch SUCCEEDS, then a hipLaunchHostFunc (worker commit) and
   the event-poll loop; queue error = sticky HSA fault. Suspect now:
-  launch-time param copy from a dead VA, or a stream-ordered free (graph
-  deferred free) of a still-referenced buffer, or slot-0-first-capture state
+launch-time param copy from a dead VA, or a stream-ordered free (graph deferred free) of a still-referenced buffer, or slot-0-first-capture state
   (arena reset_to_floor on capture 2; capture 1 buffers were normal-pool,
   capture 2 arena-based).
-  G1B2 histogram patch fixed (hipMemsetParams has width/elementSize, no size).
-  G1X_OFF + NO_LAUNCH env gates added (g1xba). Build g1xba FAILED (host OOM
+G1B2 histogram patch fixed (hipMemsetParams has width/elementSize, no size). G1X_OFF + NO_LAUNCH env gates added (g1xba). Build g1xba FAILED (host OOM
   on guest: hipStreamCreateWithFlags out of memory — amdgpu queue stuck after
   the fault; VRAM showed 60MB used; no proc held /dev/kfd). Rebooted the
   the libvirt guest VM (virsh reboot on the operator's tailnet host) at ~19:10Z;
-  GPU init OK after reboot. REBOOT SIDE-EFFECT: /models/tmp (vdb-root/tmp,
-  bind-mounted to /tmp per fstab line added 2026-10-27 by the operator) was WIPED at
+GPU init OK after reboot. REBOOT SIDE-EFFECT: /models/tmp (vdb-root/tmp, bind-mounted to /tmp per fstab line added 2026-10-27 by the operator) was WIPED at
   boot (some unseen boot script); run-1012-29k venv + all guest builds/probes
   gone. Reconstruction: salvage vendor tree (partial patch: g1t/node-dump
   infra) + /tmp/g1x/g1x.diff (G1X/G1V/G1B base; applied clean) + G1B2 +
@@ -218,8 +200,7 @@ Plan (next, post-rebuild g1xc1):
   for the lossless gate later; recipe in WORKSTATE).
 - ~20:45Z: vendor fork identified = <op-fork-user>/mlx (NOT marzukia/mlx —
   that repo does not exist); the vendor ref = 75ca881b2e82... exact
-  pin match. Full tree cloned on guest at the pin. First full-tree builds
-  failed: (a) CMAKE_ARGS not passed (no_gpu stubs linked: symbol
+pin match. Full tree cloned on guest at the pin. First full-tree builds failed: (a) CMAKE_ARGS not passed (no_gpu stubs linked: symbol
   duplicates); (b) copy.hip KVAppend undeclared — the guest's 1056-line
   patch ALSO carried fast.h/fast.cpp/fast_primitives.h KVAppend ops + 25
   more delta files (K2 fused rms_norm_residual + KV append, r4d_gdn
@@ -231,8 +212,7 @@ Plan (next, post-rebuild g1xc1):
   Probe plan (next session / budget extension): (1) baseline no-bisect
   must fault at step 3; (2) MLX_G1_NO_LAUNCH=1 discriminator (launch vs
   stream-side: deferred free / prewarm / D2H); (3) G1X_OFF+BISECT=0.
-  AMD trace (g1xbA) showed the last graph launch SUCCESS then
-  hipLaunchHostFunc (worker commit) then event-poll detecting the sticky
+AMD trace (g1xbA) showed the last graph launch SUCCESS then hipLaunchHostFunc (worker commit) then event-poll detecting the sticky
   HSA fault — with all-node neutralization the launch reads only the
   G1X/pack param blocks (alive) + func handles, so the param-copy theory
   weakens; the deferred-free (hipFreeAsync of a still-referenced buffer)
@@ -251,8 +231,7 @@ Plan (next, post-rebuild g1xc1):
   fixes: (1) 6 files had a broken "t1->run-1" leak-rename
   (bfloarun-162float etc.) → restored FORK versions; (2) fast.* merge =
   fork base (gdn_prep/gdn_norm_gated) + salvage K2 blocks (script
-  /tmp/merge-fast.py, is_equivalent block appended at EOF — compiles,
-  links OK only if present: g1xcA linked but import failed on missing
+/tmp/merge-fast.py, is_equivalent block appended at EOF — compiles, links OK only if present: g1xcA linked but import failed on missing
   KVAppend::is_equivalent → g1xcB with the 1496-line fast.cpp);
   (3) kp.func cast (void*)g1b_noop (ROCm 10.1 HIP: func is void*).
   Build cmd: CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=
@@ -262,8 +241,7 @@ Plan (next, post-rebuild g1xc1):
   pending: baseline (expect step-3 fault) → MLX_G1_NO_LAUNCH=1
   discriminator → G1X_OFF+BISECT=0.
 - ~23:50Z: WHEEL BUILT (g1xcG) + imported; link fixes: is_equivalent
-  block inside namespace fast (not EOF — vtable miss), g1b_noop in
-  namespace rocm (not global anon — undefined symbol), copy.hip stray
+block inside namespace fast (not EOF — vtable miss), g1b_noop in namespace rocm (not global anon — undefined symbol), copy.hip stray
   "namespace {" from my edit removed, CMakeLists +gdn_prep.hip (fork
   has GdnNormGated::eval_gpu there; salvage CMakeLists lacked it).
   Baseline probe (graph ON, no bisect) FAULTS at STEP 3 — REPRODUCED.
@@ -275,14 +253,10 @@ Plan (next, post-rebuild g1xc1):
   never runs). Discriminator: fault is in the LAUNCH-or-COMMIT path,
   NOT node execution (BISECT=0) and NOT stream-side direct launches.
   Both baseline and BISECT=0 fault at the SAME gather_rows dispatch →
-  the fault is in the gather_rows DISPATCH SETUP (kernarg/signal
-  deref at launch) — points at a freed semaphore/signal or kernarg
-  backing allocation captured in the graph, not the kernel's own
-  memory access. NEXT: NO_COMMIT discriminator (launch runs, commit
+the fault is in the gather_rows DISPATCH SETUP (kernarg/signal deref at launch) — points at a freed semaphore/signal or kernarg backing allocation captured in the graph, not the kernel's own memory access. NEXT: NO_COMMIT discriminator (launch runs, commit
   skipped) — build g1xcH in flight; if NO_COMMIT clean → fault is in
   worker commit (deferred hipFreeAsync / hipLaunchHostFunc); if it
-  faults → fault is in hipGraphLaunch itself (dispatch resource
-  deref). After that: log graph-referenced VAs (param block + node
+faults → fault is in hipGraphLaunch itself (dispatch resource deref). After that: log graph-referenced VAs (param block + node
   params) vs arena free list at step-3 launch; check
   0x7ec11f9e7000 membership.
   Probe env note: the fresh mlx-lm API dropped return_hidden —
@@ -294,9 +268,7 @@ Round-3 results (g1xcH, probe logs on guest /models/tmp/):
 - NO_LAUNCH (skip hipGraphLaunch + worker commit): 6 steps CLEAN.
 - NO_COMMIT (launch runs, commit skipped): FAULTS on the 2nd capture's
   launch (STEP 5, slot 1) => fault REQUIRES hipGraphLaunch replay;
-  commit/deferred-free exonerated. HANG ANALYSIS: gather_rows_kernel,
-  faulting addr 0x763e8c5e7000 (arena-family VA 0x76xx...),
-  kernarg_address 0x76230df80200, grid/workgroup [256,1,1].
+commit/deferred-free exonerated. HANG ANALYSIS: gather_rows_kernel, faulting addr 0x763e8c5e7000 (arena-family VA 0x76xx...), kernarg_address 0x76230df80200, grid/workgroup [256,1,1].
 - Kernel (indexing.hip): r = idx[row]; srow = src + r*row_size;
   orow = out + row*row_size. Fault VA is a COMPUTED address (src or out
   base + idx*row_size) ~60GB away from the 0x7600.. region => unmapped,
@@ -304,8 +276,7 @@ Round-3 results (g1xcH, probe logs on guest /models/tmp/):
 - run-1062 work: (1) synced guest g1xcH tree back into vendor (7 files:
   device.cpp, allocator.h, eval.cpp, copy.hip, CMakeLists.txt, device.h,
   rope.hip); (2) added G1V diagnostics: [va] arena owner map (wrappers)
-  at end_record + pre-launch, [ld] gather-node exec arg dump with
-  hipMemGetAddressRange + DtoH mapping probes at pre-launch, [pd] same
+at end_record + pre-launch, [ld] gather-node exec arg dump with hipMemGetAddressRange + DtoH mapping probes at pre-launch, [pd] same
   post-launch after sync; build g1xcI; (3) node-arg diff baked-vs-live
   + VA ownership of the faulting VA; (4) fix = pin KV buffer or
   ExecUpdate the stale node param (G1B SetParams plumbing exists);

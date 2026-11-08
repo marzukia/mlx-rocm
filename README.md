@@ -43,8 +43,7 @@ Three pieces:
   its own QMV/QMM crossover tuning and the WMMA dense-qmm allowlist.
 - **fp8 GEMM status on this box**: the smoke's
   `mlx_rocm_gemm_fp8_probe()` (256³ e4m3 GEMM vs. host reference)
-  **passes** on guest-a gfx1201 (max_rel_err 0.0057, 0/65536 bad) — the
-  probe shows no driver bug. Upstream notes fp8 e4m3 activation GEMM
+**passes** on guest-a gfx1201 (max_rel_err 0.0057, 0/65536 bad) — the probe shows no driver bug. Upstream notes fp8 e4m3 activation GEMM
   "may be kernel-buggy on some RDNA4 drivers — long-context prefill on
   gfx1201 garbles" (run-386 evidence, a different workload than this
   probe). Keep `MLX_ROCM_GEMM_BF16=1` as the safe default until real

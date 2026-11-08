@@ -26,8 +26,7 @@ the guest worktree `/tmp/mlx-k1-push` (guest-a, a `git worktree` of
 `/models/mlx-clone-k1` at the vendor ref). The push to the vendor ref
 failed 2026-10-26: the guest clone has no credentials (bare https remote,
 no netrc/gh), and `<op-fork-user>` — the only token available — has no push
-access to the vendor ref (403). The commit is ready to push once creds
-exist:
+access to the vendor ref (403). The commit is ready to push once creds exist:
 
 ```sh
 # on guest-a

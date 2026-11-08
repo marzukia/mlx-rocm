@@ -163,8 +163,7 @@ Chain of evidence:
 
 The MTP draft module is not the suspect: its own cache is not touched by either
 variant, and the main-model state diverges before any draft-module involvement.
-The L15 q_norm paradox (run-786) is not implicated — layer 15's divergence is
-downstream of layer 4.
+The L15 q_norm paradox (run-786) is not implicated — layer 15's divergence is downstream of layer 4.
 
 Magnitude: the input difference entering layer 4 is small (conv maxabs 1.6e-2 in
 qkv space; ssm maxabs 7.2e-4 with 98% of the 524288 ssm elements differing by
@@ -177,9 +176,7 @@ as final-logit divergence: 192967/248320 entries, maxabs 0.125.
 - First diverging layer (state): **4 (gdn conv+ssm)**; full cascade 4→31.
 - First diverging computation (root): **attention/SDPA output of layer 3 for the
   second token (3545) — 2-row causal SDPA (row 1) vs 1-row unmasked SDPA** —
-  i.e. the attention-family hypothesis (a) from run-786, refined: not the KV page
-  layout (k/v bit-exact), but the SDPA kernel's row-count/mask-path dependent
-  computation for the second query row.
+i.e. the attention-family hypothesis (a) from run-786, refined: not the KV page layout (k/v bit-exact), but the SDPA kernel's row-count/mask-path dependent computation for the second query row.
 - GDN computation: exonerated again (layers 0-3 bit-exact; layer 4 divergence is
   input-driven).
 - Consequence for m2-vs-m0: every T=2 verify in m2 that differs from the chained

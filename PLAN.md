@@ -73,8 +73,7 @@ docs/quickstart.md). Nothing else is verified: 6.4 was the early probe validatio
 2. On guest-a: `mx.rocm.is_available()` true, matmul/softmax correct, Qwen3-0.6B (bf16 + 8bit)
    generates sane text. (`scripts/smoke.py`)
 - **Exit criteria:** is_available()==True; numerics correct; 0.6B sane.
-- **Gate:** if primary (rocm-current) does not build clean on ROCm 10.1, fall back to
-  the ROCm base and record why (docs/plan.md open question 1).
+- **Gate:** if primary (rocm-current) does not build clean on ROCm 10.1, fall back to the ROCm base and record why (docs/plan.md open question 1).
 
 ### Phase 1 — Validate gfx1201 + qmlx-serve minimum (1-2 person-weeks)
 1. QMM 4bit on gfx1201 (Rdna4 tier + WMMA dense qmm) vs CPU numerics.

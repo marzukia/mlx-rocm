@@ -1,8 +1,7 @@
 # Quickstart — verified build + smoke path on a gfx1201 box
 
 The verified toolchain is the **guest-a guest VM** (RX 9070 XT / gfx1201,
-ROCm 10.1 userland). This is the path that has actually been run (run-479/run-480,
-k2/k3, gauntlet, battery). Nothing else is verified.
+ROCm 10.1 userland). This is the path that has actually been run (run-479/run-480, k2/k3, gauntlet, battery). Nothing else is verified.
 
 ## Guest environment (what must be true)
 

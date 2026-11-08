@@ -135,8 +135,7 @@ Verified-good:
 
 - The hang lineage was single large (≥300 MB) shadow copies stalling in
   `kfd_wait_on_events` with the GPU idle. The re-add keeps every staging
-  copy ≤100 MB by default — the run-460 per-chunk queue reset is the
-  hang-avoidance property and it is preserved. The only behavior change vs
+copy ≤100 MB by default — the run-460 per-chunk queue reset is the hang-avoidance property and it is preserved. The only behavior change vs
   run-460 is the removed `hipStreamDestroy`, which fixes the segfault without
   touching the chunking. No new hang mode is introduced: each chunk is
   synced before the next, so no chunk inherits a queue with a pending
@@ -146,10 +145,7 @@ Verified-good:
   safe default-off position. Default (100 MB) is the hang-avoiding
   position. PASS.
 - Caveat (inherent, not a regression): the hang was *intermittent* in the
-  run-444 lineage, so 20 clean 300 MB copies is evidence, not proof, that the
-  default chunk size is hang-free at, say, 2 GB. The 16/16→0/16 concurrent
-  crash result is the load-bearing verification and it is the right one for
-  the segfault.
+run-444 lineage, so 20 clean 300 MB copies is evidence, not proof, that the default chunk size is hang-free at, say, 2 GB. The 16/16→0/16 concurrent crash result is the load-bearing verification and it is the right one for the segfault.
 
 ## 4. Gaps the numerics don't cover — VERDICT: noted, non-blocking
 

@@ -94,8 +94,7 @@ is still mid-flight (run-480 RUN 9: wheel build #5 in progress, 2026-10-26).
 8. **MTP spec decode** — blocked on the M3 stream-TLS fix (`There is no Stream(cpu, N)`
    in `mlx/backend/cpu/encoder.cpp`); Phase 2 at the earliest (docs/plan.md §Phase 2).
 9. **ROCm version story is unsettled** — README/vendor.json say 6.4 (the probe
-   validation), AGENTS/PLAN say 7.7 (the target), the run-480 guest VM runs 10.1. A user
-   cannot tell which ROCm they need.
+validation), AGENTS/PLAN say 7.7 (the target), the run-480 guest VM runs 10.1. A user cannot tell which ROCm they need.
 10. **GPU validation is in flight** — Phase 0/1 exit criteria (is_available, numerics,
     0.6B sane, 9B served, no NaNs, no OOM→SEGV) are not yet recorded as a pass on
     guest-a (run-480 RUN 9: wheel build #5 running, 2026-10-26).

@@ -11,8 +11,7 @@ beta sigmoid, compute_g) into one kernel; `gdn_norm_gated` fuses the GDN
 post-chain (RMS-norm × precise_swiglu) into one kernel. The model
 (`mlx_lm/models/qwen3_5.py`, `GatedDeltaNet.__call__`) takes the fused branch
 when `MLX_GDN_TAIL_FUSION=1` and (this run) `S == 1` — decode only; prefill and
-MTP-verify (S>1) fall back to the non-fused path, which is what the reference
-m0 stream used.
+MTP-verify (S>1) fall back to the non-fused path, which is what the reference m0 stream used.
 
 ## The v5 fault (run-724) and its root cause
 
@@ -54,8 +53,7 @@ produces. The kernel indexing is fully guarded (`c < conv_dim`,
 **Root cause (surgical):** all 14 pointer args in the three launchers
 were `arr.data_shared_ptr().get()` — a **host-side `array::Data*`**
 (struct: `allocator::Buffer` + `Deleter`), not a device pointer. array.h
-says so explicitly ("When accessing the data for GPU kernels, be sure to
-use the correct method / function for the given backend to access the GPU
+says so explicitly ("When accessing the data for GPU kernels, be sure to use the correct method / function for the given backend to access the GPU
 pointer"). Every other ROCm kernel uses `gpu_ptr<T>(arr)` =
 `buf->data + arr.offset()` (device ptr, + host-shadow flush). The GPU
 dereferenced a host-heap address as an element array → unmapped-VA read →
@@ -70,8 +68,7 @@ all three launchers (gdn_prep, gdn_qk_norm, gdn_norm_gated). One file,
 1. **g math**: fused chain used f32 sum, f32 `LogAddExp`, bf16 g output —
    three rounding mismatches vs non-fused
    `(bf16)(f32(a)+f32(db))` → `(bf16)(max+log1p(exp(min-max)))` → f32.
-2. **g dtype**: non-fused feeds the recurrent GDN kernel an **f32** g (the
-   kernel reads it as u16 pairs — the even v-heads get eg≈0, odd heads reuse
+2. **g dtype**: non-fused feeds the recurrent GDN kernel an **f32** g (the kernel reads it as u16 pairs — the even v-heads get eg≈0, odd heads reuse
    the even head's g; baked into m0). The fused path cast g to bf16.
 3. **qk scale**: fused `gdn_qk_norm` multiplied by an f32 scale without
    pre-rounding; non-fused python `float * bf16-array` casts the scalar to
@@ -93,8 +90,7 @@ accumulation; silu = `Multiply{}(x, Sigmoid{}(x))` op-struct reuse.
 
 ## Gates (venv-d, dist-decode wheel +75ca881, fresh process, flock, LD_LIBRARY_PATH)
 
-- [x] G1 primitives: gdn_prep / gdn_norm_gated vs non-fused chain, zero + random
-  inputs → maxdiff 0.0
+- [x] G1 primitives: gdn_prep / gdn_norm_gated vs non-fused chain, zero + random inputs → maxdiff 0.0
 - [x] G2 fused T=1 layer forward: TAIL_FUSION=1 vs =0 → maxdiff 0
 - [ ] G3 1024-token T=1 bench, TAIL_FUSION=1 → tok/s ≥100, stream bit-exact vs
   m0 (`/models/tmp/bench4/m0.out`, 64.49 tok/s non-fused reference) —

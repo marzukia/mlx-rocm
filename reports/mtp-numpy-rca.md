@@ -2,8 +2,7 @@
 
 Date: 2026-10-27 (guest UTC). Submitter: submitter (worker run-606, continuation of run-605).
 Scope: root-cause F1 (draft rank ~206k-248k of 248320, corr ~-0.02..-0.05) on the
-mlx-rocm Qwen3.5-9B port (guest-a, gfx1201, ROCm 10.1), validate the numpy
-reference, run the never-run E3/E4 ground truth, and settle the L0 GDN r-divergence.
+mlx-rocm Qwen3.5-9B port (guest-a, gfx1201, ROCm 10.1), validate the numpy reference, run the never-run E3/E4 ground truth, and settle the L0 GDN r-divergence.
 
 ## Verdict (one line)
 
@@ -101,8 +100,7 @@ explained by the file norm convention.
 
 ## What this means for qmlx-serve
 
-- The 9B dense Qwen3.5 port on guest-a now has: validated numpy reference (E1),
-  validated K3 GDN kernels (E5), validated MTP math (E3/E4), and a working MTP
+- The 9B dense Qwen3.5 port on guest-a now has: validated numpy reference (E1), validated K3 GDN kernels (E5), validated MTP math (E3/E4), and a working MTP
   draft (f1step: D=t2, rank 0) after the one-file fix.
 - Remaining for serve: regenerate/verify `model-mtp.safetensors` in the
   conversion pipeline (item 1 follow-up) and re-run the Phase 1 serve smoke

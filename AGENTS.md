@@ -21,11 +21,9 @@ Purpose in one line: get qmlx-serve running a 9B-class dense Qwen3 correctly on 
 - main is protected: no direct pushes, no force-pushes. Branch + push-first, PR to main,
   CI green, adversarial review by an agent DIFFERENT from the submitter, then a PEER
   (not the submitter) merges `--squash` and deletes the branch.
-- Submitter of record for the MVP work: submitter (builds on guest-a). Reviews: fresh session,
-  read-only, verdict PASS/FAIL, reporter separate from submitter.
+- Submitter of record for the MVP work: submitter (builds on guest-a). Reviews: fresh session, read-only, verdict PASS/FAIL, reporter separate from submitter.
 - GPU tests are marked `@pytest.mark.gpu` and skip off-GPU. CI runs the hermetic set only.
-- GPU work happens ON guest-a (<tailnet-ip>, RX 9070 XT / gfx1201, ROCm 10.1 guest userland).
-  Do not assume a GPU on host-a.
+- GPU work happens ON guest-a (<tailnet-ip>, RX 9070 XT / gfx1201, ROCm 10.1 guest userland). Do not assume a GPU on host-a.
 - The vendored MLX source is NOT in this repo: `vendor.json` pins fork + ref;
   `scripts/build-wheel.sh` clones it. Re-pin in a PR when the base moves.
 - File size is a load-bearing signal (size gate, CI + pre-commit): >800 non-blank lines

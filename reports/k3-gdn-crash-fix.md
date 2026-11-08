@@ -51,8 +51,7 @@ the day.
    gfx1201/ROCm 10.1 configuration the KFD completion event of an async copy is
    not retired promptly (the run-444/run-454/run-458 hang lineage); destroying the
    per-chunk stream while its event is still pending races the runtime
-   stream/event bookkeeping → segfault in the copy path (run-506, run-461 backtrace
-   at the chunked-copy region).
+stream/event bookkeeping → segfault in the copy path (run-506, run-461 backtrace at the chunked-copy region).
 3. The re-land `85b521e` **dropped the chunked copy entirely** (git: 37e2834
    chunk ≤100 MB, d82ce84 async chunked, bd061d6 run-460 salvage — all with chunked
    refs; 85b521e and everything after: 0). The 07:44 wheel (run-511 instrumented

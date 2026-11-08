@@ -56,8 +56,7 @@ deterministic: D3 n=0).
   control, D2 plain-matmul direct P3 test (both orientations, informational),
   D3 determinism re-run.
 - `bench/warm-mtp-bench.py` — warmup-first bench harness: mtp-bench5
-  MTP flow (mode 0/2/3, draft chain + reject rollbacks verbatim) + the prior probe
-  chunked 29K prefill + discarded warm pass + iteration-based window
+MTP flow (mode 0/2/3, draft chain + reject rollbacks verbatim) + the prior probe chunked 29K prefill + discarded warm pass + iteration-based window
   (skip=56), 14-token and 29K prompt, acceptance stats, ALLTOKS.
 - `scripts/warm-mtp-run.sh` — lane driver (all runs under flock, venv-m8).
 
@@ -92,8 +91,7 @@ G4 arm speeds (14-token prompt, 1024 toks): m0 AR 69.72; m1 K=1 (2×T=1) 55.49
 | K=2 (m3) | 4.45 | **37.35** | 32.1 ms | 98 | 60.2 | 25.4 | 1.602 |
 
 K=2 at 29K, un-warmed 512-tok run (window still skips 56 iters): 40.95 tok/s,
-D1 68.6%, D2 39.7%, 1.686 tok/step. (The low "all" numbers are the first
-iteration's ~50s outlier — KV allocation / first-forward at a fresh 29K
+D1 68.6%, D2 39.7%, 1.686 tok/step. (The low "all" numbers are the first iteration's ~50s outlier — KV allocation / first-forward at a fresh 29K
 context; the window excludes it.)
 
 ## K=2 vs AR — honest verdict

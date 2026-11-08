@@ -41,8 +41,7 @@ materializes before reading strides: both reject the view.
 
 - Guest: guest-a <guest-ip> (via jump operator@<tailnet-ip>),
   gfx1201 (AMD Radeon RX 9070 XT), ROCm 10.1.
-- Wheel: /models/mlx-clone-k2/dist/mlx-0.32.3.dev20261026+vendorref-...whl,
-  sha256 prefix ec48eb4c — the prior run's rebuild from /models/mlx-clone-k2
+- Wheel: /models/mlx-clone-k2/dist/mlx-0.32.3.dev20261026+vendorref-...whl, sha256 prefix ec48eb4c — the prior run's rebuild from /models/mlx-clone-k2
   (cd1b6cd + the unscheduled-materialization guard, section 1), force-installed
   in /models/venv-k2.
 - Verification (this run): `import mlx.core` OK in venv-k2; installed package
