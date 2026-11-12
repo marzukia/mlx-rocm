@@ -156,3 +156,12 @@ force-push = the op's tap). The prepared form: rewrite the 3 messages'
 pattern-list lines to the placeholder form (the REPORT.md:251 reword,
 already in-tree, is the canonical form), via a filter-branch patch;
 execute only on the op's explicit go.
+
+## Terminal (the bounded tail run, 2026-11-12 23:2xZ)
+
+- **W detector:** manual equivalent (the class: an indented continuation after a complete sentence, uppercase start; fenced/bullet/numbered-list exclusion) over the report + all 24 modified .md files: **0 in-scope hits** after joining 2 wrapped paragraphs in this report (the stage item, the D4-wraps item) to one-line form.
+- **P sweep:** the 8-pattern battery over the 26 changed files: **0 content hits** (the only grep matches are the reports' own zero-count check lines + the REPORT.md:251 placeholder pattern-name line; git author lines exempt).
+- **F gate re-confirmed after the joins:** `uv sync --locked` OK; `ruff check` all passed; `ruff format --check` 105 files already formatted; `pytest -m 'not gpu'` 25 passed + 1 skipped; size ratchet OK (4 ratcheted).
+- **Commit `6441700`** (author `cloudyfromff7 <cloudyfromff7@ag.mrzk.io>`): 26 files, 485 insertions / 247 deletions, incl. this report.
+- **Pushed:** the bare mirror `/srv/fleetwork/mlx-rocm.git` + `github.com/marzukia/mlx-rocm` both at `6441700`; PR #31 updated in place.
+- **CI (one read, the tail gate):** run `43328479153` on head `6441700` = **GREEN** (lint-and-check pass, size pass).
