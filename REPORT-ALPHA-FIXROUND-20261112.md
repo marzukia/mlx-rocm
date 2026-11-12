@@ -115,7 +115,7 @@ M3 stream-TLS fix" open questions → SUPERSEDED notes in docs/plan.md
 
 - **D3-1 (REPORT.md:251)** — the persona pattern list reworded to the
   placeholder form exactly as the report specified (the 3 historical
-  commit messages `c9e79c5`/`f689285`/`679d59d` are the op decision item
+  commit messages `0f8dba1`/`01d6c4f`/`c2d7987` are the op decision item
   — the reword patch is prepared, not executed: a `git rebase`/filter
   rewrite of those 3 messages to placeholder form + force-push is the
   op's tap; it is not in this PR's diff).
@@ -149,8 +149,10 @@ M3 stream-TLS fix" open questions → SUPERSEDED notes in docs/plan.md
 
 ## Deliverable (prepared, not executed — the op decision item)
 
-The 3 historical commit messages on main (`c9e79c5`/`f689285`/`679d59d`,
-persona pattern hits in the pattern-list form) would require a history
+The 3 historical commit messages on main (`0f8dba1`/`01d6c4f`/`c2d7987`,
+persona pattern hits in the pattern-list form; the same messages appear
+as `2c02ca7f`/`0cfe95ea`/`58816811` on the rewritten-main lineage) would
+require a history
 rewrite + force-push of main: **not executed** (main is protected;
 force-push = the op's tap). The prepared form: rewrite the 3 messages'
 pattern-list lines to the placeholder form (the REPORT.md:251 reword,

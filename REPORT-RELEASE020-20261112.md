@@ -32,7 +32,10 @@ release-notes update. See `REPORT-ALPHA-FIXROUND-20261112.md`.
 
 ## 2. CHANGELOG.md (new, repo root) — content
 
-`[0.2.0-alpha] - 2026-11-13`, derived from git log v0.1.0..HEAD (73 commits).
+`[0.2.0-alpha] - 2026-11-13`, derived from git log v0.1.0..HEAD (77
+commits: the 73-commit main base + the 4 release commits; the `v0.1.0`
+tag sits on the detached scaffold lineage, so the range count = the
+full branch history).
 Added: MTP spec decode with exact GDN state rollback (#26, 92.23 t/s @1024,
 token-identical to plain decode); the W1 sequential GDN kernel (#30, the
 llama.cpp GDN design port, bit-exact, `MTP6_TAPE=seq` + `MLX_ROCM_GDN_SEQ=1`

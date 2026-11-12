@@ -26,36 +26,48 @@ ROCm 10.1 userland). This is the path that has actually been run (run-479/run-48
   (`BUILD-RECIPE.md`'s CPython 3.14 venv is the 2026-11-01 historical
   provenance snapshot, not the current path.)
 
-## 1. Build the `mlx` wheel
+## 1. Build the canonical wheel (the `mlx_rocm` shim)
 
 The wheel build is **guest-a-only**: a ROCm gfx1201 box is required.
-Clone the pinned vendor (the `vendor.json`-pinned, sha-verified tree —
-`scripts/build-wheel.sh` does this and fails loud if the pin is
+`scripts/build-wheel.sh` clones the pinned vendor tree (the `vendor.json`-
+pinned, sha-verified checkout of this repo — it fails loud if the pin is
 unresolvable or the checkout mismatches; the committed
 `vendor/mlx-rocm-upstream/` is a partial, byte-verified *reference*
-snapshot without a build manifest, NOT the build input), then build in
-the venv:
+snapshot without a build manifest, NOT the build input), then runs
+`pip wheel .` on the repo root (setuptools, `packages = mlx_rocm`, no
+`setup.py`); the deliverable is the **`mlx_rocm-0.2.0` shim wheel ONLY**
+(`dist/mlx_rocm-0.2.0-*.whl`) and the canonical path does not build the
+`mlx` framework.
 
 ```
-CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 \
-  -DBLA_VENDOR=OpenBLAS -DCMAKE_PREFIX_PATH=/opt/rocm/core-10.1" \
-PATH=/opt/rocm/bin:$PATH ROCM_PATH=/opt/rocm \
-  /models/venv/bin/pip wheel . --no-deps -w /models/dist/
+/models/venv/bin/pip wheel . --no-deps -w /models/dist/   # what scripts/build-wheel.sh runs
 ```
+
+### The full `mlx` framework wheel — historical-recipe path (NOT the canonical deliverable)
+
+The `mlx-*.whl` shape (`import mlx.core`, `site-packages/mlx/lib`, the
+CMake `-DMLX_BUILD_ROCM=ON` build) is the 2026-11-01 historical recipe
+(`BUILD-RECIPE.md`); its CMake build manifest is no longer in-tree
+(`CMakeLists` preserved as `CMakeLists.upstream.txt`), so the full
+framework wheel is **not produced by the canonical path** — rebuilding it
+is the follow-up box session.
 
 (`-DCMAKE_PREFIX_PATH=/opt/rocm/core-10.1` is the addition over the
-`vendor.json` CMAKE_ARGS — the 10.1 core is not on CMake's default search
-path. `scripts/build-wheel.sh` does the same thing for the pinned fork.)
+`vendor.json` CMAKE_ARGS for that historical CMake path — the 10.1 core
+is not on CMake's default search path. `scripts/build-wheel.sh` does the
+same thing for the pinned fork.)
 
 ## 2. Install into the venv (stale-lib trap)
 
 ```
-/models/venv/bin/pip install --force-reinstall --no-deps /models/dist/mlx-*.whl
+/models/venv/bin/pip install --force-reinstall --no-deps /models/dist/mlx_rocm-*.whl
 ```
 
-Overwrite **both** `site-packages/mlx/lib` and `site-packages/mlx/lib64`
-and sha-verify — a stale `libmlx.so` in either directory silently shadows the
-new one (run-461/run-462).
+The stale-lib trap applies to the full `mlx` framework wheel of the
+historical-recipe path, not the shim: overwrite **both**
+`site-packages/mlx/lib` and `site-packages/mlx/lib64` and sha-verify — a
+stale `libmlx.so` in either directory silently shadows the new one
+(run-461/run-462).
 
 ## 3. Host-only GEMM build (no full wheel needed)
 

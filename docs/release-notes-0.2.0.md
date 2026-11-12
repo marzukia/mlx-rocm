@@ -72,9 +72,14 @@ license fixed to MIT, the supported-models table + conversion recipe and
 GPU validation is recorded on the validated guest):
 
 - **Install path** — `pip install mlx-rocm` (PyPI `0.0.0`, `0.1.2`,
-  uploaded 2026-10-30); the full `mlx` wheel is built on the validated
-  guest (`scripts/build-wheel.sh`). The empirical 0.2.0 wheel build on the
-  box is the follow-up (the pin is resolvable + the gate is fail-loud).
+  uploaded 2026-10-30); the canonical wheel deliverable is the
+  `mlx_rocm` shim built on the validated guest (`scripts/build-wheel.sh`:
+  `pip wheel .` on the repo root, setuptools, no `setup.py`). The full
+  `mlx` framework wheel is the historical-recipe path (`BUILD-RECIPE.md`,
+  the 2026-11-01 recipe; its build manifest is no longer in-tree) —
+  pending the follow-up box session. The empirical 0.2.0 wheel build on
+  the box is the follow-up (the pin is resolvable + the gate is
+  fail-loud).
 - **fp8 e4m3 long prefill on gfx1201** — the probe passes (max_rel_err
   0.0057) but real long-context prefill is unvalidated;
   `MLX_ROCM_GEMM_BF16=1` is the shipped safe default
