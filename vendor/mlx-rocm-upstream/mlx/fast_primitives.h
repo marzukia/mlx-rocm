@@ -588,6 +588,127 @@ class GdnFusedStepTape : public Custom {
   float eps_;
   float norm_eps_;
 };
+// GdnFusedStepSlot2: R1b (the fused sequential slot design). The slot op
+// (per-row state snapshots for the commit rows 0..T-2; row T-1 is
+// state_new) running the NON-UNROLLED slot2 kernel (one per-row phase for
+// all M rows; the per-row re-execution of the unrolled 4x phase copies is
+// amortized into one pass over the rows; the per-thread weight loads are
+// loop-invariant and hoisted by LICM), plus the conv_state_new output
+// (the conv window AFTER the last row, a pure selection over the input
+// conv-state rows and the raw rows, no arithmetic) which the model branch
+// consumes for the conv-state cache update instead of dispatching
+// concatenate + take_along_axis (launch integration: -2 ops per GDN layer
+// per verify). Gated by MLX_ROCM_GDN_SLOT2=1 (DEFAULT OFF). Same shape
+// gate as GdnFusedStepSlot (B=1, 2<=T<=4, Dk=Dv=128, Hv%Hk==0,
+// kernel_size=4; T=3 only under MLX_ROCM_GDN_T3=1). The slot op, the tape
+// op and the gdn_fused_step op are untouched.
+class GdnFusedStepSlot2 : public Custom {
+ public:
+  GdnFusedStepSlot2(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback,
+      float inv_scale,
+      float eps,
+      float norm_eps)
+      : Custom(stream, std::move(fallback)),
+        inv_scale_(inv_scale),
+        eps_(eps),
+        norm_eps_(norm_eps) {}
+
+  static bool use_fallback(
+      int B,
+      int T,
+      int Dk,
+      int Dv,
+      int Hv,
+      int Hk,
+      int kernel_size,
+      Stream s);
+
+  DEFINE_DEFAULT_IS_EQUIVALENT()
+
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    int T = (int)inputs[9].shape(1);
+    int Hv = (int)inputs[9].shape(2);
+    int key_dim = (int)inputs[0].shape(2);
+    int value_dim = (int)inputs[2].shape(2);
+    int conv_dim = 2 * key_dim + value_dim;
+    return {inputs[9].shape(),
+            inputs[10].shape(),
+            {T - 1, Hv, 128, 128},
+            {T - 1, 3, conv_dim},
+            {3, conv_dim}};
+  }
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(GdnFusedStepSlot2);
+
+ private:
+  float inv_scale_;
+  float eps_;
+  float norm_eps_;
+};
+// GdnFusedStepSeq: Phase 2 (W1 sequential, the llama.cpp GDN design port). The slot op (per-row state snapshots for the commit rows 0..T-2; row T-1 is state_new) running the COLUMN-PARALLEL sequential kernel pair (gdn_fused_step_seq_kernel: the reference geometry, the per-position runtime t loop, the per-row state slot + conv slot + conv_state_new stores; gdn_fused_step_seq_out_kernel: the tape phase-5 body verbatim over the op-internal attn intermediate) + the conv_state_new output (the slot2 launch integration rides along) which the model branch consumes for the conv-state cache update instead of dispatching concatenate + take_along_axis (launch integration: -2 ops per GDN layer per verify). Gated by MLX_ROCM_GDN_SEQ=1 (DEFAULT OFF). Same shape gate as GdnFusedStepSlot2 (B=1, 2<=T<=4, Dk=Dv=128, Hv%Hk==0, kernel_size=4; T=3 only under MLX_ROCM_GDN_T3=1). The slot2 op, the slot op, the tape op and the gdn_fused_step op are untouched.
+class GdnFusedStepSeq : public Custom {
+ public:
+  GdnFusedStepSeq(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback,
+      float inv_scale,
+      float eps,
+      float norm_eps)
+      : Custom(stream, std::move(fallback)),
+        inv_scale_(inv_scale),
+        eps_(eps),
+        norm_eps_(norm_eps) {}
+
+  static bool use_fallback(
+      int B,
+      int T,
+      int Dk,
+      int Dv,
+      int Hv,
+      int Hk,
+      int kernel_size,
+      Stream s);
+
+  DEFINE_DEFAULT_IS_EQUIVALENT()
+
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    int T = (int)inputs[9].shape(1);
+    int Hv = (int)inputs[9].shape(2);
+    int key_dim = (int)inputs[0].shape(2);
+    int value_dim = (int)inputs[2].shape(2);
+    int conv_dim = 2 * key_dim + value_dim;
+    return {inputs[9].shape(),
+            inputs[10].shape(),
+            {T - 1, Hv, 128, 128},
+            {T - 1, 3, conv_dim},
+            {3, conv_dim}};
+  }
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(GdnFusedStepSeq);
+
+ private:
+  float inv_scale_;
+  float eps_;
+  float norm_eps_;
+};
 // LMHeadInt2: int2 g128-asymmetric dequant GEMV (M=1) + in-kernel per-64-column top-8 candidate emission (see backend/rocm/lm_head_int2.hip). Inputs: x [M, K] bf16, wq [N, K/4] u8, scale [N, NG] f32 (per-group s), zs [N, NG] f32 (z*s), sx [NG] f32 (sum of x per 128-group). Outputs: logits [N] f32, cand_val [N/64, 8] f32, cand_col [N/64, 8] i32.
 class LMHeadInt2 : public Custom {
  public:
