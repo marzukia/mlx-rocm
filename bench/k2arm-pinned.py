@@ -744,8 +744,14 @@ def main():
                         if hasattr(c, "cache"):
                             st, cstab = lm.model.layers[i].linear_attn.last_tape
                             # tape rows are B-squeezed: restore the B dim
-                            c[1] = st[krow].reshape((1,) + st[krow].shape)
-                            c[0] = cstab[krow].reshape((1,) + cstab[krow].shape)
+                            # P3.2b gather fix (cloudy ruling 11-12): slice = lazy
+                            # view (the mode-3 pattern, :638-639); the int-index
+                            # take materialized the 2MB state row (gather_rows
+                            # bimodal ~26us launch + ~505us DRAM, 48/step at T=4).
+                            # Same shape ((1,) + row), zero behavior change on the
+                            # S3 path (already slices), K3-path-only.
+                            c[1] = st[krow:krow+1]
+                            c[0] = cstab[krow:krow+1]
                     for c in cache:
                         if isinstance(c, KVCache):
                             c.trim(3 - krow)

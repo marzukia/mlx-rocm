@@ -81,6 +81,9 @@ extend-exclude = [
     # step-decode as-run bench harnesses: mtp-bench6-stepdec-slot.py = the 92.23 record producer (md5 b00dec6b pinned by the checkpoint identity block - reformatting would break the as-run identity); mtp-bench6-stepdec-ph.py = PH/SPAN profiling bench (as-run d12fae08; the tree copy carries the persona-scrubbed /opt/fleet defaults). Excluded from lint + format per the as-run-evidence convention.
     "bench/mtp-bench6-stepdec-slot.py",
     "bench/mtp-bench6-stepdec-ph.py",
+    # W1 PR #30 as-run evidence (box-verbatim, md5 identity is the record): models/qwen3_5.py = the G1-verified venv-p2seq model (303b245b); bench/k2arm-pinned.py = the K3 arm bench (post-P3.2b-gather-fix box state + one named scrub delta). Reformatting would break the as-run identity; excluded from lint + format.
+    "models/qwen3_5.py",
+    "bench/k2arm-pinned.py",
 ]
 
 [tool.ruff.lint]
