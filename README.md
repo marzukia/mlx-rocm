@@ -1,17 +1,19 @@
 # mlx-rocm
 
-ROCm backend for [MLX](https://github.com/mlx-project/mlx) — **pre-alpha**
-(first public release 0.1.0).
+ROCm backend for [MLX](https://github.com/mlx-project/mlx) — **alpha**
+(0.2.0-alpha; the 0.1.0 line was the first public release).
 
 Purpose: a ROCm backend for MLX on AMD RDNA4 — validated on the RX 9070 XT
 (**gfx1201** — *not* gfx110x) — targeting the 9B hybrid at high decode
 speed. MTP spec decode and KV management are part of the MLX core path;
 serving is out of scope for this repo.
 
-Stage: **pre-alpha**. 0.1.0 is a public milestone of the current tree, not a
-stability promise — expect breaking changes. The **alpha cut is planned once
-decode reaches close to the card's ceiling** (9B-hybrid target: ~120 tok/s,
-byte-identical vs autoregressive).
+Stage: **alpha** (0.2.0-alpha). 0.1.0 was a public milestone of the current
+tree, not a stability promise. 0.2.0-alpha is the alpha cut — API and
+performance are not stable; expect breaking changes. The 9B-hybrid target is
+~120 tok/s (byte-identical vs autoregressive); 0.2.0 stands at 107.56 t/s
+@1024 record (84.8% of the same-GPU 126.9 t/s reference; in-tree repro:
+`bench/gdn_seq1024_repro.sh`).
 
 Verified toolchain: ROCm 10.1 userland on the validated guest (core at
 `/opt/rocm/core-10.1`; 6.4 was the early probe validation and 7.7 the original
@@ -28,8 +30,8 @@ Three pieces:
    gfx1200/RDNA4 fixes). Provenance: `vendor/mlx-rocm-upstream/README.md`.
 2. **`src/cpp/mlx_rocm/gemm/`** — a minimal standalone hipBLASLt GEMM
    (bf16 + fp8 e4m3, persistent handle + workspace, heuristic algo,
-   row-major layouts) plus a dependency-free CPU reference GEMM.
-   Modeled on the fork's `gemms/hipblaslt_gemm.cpp`.
+   row-major layouts) plus a dependency-free CPU reference GEMM, modeled
+   on the fork's `gemms/hipblaslt_gemm.cpp`.
 3. **`scripts/smoke.sh`** — builds the GEMM, runs a small GEMM on the
    build host (host-a, CPU reference), then rsyncs the tree to
    guest-a (`ssh operator@<tailnet-ip>`), builds it against local

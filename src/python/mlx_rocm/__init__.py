@@ -5,5 +5,5 @@ forward-merge of the ROCm base) + a minimal standalone hipBLASLt
 GEMM layer (bf16 + fp8 e4m3) with a CPU reference for validation.
 """
 
-__version__ = "0.0.1"
+__version__ = "0.2.0"
 __all__ = ["gemm", "__version__"]

@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mlx-rocm"
-version = "0.1.0"
-description = "ROCm backend for MLX (pre-alpha): vendored mlx ROCm backend tree + hipBLASLt GEMM + QMV decode kernels, validated on AMD RDNA4 (gfx1201)"
+version = "0.2.0"
+description = "ROCm backend for MLX (alpha): vendored mlx ROCm backend tree + hipBLASLt GEMM + QMV decode kernels, validated on AMD RDNA4 (gfx1201)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 authors = [{ name = "Submitter", email = "submitter@example.org" }]
 keywords = ["mlx", "rocm", "hip", "amd", "rdna4", "gfx1201"]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 3 - Alpha",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
