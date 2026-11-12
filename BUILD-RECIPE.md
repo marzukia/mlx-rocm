@@ -1,5 +1,7 @@
 # BUILD-RECIPE.md — PR3-HYBRID fused wheel (gdn_fused_step, gfx1201)
 
+**Historical provenance snapshot (2026-11-01, the 80.93 tok/s fused-AR record).** The vendor base here was the single-commit snapshot `75ca881` on the private-fork branch `tail-fusion-gdn` — a private URL (`<vendor-fork-url>`, never public) whose sha is absent from the public history, so step 1 is not reproducible from the public repo. This recipe predates the #26 (MTP) and #30 (W1) grafts and used a CPython 3.14 venv + `CMAKE_PREFIX_PATH=/opt/rocm`; the current canonical wheel path is the CPython 3.12 venv + `/opt/rocm/core-10.1` prefix in `docs/quickstart.md`. **The single canonical wheel recipe is `scripts/build-wheel.sh` + `vendor.json`** (the sha-verified pinned tree, `pip wheel .`); this document is kept as provenance only.
+
 Provenance: this recipe reproduces, from git, the fused-AR mlx wheel that measured **80.93 tok/s** on greedy (AR) decode of Qwen3-9B (GDN) vs **72.57 tok/s** no-fuse on the same host (**+11.5%**). All host-specific paths are placeholders: `<neon-host>` (the bare-metal ROCm box), `<guest-user>`, `<models-mount>` (the model directory mount), `<repo>` (this checkout), `<vendor-dir>`, `<wheelout>`, `<venv>`.
 
 ## What the wheel is
@@ -16,13 +18,17 @@ Provenance: this recipe reproduces, from git, the fused-AR mlx wheel that measur
 - Model at `<models-mount>/qwen3-9b-mlx`, with the `model-mtp-fixed.safetensors` sidecar in the same directory.
 - Hold the host's GPU lock for the whole build+bench session (host convention).
 
-## Step 1 — vendor base
+## Step 1 — vendor base (historical; not reproducible from the public repo)
 
 ```
 git clone --depth 1 --branch tail-fusion-gdn <vendor-fork-url> <vendor-dir>
 git -C <vendor-dir> rev-parse HEAD
-# must print 75ca881b2e82f7b4069c8564a203792aa16d8a29
+# must print 75ca881b2e82f7b4069c8564a203792aa16d8a29 (private-fork sha; absent from the public history)
 ```
+
+(For a current build, use `scripts/build-wheel.sh` instead: it clones the
+`vendor.json`-pinned tree — the public repo itself — verifies the checkout
+against the pinned sha, and runs `pip wheel .`.)
 
 ## Step 2 — apply the GDN graft (idempotent)
 

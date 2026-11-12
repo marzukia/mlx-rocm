@@ -5,6 +5,14 @@ Branch: `release/0.2.0`. PR: **#31** (opened; not tagged, not published — the
 release cut needs the tag `v0.2.0-alpha` + the operator tap). Head SHA at
 PR open: **9dc8e93** (this report lands as the follow-up commit on the PR).
 
+**Fix round (2026-11-13):** the accumulated reviewer findings (D1-D4, all
+terminal 23:0xZ) were fixed on this branch after this report — the
+build-story re-pin (vendor.json → a resolvable sha; the committed partial
+tree documented as the reference, not the build input), the stage/version/
+numbers refresh, the checklist re-assessment + 0.2.0=alpha designation,
+the persona reword, the 15-line wrap reflow, and the battery-number
+release-notes update. See `REPORT-ALPHA-FIXROUND-20261112.md`.
+
 ## 1. Version-declaration inventory (every site, before/after)
 
 | Site | Before | After | Note |

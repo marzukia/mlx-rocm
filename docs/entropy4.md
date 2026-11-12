@@ -117,8 +117,7 @@ speed-neutral; its value is the 6.5 % memory reduction (weight buffer at
   device (verified by isolating each step). `MLX_ROCM_ENTROPY=1` selects the
   path; default path and CI are untouched.
 - **Memory**: the weight buffer is allocated at the *compressed* size
-  (`comp_bytes`); the dense form lives only in the persistent decode scratch.
-  Net in-memory saving = `4.476 − 4.185 − max_scratch` GB (the scratch is one
+  (`comp_bytes`); the dense form lives only in the persistent decode scratch. Net in-memory saving = `4.476 − 4.185 − max_scratch` GB (the scratch is one
   reused buffer of size `max(N·K/2)` over the qmv tensors, ~tens of MB).
 
 ## Verification

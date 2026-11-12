@@ -50,30 +50,39 @@ clauses + same-session relative rate clause, the in-tree run recorded in
 
 ## Not in 0.2.0 (in flight)
 
-- **MTP prefill-fill + streaming catch-up**: not in main (the in-tree
-  bench is the pre-fill state); in flight.
+- **MTP prefill-fill + streaming catch-up**: measured, not re-stamped. Same-session 12-arm battery (2026-11-12): K2 prefill-fill +2.87% (TPK 2.297), K2 streaming +1.64% (TPK 2.332), K3 streaming TPK 2.670 (best tokens/step on the card, +6.01% within-session). The absolute re-stamp is pending the next card session — 107.56 t/s stands as the certified record. The in-tree bench is still the pre-fill state.
 - **W1 M=3 slot interior A/B/C**: issues #27/#28/#29, open.
 - 27B+ / MoE validation (Phase 2), the native mxfp4 kernel, non-gfx1201
   archs.
 
+## The ~120 / 126.9 target state
+
+The campaign ruling: the code-side path is closed on the named levers;
+the residual gap to the same-GPU 126.9 t/s reference is the weight-class
+boundary (9B-hybrid class vs the reference). 0.2.0 stands at 107.56 t/s
+@1024 (84.8%).
+
 ## Known limitations
 
-The open `docs/alpha-checklist.md` gaps as of this cut (the checklist was
-assessed 2026-10-26; since then the ROCm-version story was settled to
-10.1, the license fixed to MIT, the supported-models table + conversion
-recipe and `docs/limitations.md` landed, MTP K=2 is in-tree, and the GPU
-validation is recorded on the validated guest):
+The open `docs/alpha-checklist.md` gaps as of this cut (the checklist is
+re-assessed 2026-11-12 against `main` @ `aed6a25f` + PR #31; since the
+2026-10-26 snapshot the ROCm-version story was settled to 10.1, the
+license fixed to MIT, the supported-models table + conversion recipe and
+`docs/limitations.md` landed, MTP K=2 + the W1 line are in-tree, and the
+GPU validation is recorded on the validated guest):
 
-- **No install path** — the wheel is built on the validated guest
-  (`scripts/build-wheel.sh`); nothing is published (the PyPI slot `mlx-rocm`
-  is held, unreleased).
+- **Install path** — `pip install mlx-rocm` (PyPI `0.0.0`, `0.1.2`,
+  uploaded 2026-10-30); the full `mlx` wheel is built on the validated
+  guest (`scripts/build-wheel.sh`). The empirical 0.2.0 wheel build on the
+  box is the follow-up (the pin is resolvable + the gate is fail-loud).
 - **fp8 e4m3 long prefill on gfx1201** — the probe passes (max_rel_err
   0.0057) but real long-context prefill is unvalidated;
   `MLX_ROCM_GEMM_BF16=1` is the shipped safe default
   (`scripts/smoke-serve.sh`).
 - **GDN long prefill** — the per-timestep fallback is fine for decode
   (T=1) but slow for long prefill (T=4096 is ~32k small kernel launches);
-  the fused GDN port covers the decode path.
+  the fused GDN port (K3, merged) covers the decode path and the W1
+  sequential GDN kernel is in the certified record.
 - **NO_GPU op set** — FFT, the LAPACK family (LUF/QRF/SVD/Inverse/Eig/Eigh)
   and BlockMaskedMM fall back to CPU.
 - **27B+ / 9B-hybrid-large / MoE** — Phase 2; not validated.
@@ -83,18 +92,24 @@ validation is recorded on the validated guest):
 - **GPU smoke matrix** — the checks exist (`tests/test_gpu.py`,
   `scripts/smoke.py`, `scripts/smoke-serve.sh`) but no matrix documents
   check x ROCm version x box.
-- **Vendor re-pin cadence** — `build-wheel.sh` now verifies the
-  `vendor.json` sha at build time, but the re-pin cadence is not
-  documented.
+- **Vendor re-pin cadence** — `build-wheel.sh` verifies the
+  `vendor.json` sha at build time (fail-loud); the pin was re-pinned
+  2026-11-13 to a sha resolvable in the public fork; the cadence is
+  "re-pin in a PR when the base moves" (no calendar rule).
 
 ## Building
 
 `scripts/build-wheel.sh` (run on a gfx1201 box, ROCm 10.1 userland;
 `-DCMAKE_PREFIX_PATH=/opt/rocm/core-10.1` — see `docs/quickstart.md`)
-clones the pinned vendor fork, verifies the checkout against the
-`vendor.json` sha, and builds the wheel. The wheel metadata is derived
-from `pyproject.toml` at build time (setuptools); the version in this
-release is `0.2.0`.
+clones the pinned vendor fork (= this repo), verifies the checkout
+against the `vendor.json` sha (the pin is resolvable in the public fork;
+fail-loud otherwise), and builds the wheel from the fetched pinned tree.
+The committed `vendor/mlx-rocm-upstream/` is a partial, byte-verified
+reference snapshot (no build manifest) — not the build input. The wheel
+metadata is derived from `pyproject.toml` at build time (setuptools); the
+version in this release is `0.2.0`. `BUILD-RECIPE.md` is the 2026-11-01
+historical provenance snapshot (80.93 tok/s); the single canonical wheel
+recipe is this path.
 
 ## Provenance
 

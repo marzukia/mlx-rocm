@@ -57,10 +57,18 @@ gfx1201 guest (ROCm 10.1).
 - MTP full-state restore (keys + values + offsets) in the verify path; the
   `rope_q` row-invariance lossless gate fix.
 
+### Measured, not re-stamped (the absolute re-stamp is pending the next card session; 107.56 stands as the certified record)
+
+- **MTP prefill-fill + streaming catch-up**: same-session 12-arm battery
+  (2026-11-12): K2 prefill-fill +2.87% (TPK 2.297), K2 streaming +1.64%
+  (TPK 2.332), K3 streaming TPK 2.670 (best tokens/step on the card,
+  +6.01% within-session). The in-tree bench is still the pre-fill state.
+- **The ~120 / 126.9 target**: the campaign ruling — the code-side path
+  is closed on the named levers; the residual gap to the same-GPU 126.9
+  t/s reference is the weight-class boundary.
+
 ### Not in 0.2.0 (in flight)
 
-- **MTP prefill-fill + streaming catch-up**: not in main (the in-tree
-  bench is the pre-fill state); in flight.
 - **W1 M=3 slot interior A/B/C**: issues #27/#28/#29, open.
 - 27B+ / MoE validation (Phase 2); the native mxfp4 kernel (the opt-in
   dequant->bf16 GEMM path only); non-gfx1201 archs.
