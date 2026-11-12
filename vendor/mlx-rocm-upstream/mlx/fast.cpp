@@ -1505,6 +1505,246 @@ std::vector<array> gdn_fused_step_tape(
       "state tapes are emitted by the fused recurrence kernel only)");
 }
 
+// gdn_fused_step_slot2: R1b (the fused sequential slot design). The slot
+// op (per-row state slots for the commit rows 0..T-2; row T-1 is
+// state_new) on the NON-UNROLLED slot2 kernel (one per-row phase for all
+// M rows; the per-row re-execution of the unrolled 4x phase copies is
+// amortized into one pass over the rows; the per-thread weight loads are
+// loop-invariant and hoisted by LICM), plus the conv_state_new output
+// (the post-pass conv state, a pure selection over the input conv-state
+// rows and the raw rows, no arithmetic) which the model branch consumes
+// for the conv-state cache update (the python-side concatenate +
+// take_along_axis is not dispatched on that branch: launch integration,
+// -2 ops per GDN layer per verify). Gated by MLX_ROCM_GDN_SLOT2=1
+// (DEFAULT OFF: the op is unreachable without it -> zero-behavior-change).
+// Same shape gate as gdn_fused_step_slot (B=1, 2<=T<=4, Dk=Dv=128,
+// Hv%Hk==0, kernel_size=4; T=3 only under MLX_ROCM_GDN_T3=1). The slot
+// op, the tape op and the gdn_fused_step op are untouched.
+
+bool GdnFusedStepSlot2::use_fallback(
+    int B,
+    int T,
+    int Dk,
+    int Dv,
+    int Hv,
+    int Hk,
+    int kernel_size,
+    Stream s) {
+  // MLX_ROCM_GDN_SLOT2=1 (DEFAULT OFF). Same shape gate as GdnFusedStepSlot.
+  if (s.device == Device::cpu) {
+    return true;
+  }
+  const char* e = std::getenv("MLX_ROCM_GDN_SLOT2");
+  if (e == nullptr || e[0] != '1') {
+    return true;
+  }
+  if (B != 1 || T < 2 || T > 4) {
+    return true;
+  }
+  // T=3 (S=3, K=2 spec-decode verify) is admitted only under MLX_ROCM_GDN_T3=1 (same gate as GdnFusedStepSlot; default OFF -> T=3 throws the clear error below).
+  if (T == 3) {
+    const char* t3 = std::getenv("MLX_ROCM_GDN_T3");
+    if (t3 == nullptr || t3[0] != '1') {
+      return true;
+    }
+  }
+  if (Dk != 128 || Dv != 128) {
+    return true;
+  }
+  if (Hv % Hk != 0) {
+    return true;
+  }
+  if (kernel_size != 4) {
+    return true;
+  }
+  return false;
+}
+
+std::vector<array> gdn_fused_step_slot2(
+    const array& q_raw,
+    const array& k_raw,
+    const array& v_raw,
+    const array& b,
+    const array& a,
+    const array& A_log,
+    const array& dt_bias,
+    const array& conv_state,
+    const array& conv_weight,
+    const array& z_raw,
+    const array& state_raw,
+    const array& norm_weight,
+    float inv_scale,
+    float prep_eps,
+    float norm_eps,
+    StreamOrDevice s_ /* = {} */) {
+  auto s = to_stream(s_);
+
+  auto q = gdnf_make_row_contiguous(astype(q_raw, bfloat16, s), s);
+  auto k = gdnf_make_row_contiguous(astype(k_raw, bfloat16, s), s);
+  auto v = gdnf_make_row_contiguous(astype(v_raw, bfloat16, s), s);
+  auto bb = gdnf_make_row_contiguous(astype(b, bfloat16, s), s);
+  auto aa = gdnf_make_row_contiguous(astype(a, bfloat16, s), s);
+  auto al = gdnf_make_row_contiguous(astype(A_log, float32, s), s);
+  auto db = gdnf_make_row_contiguous(astype(dt_bias, float32, s), s);
+  auto cs = gdnf_make_row_contiguous(astype(conv_state, bfloat16, s), s);
+  auto cw = gdnf_make_row_contiguous(astype(conv_weight, bfloat16, s), s);
+  auto zg = gdnf_make_row_contiguous(astype(z_raw, bfloat16, s), s);
+  auto st = gdnf_make_row_contiguous(astype(state_raw, float32, s), s);
+  auto nw = gdnf_make_row_contiguous(astype(norm_weight, bfloat16, s), s);
+
+  int B = (int)q.shape(0);
+  int T = (int)q.shape(1);
+  int Hk = (int)q.shape(2) / 128;
+  int Hv = (int)v.shape(2) / 128;
+  int kernel_size = (int)cw.shape(1);
+
+  auto fallback = [](std::vector<array> inputs) -> std::vector<array> {
+    // There is NO chain fallback: the per-row state slots + the conv_state_new are emitted by the fused slot2 kernel only. The use_fallback gate (env + shape) makes the op unreachable when the slot2 is off/disabled, so this only fires on a direct call with the gate bypassed.
+    throw std::runtime_error(
+        "gdn_fused_step_slot2: no fallback (the 4-op chain emits no "
+        "per-row state slots nor the post-pass conv state); require "
+        "MLX_ROCM_GDN_SLOT2=1 on the ROCm GPU with B=1, 2<=T<=4, "
+        "Dk=Dv=128, kernel_size=4");
+  };
+
+  if (!GdnFusedStepSlot2::use_fallback(B, T, 128, 128, Hv, Hk, kernel_size, s)) {
+    auto inputs = std::vector<array>{
+        q, k, v, bb, aa, al, db, cs, cw, zg, st, nw};
+    int conv_dim = 2 * (int)q.shape(2) + (int)v.shape(2);
+    return array::make_arrays(
+        std::vector<Shape>{
+            zg.shape(),
+            st.shape(),
+            {T - 1, Hv, 128, 128},
+            {T - 1, 3, conv_dim},
+            {3, conv_dim}},
+        std::vector<Dtype>{bfloat16, float32, float32, bfloat16, bfloat16},
+        std::make_shared<GdnFusedStepSlot2>(
+            s, fallback, inv_scale, prep_eps, norm_eps),
+        inputs);
+  }
+  throw std::invalid_argument(
+      "gdn_fused_step_slot2: slot2 unavailable for this shape (require "
+      "MLX_ROCM_GDN_SLOT2=1 on the ROCm GPU with B=1, 2<=T<=4, Dk=Dv=128, "
+      "kernel_size=4; T=3 needs MLX_ROCM_GDN_T3=1); the slot2 has no "
+      "4-op-chain fallback (per-row state slots + the post-pass conv state "
+      "are emitted by the fused slot2 kernel only)");
+}
+
+
+// gdn_fused_step_seq: Phase 2 (W1 sequential, the llama.cpp GDN design port). The slot op contract (per-row state slots for the commit rows 0..T-2; row T-1 is state_new) + the conv_state_new output (the slot2 launch integration rides along: the python-side concatenate + take_along_axis is not dispatched on the SEQ branch) on the COLUMN-PARALLEL sequential kernel (the gdn_fused_step_seq_kernel + the gdn_fused_step_seq_out_kernel pair; 2 launches per GDN layer per step vs 1 for the slot op) + the op-internal attn intermediate [T, Hv, 128] bf16 (24KB @T=3; 8KB @T=1). Gated by MLX_ROCM_GDN_SEQ=1 (DEFAULT OFF: the op is unreachable without it -> zero-behavior-change). Same shape gate as gdn_fused_step_slot2 (B=1, 2<=T<=4, Dk=Dv=128, Hv%Hk==0, kernel_size=4; T=3 only under MLX_ROCM_GDN_T3=1). The slot2 op, the slot op, the tape op and the gdn_fused_step op are untouched.
+
+bool GdnFusedStepSeq::use_fallback(
+    int B,
+    int T,
+    int Dk,
+    int Dv,
+    int Hv,
+    int Hk,
+    int kernel_size,
+    Stream s) {
+  // MLX_ROCM_GDN_SEQ=1 (DEFAULT OFF). Same shape gate as GdnFusedStepSlot2.
+  if (s.device == Device::cpu) {
+    return true;
+  }
+  const char* e = std::getenv("MLX_ROCM_GDN_SEQ");
+  if (e == nullptr || e[0] != '1') {
+    return true;
+  }
+  if (B != 1 || T < 2 || T > 4) {
+    return true;
+  }
+  // T=3 (S=3, K=2 spec-decode verify) is admitted only under MLX_ROCM_GDN_T3=1 (same gate as GdnFusedStepSlot2; default OFF -> T=3 throws the clear error below).
+  if (T == 3) {
+    const char* t3 = std::getenv("MLX_ROCM_GDN_T3");
+    if (t3 == nullptr || t3[0] != '1') {
+      return true;
+    }
+  }
+  if (Dk != 128 || Dv != 128) {
+    return true;
+  }
+  if (Hv % Hk != 0) {
+    return true;
+  }
+  if (kernel_size != 4) {
+    return true;
+  }
+  return false;
+}
+
+std::vector<array> gdn_fused_step_seq(
+    const array& q_raw,
+    const array& k_raw,
+    const array& v_raw,
+    const array& b,
+    const array& a,
+    const array& A_log,
+    const array& dt_bias,
+    const array& conv_state,
+    const array& conv_weight,
+    const array& z_raw,
+    const array& state_raw,
+    const array& norm_weight,
+    float inv_scale,
+    float prep_eps,
+    float norm_eps,
+    StreamOrDevice s_ /* = {} */) {
+  auto s = to_stream(s_);
+
+  auto q = gdnf_make_row_contiguous(astype(q_raw, bfloat16, s), s);
+  auto k = gdnf_make_row_contiguous(astype(k_raw, bfloat16, s), s);
+  auto v = gdnf_make_row_contiguous(astype(v_raw, bfloat16, s), s);
+  auto bb = gdnf_make_row_contiguous(astype(b, bfloat16, s), s);
+  auto aa = gdnf_make_row_contiguous(astype(a, bfloat16, s), s);
+  auto al = gdnf_make_row_contiguous(astype(A_log, float32, s), s);
+  auto db = gdnf_make_row_contiguous(astype(dt_bias, float32, s), s);
+  auto cs = gdnf_make_row_contiguous(astype(conv_state, bfloat16, s), s);
+  auto cw = gdnf_make_row_contiguous(astype(conv_weight, bfloat16, s), s);
+  auto zg = gdnf_make_row_contiguous(astype(z_raw, bfloat16, s), s);
+  auto st = gdnf_make_row_contiguous(astype(state_raw, float32, s), s);
+  auto nw = gdnf_make_row_contiguous(astype(norm_weight, bfloat16, s), s);
+
+  int B = (int)q.shape(0);
+  int T = (int)q.shape(1);
+  int Hk = (int)q.shape(2) / 128;
+  int Hv = (int)v.shape(2) / 128;
+  int kernel_size = (int)cw.shape(1);
+
+  auto fallback = [](std::vector<array> inputs) -> std::vector<array> {
+    // There is NO chain fallback: the per-row state slots + the conv_state_new are emitted by the fused seq kernels only. The use_fallback gate (env + shape) makes the op unreachable when the seq is off/disabled, so this only fires on a direct call with the gate bypassed.
+    throw std::runtime_error(
+        "gdn_fused_step_seq: no fallback (the 4-op chain emits no "
+        "per-row state slots nor the post-pass conv state); require "
+        "MLX_ROCM_GDN_SEQ=1 on the ROCm GPU with B=1, 2<=T<=4, "
+        "Dk=Dv=128, kernel_size=4");
+  };
+
+  if (!GdnFusedStepSeq::use_fallback(B, T, 128, 128, Hv, Hk, kernel_size, s)) {
+    auto inputs = std::vector<array>{
+        q, k, v, bb, aa, al, db, cs, cw, zg, st, nw};
+    int conv_dim = 2 * (int)q.shape(2) + (int)v.shape(2);
+    return array::make_arrays(
+        std::vector<Shape>{
+            zg.shape(),
+            st.shape(),
+            {T - 1, Hv, 128, 128},
+            {T - 1, 3, conv_dim},
+            {3, conv_dim}},
+        std::vector<Dtype>{bfloat16, float32, float32, bfloat16, bfloat16},
+        std::make_shared<GdnFusedStepSeq>(
+            s, fallback, inv_scale, prep_eps, norm_eps),
+        inputs);
+  }
+  throw std::invalid_argument(
+      "gdn_fused_step_seq: seq unavailable for this shape (require "
+      "MLX_ROCM_GDN_SEQ=1 on the ROCm GPU with B=1, 2<=T<=4, Dk=Dv=128, "
+      "kernel_size=4; T=3 needs MLX_ROCM_GDN_T3=1); the seq has no "
+      "4-op-chain fallback (per-row state slots + the post-pass conv state "
+      "are emitted by the fused seq kernels only)");
+}
+
+
 bool LMHeadInt2::use_fallback(Stream s) {
   // The int2 packed weights only exist on the caller side (the MTP draft bench quantizes the bf16 head itself); there is no chain fallback. GPU-only by construction; CPU throws.
   return s.device == Device::cpu;

@@ -1,0 +1,10 @@
+{
+ "label": "A2v2(B lazy-cast) vs banked G0a @322 (f8cc6c30)",
+ "len_a2": 329,
+ "len_g0a": 329,
+ "compared": 329,
+ "identical": 329,
+ "pct": 100.0,
+ "diff_runs": [],
+ "first_fork": null
+}

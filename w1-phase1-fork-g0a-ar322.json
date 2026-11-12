@@ -1,0 +1,29 @@
+{
+ "label": "G0a(MTP slot bf16) vs A2AR(mode0 pure) @322",
+ "len_a": 329,
+ "len_b": 322,
+ "compared": 322,
+ "identical": 35,
+ "pct": 10.87,
+ "n_divergence_runs": 4,
+ "divergence_runs": [
+  [
+   32,
+   74
+  ],
+  [
+   107,
+   84
+  ],
+  [
+   192,
+   34
+  ],
+  [
+   227,
+   95
+  ]
+ ],
+ "first_fork": 32,
+ "prefix_identical": 32
+}

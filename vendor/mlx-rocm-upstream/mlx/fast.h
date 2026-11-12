@@ -127,6 +127,57 @@ MLX_API std::vector<array> gdn_fused_step_tape(
     float prep_eps,
     float norm_eps,
     StreamOrDevice s = {});
+// gdn_fused_step_slot2: R1b (the fused sequential slot design). The slot
+// op (per-row state slots for the commit rows 0..T-2; row T-1 is
+// state_new) on the NON-UNROLLED slot2 kernel (one per-row phase for all
+// M rows; the per-row re-execution of the unrolled 4x phase copies is
+// amortized into one pass over the rows; the per-thread weight loads are
+// loop-invariant and hoisted by LICM), plus the conv_state_new output
+// (the post-pass conv state, a pure selection over the input window and
+// the raw rows) which the model branch consumes for the conv-state cache
+// update (the python-side concatenate + take_along_axis is not dispatched
+// on that branch: launch integration, -2 ops per GDN layer per verify).
+// Gated by MLX_ROCM_GDN_SLOT2=1 (DEFAULT OFF -> zero-behavior-change).
+// Same shape gate as gdn_fused_step_slot (B=1, 2<=T<=4, Dk=Dv=128,
+// Hv%Hk==0, kernel_size=4; T=3 only under MLX_ROCM_GDN_T3=1). Returns
+// {output [1, T, Hv, Dv], state_new [Hv, Dv, Dk], state_slot [T-1, Hv, Dk,
+// Dv] f32, conv_slot [T-1, 3, conv_dim] bf16, conv_state_new [3,
+// conv_dim] bf16}.
+MLX_API std::vector<array> gdn_fused_step_slot2(
+    const array& q_raw,
+    const array& k_raw,
+    const array& v_raw,
+    const array& b,
+    const array& a,
+    const array& A_log,
+    const array& dt_bias,
+    const array& conv_state,
+    const array& conv_weight,
+    const array& z,
+    const array& state,
+    const array& norm_weight,
+    float inv_scale,
+    float prep_eps,
+    float norm_eps,
+    StreamOrDevice s = {});
+    // gdn_fused_step_seq: Phase 2 (W1 sequential, the llama.cpp GDN design port). The slot op (per-row state slots for the commit rows 0..T-2; row T-1 is state_new) + the conv_state_new output (the slot2 launch integration rides along: the python-side concatenate + take_along_axis is not dispatched on the SEQ branch) on the column-parallel sequential kernel pair (gdn_fused_step_seq_kernel + gdn_fused_step_seq_out_kernel; 2 launches per GDN layer per step; the attn intermediate [T, Hv, 128] bf16 is op-internal). Gated by MLX_ROCM_GDN_SEQ=1 (DEFAULT OFF -> zero-behavior-change). Same shape gate as gdn_fused_step_slot2 (B=1, 2<=T<=4, Dk=Dv=128, Hv%Hk==0, kernel_size=4; T=3 only under MLX_ROCM_GDN_T3=1). Returns {output [1, T, Hv, Dv], state_new [Hv, Dv, Dk], state_slot [T-1, Hv, Dk, Dv] f32, conv_slot [T-1, 3, conv_dim] bf16, conv_state_new [3, conv_dim] bf16}.
+MLX_API std::vector<array> gdn_fused_step_seq(
+    const array& q_raw,
+    const array& k_raw,
+    const array& v_raw,
+    const array& b,
+    const array& a,
+    const array& A_log,
+    const array& dt_bias,
+    const array& conv_state,
+    const array& conv_weight,
+    const array& z,
+    const array& state,
+    const array& norm_weight,
+    float inv_scale,
+    float prep_eps,
+    float norm_eps,
+    StreamOrDevice s = {});
 
 
 // lm_head_int2: int2 g128-asymmetric dequant GEMV (M=1) + in-kernel per-64-column top-8 candidate emission (backend/rocm/lm_head_int2.hip). x [1, K] bf16, wq [N, K/4] u8 (quarter-split 2-bit planes), scale [N, NG] f32 = s, zs [N, NG] f32 = z*s, sx [NG] f32 = sum of x per 128-group. Returns {logits [N] f32, cand_val [N/64, 8] f32, cand_col [N/64, 8] i32}.

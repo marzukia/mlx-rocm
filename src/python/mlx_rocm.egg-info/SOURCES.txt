@@ -765,3 +765,4 @@ vendor/mlx-rocm-upstream/mlx/types/complex.h
 vendor/mlx-rocm-upstream/mlx/types/fp16.h
 vendor/mlx-rocm-upstream/mlx/types/half_types.h
 vendor/mlx-rocm-upstream/mlx/types/limits.h
+vendor/mlx-rocm-upstream/python/src/fast.cpp

@@ -36,7 +36,13 @@
 Not vendored: `python/` (Pybind11 bindings incl. the `mlx.core.rocm`
 module), `tests/`, `benchmarks/`, `.github` (except the ROCm workflow).
 They are in the upstream repo at the pinned commit; pull them in when the
-full-wheel build phase starts.
+full-wheel build phase starts. Exception: `python/src/fast.cpp` is vendored as an inert source snapshot (the W1 additions below).
+
+## W1 additions (PR #30, 2026-11-12; default-off, env-gated)
+
+The half-precision draft module + the sequential GDN kernel (the llama.cpp GDN design port, ref 29c720ea) + slot2 (R1b) land in the vendor tree: `mlx/backend/rocm/gdn_fused_step_tape.hip` +1030 (slot2 kernel/launcher/eval_gpu + the seq kernel pair/launchers/eval_gpu, incl. the unique-tid 2D-block build fix), `mlx/fast.cpp` +240 (the slot2 op + the seq op; the MTP6_TAPE=seq dispatch side only), `mlx/fast.h` +51 (both decls), `mlx/fast_primitives.h` +121 (the GdnFusedStepSlot2 + GdnFusedStepSeq classes), all pure insertions with zero deletions, plus `python/src/fast.cpp` NEW (the box-patched pybind state verbatim; inert in this repo, the root CMake builds only src/cpp/mlx_rocm/gemm/hipblaslt.cpp).
+
+Engagement gates (all default OFF; the stock 97.52 path is the unchanged default): the seq op under MLX_ROCM_GDN_SEQ=1 + MTP6_TAPE=seq; the slot2 op under MLX_ROCM_GDN_SLOT2=1 + MLX_ROCM_GDN_FUSE=1 + the shape gate; the model-side half-precision cast under MTP6_MOD_BF16=1 (guarded, default "0"). Named pre-existing delta: the repo vendor snapshot predates the gdn_fused_step_slot (B2) + gdn_fused_step_tape_t1 ops; the insertion blocks are self-contained and reference them in comments only.
 
 ## Build (upstream layout, for the full wheel)
 
