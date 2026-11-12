@@ -1,0 +1,12 @@
+{
+ "label": "A1(MTP slot int2w, all-reject) vs G0a @322",
+ "len_a": 162,
+ "len_b": 329,
+ "compared": 162,
+ "identical": 162,
+ "pct": 100.0,
+ "n_divergence_runs": 0,
+ "divergence_runs": [],
+ "first_fork": null,
+ "prefix_identical": 162
+}

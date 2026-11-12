@@ -1,0 +1,189 @@
+--- a/k2arm-pinned.py (b3464be1)	2026-11-12 12:40:59.794729007 +1100
++++ b/k2arm-pinned-d.py (66af508f, D on-device token passing)	2026-11-12 13:02:35.475366812 +1100
+@@ -206,12 +206,13 @@
+             bits=qh["bits"],
+         )
+     exact = mx.sum(x.astype(mx.float32) * cols.astype(mx.float32), axis=1)
+-    return int(mx.take(idx, mx.argmax(exact)))
++    return mx.take(idx, mx.argmax(exact))  # W1P1-D: on-device (no D2H)
+ 
+ 
+ def main():
+     mode = os.environ.get("MLX_MTP", "0")
+     assert mode in ("0", "1", "2", "3", "4"), mode
++    assert mode in ("0", "3"), "W1P1-D bench: mode 0/3 only (phase-1 arms)"
+     mtp_on = mode in ("1", "2", "3", "4")
+     tape_mode = "0"
+     if mode in ("3", "4"):
+@@ -382,6 +383,7 @@
+     n_refwd = 0
+     n_cdeferred = 0
+     pending_c = None
++    pending_cd = None  # W1P1-D: on-device copy of pending_c
+     h_r = None
+ 
+     # t1986 ngram-S3 probe: MTP6_NGRAM_S3=1 wires the mode-4 n-gram fill
+@@ -393,6 +395,7 @@
+     ngram_s3 = mode == "3" and mtp_on and os.environ.get(
+         "MTP6_NGRAM_S3", "0"
+     ) == "1"
++    assert not ngram_s3, "W1P1-D bench: MTP6_NGRAM_S3 off (host-lookup path)"
+     ng_n = int(os.environ.get("MTP6_NGRAM_N", "4"))
+     nfill = NgramFill(prompt_ids, ng_n) if ngram_s3 else None
+     nfill_len = 0
+@@ -406,10 +409,13 @@
+         )
+ 
+     def draft_tok(dh):
++        # W1P1-D: returns the ON-DEVICE scalar (no host D2H); the host
++        # materializes tokens only via the batched verify D2H or the stream
++        # append.
+         if qh is not None and "wbf16" in qh:
+-            return int(mx.argmax(mx.matmul(dh, qh["wbf16"].T)[0, -1]))
+-        return int2_argmax(dh, qh) if qh is not None else int(
+-            mx.argmax(lm.lm_head(dh.astype(mx.bfloat16))[0, -1])
++            return mx.argmax(mx.matmul(dh, qh["wbf16"].T)[0, -1])
++        return int2_argmax(dh, qh) if qh is not None else mx.argmax(
++            lm.lm_head(dh.astype(mx.bfloat16))[0, -1]
+         )
+ 
+     def hhead(x):
+@@ -454,11 +460,14 @@
+             if pending_c is not None:
+                 # R5: the correction is deferred; ctoken is row 0 of the next verify (already emitted at the reject). The draft chain re-anchors on the rejected row's pre-norm hidden (in the S=4 graph; zero extra target work).
+                 t = pending_c
++                td = pending_cd  # W1P1-D: on-device carry
+                 pending_c = None
++                pending_cd = None
+                 h = h_r
+                 h_r = None
+             else:
+-                t = int(mx.argmax(l))
++                td = mx.argmax(l)  # W1P1-D: argmax stays on-device
++                t = int(td)  # W1P1-D: the single stream-materialization D2H
+                 if t == EOS:
+                     break
+                 out.append(t)
+@@ -467,6 +476,7 @@
+                     nfill_len += 1
+             if mtp_on:
+                 prev_token = t
++                prev_token_d = td  # W1P1-D: device carry for the verify input
+                 _mk("post_sample", _i0)
+                 fw1 = True
+                 fw2 = True
+@@ -477,9 +487,10 @@
+                     draft1 = c1
+                     fw1 = False
+                 else:
+-                    emb1 = lm.model.embed_tokens(mx.array([[t]]))
++                    emb1 = lm.model.embed_tokens(td.reshape(1, 1))  # W1P1-D: on-device embed (no H2D)
+                     dh1 = lm.mtp(hhead(h), emb1, mtp_cache)
+                     draft1 = draft_tok(dh1)
++                    draft1_d = draft1  # W1P1-D: on-device
+                 _t_b = time.perf_counter() if stepdec_on else 0.0
+                 _mk("post_d1", _i0)
+                 if mode in ("3", "4"):
+@@ -490,9 +501,10 @@
+                         draft2 = c2
+                         fw2 = False
+                     else:
+-                        emb2 = lm.model.embed_tokens(mx.array([[draft1]]))
++                        emb2 = lm.model.embed_tokens(draft1_d.reshape(1, 1))  # W1P1-D: on-device embed (no H2D)
+                         dh2 = lm.mtp(dh1, emb2, mtp_cache)
+                         draft2 = draft_tok(dh2)
++                        draft2_d = draft2  # W1P1-D: on-device
+                 _t_c = time.perf_counter() if stepdec_on else 0.0
+                 _mk("post_d2", _i0)
+                 if mode == "4":
+@@ -510,9 +522,9 @@
+                         wall=_t_e - _t_a,
+                     )
+             else:
+-                # baseline: advance the state with t
++                # baseline: advance the state with t (W1P1-D: on-device input)
+                 logits, hidden = lm(
+-                    mx.array([[t]]),
++                    td.reshape(1, 1),
+                     cache=cache,
+                     return_hidden=True,
+                     return_prenorm=True,
+@@ -593,12 +605,14 @@
+             _t_a = time.perf_counter() if stepdec_on else 0.0
+             _mk("vstart", _i0)
+             d1, d2 = draft1, draft2
++            d1d, d2d = draft1_d, draft2_d  # W1P1-D: on-device drafts
+             draft1 = draft2 = draft3 = None
++            draft1_d = draft2_d = None
+             verifies += 1
+             if tape_mode == "0":
+                 saved = save_gdn(cache)
+             logits, hidden = lm(
+-                mx.array([[prev_token, d1, d2]]),
++                mx.concatenate([prev_token_d.reshape(1), d1d.reshape(1), d2d.reshape(1)], axis=-1).reshape(1, 3),  # W1P1-D: on-device verify input (no H2D)
+                 cache=cache,
+                 return_hidden=True,
+                 return_prenorm=True
+@@ -649,14 +663,15 @@
+                         lm(mx.array([[pt]]), cache=cache)
+                     return False
+ 
+-            def reject(krow, lk, hb, ktrim, prefix, ctoken):
+-                nonlocal l, h, n_refwd, pending_c, h_r, n_cdeferred
++            def reject(krow, lk, hb, ktrim, prefix, ctoken, ctoken_d=None):
++                nonlocal l, h, n_refwd, pending_c, pending_cd, h_r, n_cdeferred
+                 committed = commit(krow, prefix)
+                 if os.environ.get("MTP6_MTPCACHE_TRIM", "1") == "1":
+                     mtp_cache[0].trim(ktrim)
+                 if tape_mode in ("r5", "slot", "slot2") and not (tape_mode == "slot" and os.environ.get("MTP6_SLOT_IMM", "0") == "1") and committed:
+                     # R5: no S=1 correction re-forward; ctoken = row 0 of the next verify, draft re-anchors on the rejected row's h
+                     pending_c = ctoken
++                    pending_cd = ctoken_d  # W1P1-D: on-device carry
+                     h_r = hb
+                     out.append(ctoken)
+                     n_cdeferred += 1
+@@ -674,26 +689,36 @@
+ 
+             # t1986: mtp_cache row accounting - n_fwd rows were pushed this step (one per real draft forward; an n-gram fill hit skips the push); a rejection keeps the accepted rows -> trim n_fwd - n_accepted. With fw1=fw2=True (ngram off) this reduces to the canonical 1 (d2 reject) / 2 (d1 reject) constants.
+             n_fwd = int(fw1) + int(fw2)
+-            t2 = int(mx.argmax(l0))
+-            if t2 == EOS:
++
++            def _dvec(*parts):
++                # W1P1-D: ONE blocking D2H of a batched int vector
++                # (parts = on-device scalars / comparison results).
++                return mx.concatenate(
++                    [p.astype(mx.int32).reshape(1) for p in parts]
++                ).tolist()
++
++            t2d = mx.argmax(l0)  # W1P1-D: on-device (RT-1/RT-4 class)
++            t2, res1, eos1 = _dvec(t2d, t2d == d1d, t2d == EOS)
++            if eos1:
+                 break
+-            if t2 == d1:
++            if res1:
+                 d1_acc += 1
+                 out.append(t2)
+-                t3 = int(mx.argmax(l1))
+-                if t3 == EOS:
++                t3d = mx.argmax(l1)  # W1P1-D: RT-5 conditional leg
++                t3, res2, eos2 = _dvec(t3d, t3d == d2d, t3d == EOS)
++                if eos2:
+                     break
+-                if t3 == d2:
++                if res2:
+                     d2_acc += 1
+                     out.append(t3)
+                     # Full accept: the model's state (after row 1) is already in the leaves; no rebind, no trims.
+                     l, h = l2, hb2
+                 else:
+                     # draft2 rejected: commit row 1 (after D1), correction token t3; mtp_cache trim = n_fwd - 1 accepted row.
+-                    reject(1, l1, hb1, max(0, n_fwd - int(fw1)), [prev_token, d1], t3)
++                    reject(1, l1, hb1, max(0, n_fwd - int(fw1)), [prev_token, d1], t3, t3d)
+             else:
+                 # draft1 rejected: commit row 0 (after prev_token), correction token t2; mtp_cache trim = all n_fwd rows.
+-                reject(0, l0, hb0, n_fwd, [prev_token], t2)
++                reject(0, l0, hb0, n_fwd, [prev_token], t2, t2d)
+             if stepdec_on:
+                 mx.eval()
+                 _t_e = time.perf_counter()

@@ -1,0 +1,12 @@
+{
+ "label": "A1x(MTP slot int2 non-wide) vs G0a @322",
+ "len_a": 336,
+ "len_b": 329,
+ "compared": 329,
+ "identical": 329,
+ "pct": 100.0,
+ "n_divergence_runs": 0,
+ "divergence_runs": [],
+ "first_fork": null,
+ "prefix_identical": 329
+}

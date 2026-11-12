@@ -1,0 +1,70 @@
+--- a/qwen3_5.py (ff7c8d0e)	2026-11-12 12:46:48.577889321 +1100
++++ b/qwen3_5.py (936ba54e, v2 lazy cast)	2026-11-12 13:46:13.925963615 +1100
+@@ -51,6 +51,10 @@
+ 
+ 
+ class MTPModule(nn.Module):
++    # MTP6_MOD_BF16 (W1 phase 1, change B): one-shot lazy-cast guard
++    # (class-level: one mtp instance per model, one model per process).
++    _MTP6_BF16_CAST_DONE = False
++
+     def __init__(self, args: TextModelArgs, n_layers: int, quant: bool = False):
+         super().__init__()
+         self.pre_fc_norm_hidden = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
+@@ -63,6 +67,16 @@
+         self.norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
+ 
+     def __call__(self, hidden_states: mx.array, embedding: mx.array, cache=None):
++        # MTP6_MOD_BF16: one-time lazy cast on first use (after load's
++        # mx.eval has pinned the trunk array layout on the f32 sidecar
++        # state - the load-site cast placement is layout-perturbing, see
++        # cast_bf16).
++        if (
++            os.environ.get("MTP6_MOD_BF16", "0") == "1"
++            and not MTPModule._MTP6_BF16_CAST_DONE
++        ):
++            MTPModule._MTP6_BF16_CAST_DONE = True
++            self.cast_bf16()
+         if hidden_states.ndim == 1:
+             hidden_states = hidden_states.reshape(1, 1, -1)
+         if embedding.ndim == 1:
+@@ -77,6 +91,39 @@
+             fused = layer(fused, mask, c)
+         return self.norm(fused)
+ 
++    def cast_bf16(self):
++        # MTP6_MOD_BF16 (W1 phase 1, change B): cast all 15 sidecar f32
++        # module keys to bf16 (module weights bf16 at first use). LAZY
++        # placement is load-bearing (measured 11-12): the load-site
++        # (sanitize) cast changes the heap layout before the trunk arrays
++        # are pinned by mx.eval -> the trunk numerics perturb (prompt-
++        # forward logits non-deterministic under the bf16 sidecar layout).
++        # Post-eval: trunk arrays keep their addresses; the 15 module
++        # leaves are rebound to fresh bf16 arrays (f32 originals freed).
++        # DEFAULT OFF (no call site) -> module stays f32, byte-identical
++        # base behavior. The MTP_4BIT path (quant=True) is untouched (B'
++        # out of scope). Change C (MTP6_SLOT_SKIPCS) is PARKED for this
++        # session (cloudy ruling 01:58Z).
++        cast = 0
++
++        def walk(m):
++            nonlocal cast
++            if isinstance(m, (list, tuple)):
++                for v in m:
++                    if isinstance(v, (nn.Module, list, tuple, mx.array)):
++                        walk(v)
++                return
++            for k, v in m.items():
++                if isinstance(v, mx.array):
++                    setattr(m, k, v.astype(mx.bfloat16))
++                    cast += 1
++                elif isinstance(v, (nn.Module, list, tuple)):
++                    walk(v)
++
++        walk(self)
++        mx.eval(self.parameters())
++        return cast
++
+ GDN_FUSE_CALLS = 0  # F-branch fused-op dispatch counter
+ GDN_TAPE_CALLS = 0  # TAPE_BRANCH_PATCH dispatch counter
+ GDN_SLOT_CALLS = 0  # SLOT_BRANCH_PATCH (Phase B) dispatch counter

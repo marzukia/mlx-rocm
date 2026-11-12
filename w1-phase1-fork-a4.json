@@ -1,0 +1,11 @@
+{
+ "label": "A4(B v2) run1 vs banked 86d73662 @1024",
+ "len_a4": 1060,
+ "len_bk": 1065,
+ "compared": 1060,
+ "identical": 1060,
+ "pct": 100.0,
+ "diff_runs": [],
+ "first_fork": null,
+ "a4_1_vs_a4_2_identical": true
+}

@@ -1,0 +1,24 @@
+--- a/qwen3_5.py (ff7c8d0e)	2026-11-12 12:46:48.577889321 +1100
++++ b/qwen3_5.py (1ea46f9a, v1 sanitize cast)	2026-11-12 13:02:35.475061579 +1100
+@@ -543,6 +543,21 @@
+         # MTP_INJECT_PATCH: keep mtp.* keys when the module exists so they load
+         if getattr(self, "mtp", None) is None:
+             weights = {k: v for k, v in weights.items() if "mtp." not in k}
++        # MTP6_MOD_BF16 (W1 phase 1, change B): load-site cast of all 15
++        # sidecar f32 MTP-module keys to bf16 (module weights bf16 at load).
++        # DEFAULT OFF -> the dict is untouched. The MTP_4BIT path
++        # (quant=True) is untouched (B' out of scope). Change C
++        # (MTP6_SLOT_SKIPCS) is PARKED for this session (cloudy ruling
++        # 01:58Z: the prologue conv update is LIVE on full-accept steps on
++        # the SLOT path; the reviewer-C census correction is on the record).
++        if (
++            os.environ.get("MTP6_MOD_BF16", "0") == "1"
++            and getattr(self, "mtp", None) is not None
++        ):
++            weights = {
++                k: v.astype(mx.bfloat16) if "mtp." in k else v
++                for k, v in weights.items()
++            }
+ 
+         if self.args.tie_word_embeddings:
+             weights.pop("lm_head.weight", None)
