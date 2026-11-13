@@ -1,6 +1,6 @@
 {
-  "bench/k2arm-pinned.py": 829,
-  "models/qwen3_5.py": 819,
+  "bench/k2arm-pinned.py": 997,
+  "models/qwen3_5.py": 860,
   "scripts/diag-s62-m5.py": 949,
   "scripts/diag-s62-m7.py": 904
 }
