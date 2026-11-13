@@ -261,8 +261,48 @@ class GatedDeltaNet(nn.Module):
 
         qkv = self.in_proj_qkv(inputs)
         z = self.in_proj_z(inputs).reshape(B, S, self.num_v_heads, self.head_v_dim)
-        b = self.in_proj_b(inputs)
-        a = self.in_proj_a(inputs)
+        if os.environ.get("MLX_ROCM_W1_INBA_FUSE", "0") == "1":
+            fused = getattr(self, "_inba_fused", None)
+            if fused is None:
+                fused = nn.QuantizedLinear(
+                    self.hidden_size,
+                    2 * self.num_v_heads,
+                    bits=self.in_proj_b.bits,
+                    group_size=self.in_proj_b.group_size,
+                    bias=False,
+                )
+                fused.weight = mx.concatenate(
+                    [self.in_proj_b.weight, self.in_proj_a.weight], axis=0
+                )
+                fused.scales = mx.concatenate(
+                    [self.in_proj_b.scales, self.in_proj_a.scales], axis=0
+                )
+                # W1 ZP-FIX 2026-11-13 (cloudy ruling, axis read): the
+                # QuantizedLinear constructor's group zero-points come from
+                # mx.quantize of an mx.random.uniform weight = per-process
+                # RANDOM. The fused GEMM must use the model's true
+                # zero-points or its output is non-deterministic per process.
+                fused.biases = mx.concatenate(
+                    [self.in_proj_b.biases, self.in_proj_a.biases], axis=0
+                )
+                self._inba_fused = fused
+            ba = fused(inputs)
+            b = mx.contiguous(ba[..., : self.num_v_heads])
+            a = mx.contiguous(ba[..., self.num_v_heads:])
+            if os.environ.get("MLX_W1_INBA_DUMP", "0") == "1" and getattr(self, "_layer_idx", -1) == 0:
+                import numpy as _np
+                b_ref = self.in_proj_b(inputs)
+                a_ref = self.in_proj_a(inputs)
+                _dump_n = getattr(self, "_inba_dump_n", 0)
+                self._inba_dump_n = _dump_n + 1
+                if _dump_n < 4:
+                    _fn = "/tmp/inba_l0_%d_%s.npz" % (_dump_n, os.environ.get("W1_DUMP_TAG", "x"))
+                    _d = lambda x: _np.asarray(mx.astype(x, mx.float32))
+                    _np.savez(_fn, inp=_d(inputs), ba=_d(ba), b=_d(b),
+                              a=_d(a), b_ref=_d(b_ref), a_ref=_d(a_ref))
+        else:
+            b = self.in_proj_b(inputs)
+            a = self.in_proj_a(inputs)
 
         if cache is not None and cache[0] is not None:
             conv_state = cache[0]
@@ -522,6 +562,7 @@ class DecoderLayer(nn.Module):
         self.is_linear = (layer_idx + 1) % args.full_attention_interval != 0
         if self.is_linear:
             self.linear_attn = GatedDeltaNet(args)
+            self.linear_attn._layer_idx = layer_idx
         else:
             self.self_attn = Attention(args)
 
