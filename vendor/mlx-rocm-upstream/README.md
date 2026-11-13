@@ -4,10 +4,10 @@
 
 | | |
 |---|---|
-| **Repository** | the vendor ref (an mlx fork) |
-| **Branch** | `rocm-current` |
-| **Commit** | the vendor-ref pin (2026-09-28) |
-| **Last commit subject** | "rocm: mxfp8 prefill GEMM, cooperative softmax, device_info keys" |
+| **Repository** | the public vendor ref: `github.com/marzukia/mlx-rocm` (this repo) |
+| **Branch** | `main` (the vendor ref, per `vendor.json`) |
+| **Commit** | the vendor-ref pin (re-pinned 2026-11-13 to `aed6a25f`, resolvable in the public fork) |
+| **This tree** | a byte-verified **partial** reference snapshot — NOT the build input (no build manifest: `CMakeLists` is preserved as `CMakeLists.upstream.txt`, `python/` holds only `src/fast.cpp`, no `tests/`; the full buildable tree is the fetched pinned tree, built by `scripts/build-wheel.sh`) |
 | **Lineage** | Forward-merge of the open ROCm-base experiment "[Experiment] ROCm backend" (commit `75915908dfe5028335d318b10340313744fd3a8d`, 2026-07-19) onto the MLX base the Ollama fork pins. Adds GatedDeltaUpdate fallback, mxfp8 prefill GEMM, gfx1200/RDNA4 fixes, hipRTC custom-kernel routing. |
 | **License** | MIT (see `LICENSE.upstream`, also `../LICENSE`) |
 
@@ -47,9 +47,15 @@ Engagement gates (all default OFF; the stock 97.52 path is the unchanged default
 ## Build (upstream layout, for the full wheel)
 
 ```
-CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=OpenBLAS" \
-  python setup.py bdist_wheel
+# the canonical path (guest-a-only; see docs/quickstart.md):
+bash scripts/build-wheel.sh   # clones the vendor.json-pinned tree, sha-verified, pip wheel .
 ```
 
+The wheel builds from the fetched pinned tree (the repo root; it has the
+build manifest — this partial snapshot does not, which is why a
+`setup.py bdist_wheel` from this directory is not a build path).
+
 `gfx1201` = RX 9070 XT (RDNA4). **Not** `gfx110x` (that is RDNA3 / RX 7000).
-ROCm 6.4+ supports gfx1200/1201; guest-a runs ROCm 7.x (TheRock/Fedora stack).
+ROCm 6.4+ supports gfx1200/1201; the verified toolchain is ROCm 10.1
+userland on guest-a (core at `/opt/rocm/core-10.1`; 6.4 and 7.7 are
+historical).

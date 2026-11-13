@@ -112,8 +112,7 @@ structure/harness overhead (reject re-forwards + draft + Python), not S=2.
 1. **2-rows-per-block QMV for M=2**: the tiled QMV streams the weight tile once
    per m-row block (grid (M, grid_y)); a 2-row block halves weight streaming
    (M=2 ~= 1.1-1.3x M=1 instead of 2x). Per-row results stay bit-exact
-   (independent accumulators, same grid-stride tile order), T=1 untouched.
-   Projected m2 ~= 72-78 tok/s.
+   (independent accumulators, same grid-stride tile order), T=1 untouched. Projected m2 ~= 72-78 tok/s.
 2. **Mid-verify GDN state**: expose the intermediate (after token 0) state from
    the batched recurrent kernel; the reject path drops from 2x T=1 re-forwards
    to 1x T=1 (saves ~1.7 s -> +~8 tok/s).

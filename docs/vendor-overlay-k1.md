@@ -1,8 +1,16 @@
 # Vendor overlay note — K1 N=12288 correctness fix (run-543, MAJOR-1)
 
-Status: **overlay documented — fork push failed (no push creds), re-pin pending.**
+Status: **superseded / re-pinned (2026-11-13).** The overlay is no longer
+needed: `vendor.json` pins the public repo (`main` @ the re-pinned sha,
+resolvable in the fork), and the K1 N=12288 fix + the K1 v_dot4
+int8-activation QMV kernel are in the committed vendor tree
+(`vendor/mlx-rocm-upstream/`, byte-verified vs the guest clone working tree)
+— the pinned build tree carries them. (The 2026-11-01 era state: fork push
+failed (no push creds), re-pin pending; historical provenance below.)
 
-`vendor.json` primary pins the vendor ref (branch `rocm-current`).
+`vendor.json` primary pins the public repo (the vendor ref; historically
+branch `rocm-current` — that branch no longer exists on the public remote).
+
 The N=12288 stale-output correctness fix (`99cddb5`) + the K1 v_dot4
 int8-activation QMV kernel (`b42efb6`) live in the vendored tree
 (`vendor/mlx-rocm-upstream/`, byte-verified vs the guest clone working tree)

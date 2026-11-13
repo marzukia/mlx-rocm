@@ -162,8 +162,7 @@ surface in §1.6 as follows. `rocm/CMakeLists.txt` finds: `hip`, `rocblas`, `roc
    `rocm/CMakeLists.txt` warp policy, `rocm/device.cpp` runtime `warp_size()`). RDNA4
    (gfx1200/1201) supports *both* 32 and 64; the fork defaults RDNA to 32.
 2. **No clean CUDA-managed-memory equivalent.** On a discrete GPU (RX 9070 XT), `hipMalloc`
-   returns real VRAM that is *mapped into the host address space through a large PCIe BAR*.
-   Reading it from the CPU runs at uncached-MMIO speed. The fork measures this on gfx942:
+   returns real VRAM that is *mapped into the host address space through a large PCIe BAR*. Reading it from the CPU runs at uncached-MMIO speed. The fork measures this on gfx942:
    **CPU direct BAR read 54 MB/s vs hipMemcpy 50.4 GB/s** (`rocm/host_stage.cpp`). It adds a
    `host_stage.cpp` pinned-bounce path (64 MB, ~36.9 GB/s pinned) for host reads of device
    memory (model save/load) and uses `host_shadow` instead of CUDA's
@@ -325,8 +324,6 @@ holds the PyPI slot). No renaming needed.
 
 ## 6. Minimum `mlx-rocm` definition (phased plan + effort)
 
-"Minimum" = **qmlx-serve runs a 9B-class dense Qwen3 on the build VM (RX 9070 XT / gfx1201,
-ROCm 10.1), correctly, at usable decode speed.** MTP, disk KV, and 27B+/9B-hybrid are
 "Minimum" = **qmlx-serve runs a 9B-class dense Qwen3 on guest-a (RX 9070 XT / gfx1201,
 ROCm 10.1), correctly, at usable decode speed.** MTP, disk KV, and 27B+/122B-hybrid are deferred to Phase 2.
 
@@ -385,7 +382,7 @@ ROCm 10.1), correctly, at usable decode speed.** MTP, disk KV, and 27B+/122B-hyb
 | Scope | Effort | Risk |
 |---|---|---|
 | **Minimum: 9B dense Qwen3 on gfx1201 (Phase 0+1)** | **2.5–5 person-weeks** | Low-medium. The backend exists; the risk is gfx1201-specific validation (fp8 GEMM, allocator, SDPA path) on ROCm 10.1. |
-| Full qMLX 9B hybrid + MTP + disk KV (Phase 2) | +2–4 person-weeks | Medium. GatedDelta prefill perf + the M3 stream-TLS fix are the real work. |
+| Full qMLX 9B hybrid + MTP + disk KV (Phase 2) | +2–4 person-weeks | Medium. GatedDelta prefill perf + the M3 stream-TLS fix are the real work. (Superseded 2026-11-12 for the MTP item: MTP K=2 is adopted and merged, #26/#30 — the 107.56 t/s @1024 certified record.) |
 | (For contrast) Porting the CUDA backend from scratch | ~15–25 person-weeks | What we are *not* doing. |
 
 ### Open questions (for the operator)
@@ -397,8 +394,10 @@ vs the vendor ref (newer, ROCm 10 + gfx1200 fixes, GatedDeltaNet). Need to confi
    + a CI matrix), or build-from-source on the box (simpler, what the fork does today)?
 3. **fp8 default:** is gfx1201 fp8 prefill clean on ROCm 10.1's driver, or do we ship
    `MLX_ROCM_GEMM_BF16=1` by default?
-4. **MTP:** is MTP in the minimum, or strictly Phase 2? (It is blocked on the M3 stream-TLS
-   fix either way.)
+4. **MTP:** is MTP in the minimum, or strictly Phase 2? — SUPERSEDED
+   (2026-11-12): MTP K=2 is adopted and merged (#26; W1 #30 carries the
+   107.56 t/s @1024 certified record). The M3 stream-TLS concern did not
+   materialize as a blocker.
 
 ---
 

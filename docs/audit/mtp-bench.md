@@ -27,8 +27,7 @@ Correctness: STREAMS-MATCH — mode 2 stream is byte-identical to mode 1 (batche
 1. **Batched verify is not fast on this port.** One S=2 forward costs ~128 ms vs ~15.4 ms/token
    for T=1 (4.6 token-equivalents). The T=2 GDN forward is correct (bit-exact vs 2x T=1 after
    the wheel fix the run-608 worker validated: state/y maxdiff 0.0) but runs the chunk-scan /
-   general path — there is NO fast small-T (T=2) recurrent decode path in the K3 GDN kernels.
-   The fast path is T=1-only; anything wider pays chunk-scan prefill-shaped overhead.
+   general path — there is NO fast small-T (T=2) recurrent decode path in the K3 GDN kernels. The fast path is T=1-only; anything wider pays chunk-scan prefill-shaped overhead.
 2. **At 76% acceptance the K=1 verify structure itself is the bottleneck, not acceptance.**
    m1 does 2 target forwards per 1.76 tokens (~1.14 fwd/token) + the 1-layer draft forward —
    more target compute than AR's 1.0 fwd/token. That is why m1 loses 16% despite 389 accepted.

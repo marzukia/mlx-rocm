@@ -110,8 +110,7 @@ workarounds there.
   run; profiler inflates wall time — the no-profiler bench is 15.9 ms/token).
 - **0 HIP graph launches.**
 - Per token: QMV 9.46 ms; non-QMV kernels 4.9 ms; the rest is gaps.
-- QMV effective bandwidth: ~4.6 GB/token ÷ 9.46 ms ≈ **486 GB/s (51% of 960)**.
-  Largest QMM (N=12288) would take 28 µs at full bandwidth vs 36.5 µs measured —
+- QMV effective bandwidth: ~4.6 GB/token ÷ 9.46 ms ≈ **486 GB/s (51% of 960)**. Largest QMM (N=12288) would take 28 µs at full bandwidth vs 36.5 µs measured —
   the gap is per-QMM launch/tail (1,536 blocks, 6 waves of latency per CU), x re-reads from L2, and scale/bias loads.
 
 0.6B-8bit (group_size 64) — same methodology:
@@ -191,8 +190,7 @@ A/B it with `MLX_GRAPH_DECODE=0` as the kill switch.
 
 ## 6. Environment notes (affect interpretation)
 
-- **32-CU vGPU partition** (`cus=32` in the boot log; full 9070 XT = 54 CU).
-  Memory bandwidth is unpartitioned (~960 GB/s), so the bandwidth ceiling holds, but kernel occupancy is CU-limited (48 blocks/CU on the 1,536-block QMV grid).
+- **32-CU vGPU partition** (`cus=32` in the boot log; full 9070 XT = 54 CU). Memory bandwidth is unpartitioned (~960 GB/s), so the bandwidth ceiling holds, but kernel occupancy is CU-limited (48 blocks/CU on the 1,536-block QMV grid).
 - **ROCm 10.1** on the guest (the KFD-hang workarounds target 7.7).
 - `MLX_ROCM_GEMM_BF16=1` is a **no-op** in this tree (dead `preferred_gemm_precision`
   result); the fp8-prefill guard is the capability probe alone. Battery confirms no

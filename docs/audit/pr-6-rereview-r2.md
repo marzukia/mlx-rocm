@@ -24,8 +24,7 @@ Fix taken = option 2b (documented overlay). Verification:
 4. Concrete build consequence: standard pinned build (`scripts/build-wheel.sh` cloning
    the vendor ref per `vendor.json`) does NOT contain the N=12288 fix or
    the K1 kernel; it needs the 2-file overlay — `qmm.hip` + `qmv_lx_kernel.hip` — applied
-   before building (or use the guest `/models/venv-k1` build which already carries it).
-   Re-pin procedure stated: set `vendor.json` primary.sha to the pushed sha in a PR.
+   before building (or use the guest `/models/venv-k1` build which already carries it). Re-pin procedure stated: set `vendor.json` primary.sha to the pushed sha in a PR.
 
 Fork push itself: not verifiable from host (no push creds for <op-fork-user>; guest clone has
 no credentials — 403 documented). Judged on documentation completeness per tasking: complete.

@@ -29,8 +29,7 @@ Size gate: `scripts/size_ratchet.py` scans `.py` only; C++/HIP are exempt,
 
 ## 1. allocator.cpp — no-destroy design — VERDICT: PASS
 
-- **Leak bound.** One stream per chunk per shadow copy, never destroyed.
-  Bounded per copy (1.2 GB copy = 12 streams at the 100 MB default) but
+- **Leak bound.** One stream per chunk per shadow copy, never destroyed. Bounded per copy (1.2 GB copy = 12 streams at the 100 MB default) but
   unbounded across process life (each flush of a dirty shadow re-leaks
   ceil(size/100 MB) streams). Streams + KFD queues are small (KB-scale);
   documented in the report with a phase-2 follow-up (shared persistent stream). Acceptable for a crash fix. **MINOR (M5).**
