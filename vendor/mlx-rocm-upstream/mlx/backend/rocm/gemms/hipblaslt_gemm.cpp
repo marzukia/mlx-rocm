@@ -1568,6 +1568,13 @@ void hipblaslt_gemm_fp8_raw(
     // replay. Benchmark only when not capturing.
     hipStreamCaptureStatus cap_st = hipStreamCaptureStatusNone;
     (void)hipStreamGetCaptureInfo(stream, &cap_st, nullptr);
+    // W1-FIX 2026-11-13 (step-2, cloudy code-first read): the fused N=64
+    // K=4096 class (in_proj a/b; here M=64 = original N after the
+    // column-major swap) pins the top heuristic. The timing autotune picks a
+    // different algo per process under load -> run-to-run output divergence
+    // (the W1 non-repro; the ~17-member outcome pool ~= the 16-candidate
+    // heuristic list). Other shapes keep the timing tune (numerics unchanged
+    // by scope).
     if (cap_st != hipStreamCaptureStatusNone) {
       chosen = res[0];
     } else {

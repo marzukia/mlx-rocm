@@ -209,55 +209,23 @@ def int2_argmax(x, qh):
     return int(mx.take(idx, mx.argmax(exact)))
 
 
-def main():
-    mode = os.environ.get("MLX_MTP", "0")
-    assert mode in ("0", "1", "2", "3", "4"), mode
-    mtp_on = mode in ("1", "2", "3", "4")
-    tape_mode = "0"
-    if mode in ("3", "4"):
-        # T1917: the mode-3 (S=3, K=2) tape arm mirrors the mode-4 tape setup; MLX_ROCM_GDN_T3=1 enables the TMAX=3 instantiation (new wheel; the unpatched wheel's T=3 is rejected in use_fallback = clean error, no OOB).
-        tape_mode = os.environ.get("MTP6_TAPE", "1")
-        assert tape_mode in ("0", "1", "hybrid", "r5", "slot", "slot2", "seq"), tape_mode
-        if tape_mode in ("1", "hybrid", "r5", "slot", "slot2", "seq"):
-            if tape_mode == "slot":
-                # SLOT (Phase B): slot op snapshots commit rows; tape env OFF
-                # so the model dispatch (SLOT branch first) selects gdn_fused_step_slot.
-                os.environ["MLX_ROCM_GDN_SLOT"] = "1"
-                os.environ["MLX_ROCM_GDN_TAPE"] = "0"
-            elif tape_mode == "slot2":
-                # SLOT2 (R1b, the fused sequential slot design): the slot2 op
-                # (NON-UNROLLED slot2 kernel: ONE per-row phase for all M
-                # rows; the per-row re-execution of the unrolled 4x phase
-                # copies is amortized into one pass; the weight loads are
-                # loop-invariant and hoisted by LICM; the conv_state_new
-                # output feeds the model conv-state cache update - the
-                # python-side concatenate + take_along_axis is not
-                # dispatched: launch integration, -2 ops per GDN layer per
-                # verify); tape env OFF so the model dispatch (SLOT2 branch
-                # first) selects gdn_fused_step_slot2.
-                os.environ["MLX_ROCM_GDN_SLOT2"] = "1"
-                os.environ["MLX_ROCM_GDN_TAPE"] = "0"
-            elif tape_mode == "seq":
-                # SEQ (Phase 2, the sequential GDN kernel - the llama.cpp GDN
-                # design port): the seq op (the slot contract + the
-                # conv_state_new launch integration) on the COLUMN-PARALLEL
-                # sequential kernel pair (2 launches per GDN layer per step;
-                # the attn intermediate is op-internal); tape/slot/slot2
-                # envs OFF so the model dispatch (SEQ branch first) selects
-                # gdn_fused_step_seq.
-                os.environ["MLX_ROCM_GDN_SEQ"] = "1"
-                os.environ["MLX_ROCM_GDN_TAPE"] = "0"
-            else:
-                os.environ["MLX_ROCM_GDN_TAPE"] = "1"
-            os.environ["MLX_ROCM_GDN_T3"] = "1"
-        os.environ["MLX_ROCM_GDN_FUSE"] = "1"
-    # T1917 head probe env gates (all no-retraining; model weights unchanged):
-    # MTP6_DRAFT_HEAD: int2 (default) | bf16 (model 4-bit QuantizedLinear direct) | bf16full (bf16 dequant of the 4-bit lm_head; bit-width probe).
-    # MTP6_HEAD_H: prenorm (default) | postnorm (trunk final RMSNorm in-bench; input-feature probe).
-    head = os.environ.get("MTP6_DRAFT_HEAD", "int2")
-    assert head in ("int2", "int2w", "bf16", "bf16full"), head
-    head_h = os.environ.get("MTP6_HEAD_H", "prenorm")
-    assert head_h in ("prenorm", "postnorm"), head_h
+_LOAD_CACHE = {}
+
+def _load_phase(mode, mtp_on, head, head_h):
+    """Load + MTP module + draft-head build, module-level cache (same-process
+    cert harness, cloudy order 2026-11-13): one model load shared across the
+    AR + MTP phases = one allocator/pool state. Standalone behavior unchanged
+    (fresh process = empty cache; the record path is bf16 head, where the
+    head-gated qh build is inert). mtp_cache is NOT cached: per-run state,
+    created in main()."""
+    key = (MODEL, head, head_h, os.environ.get("CH_MTP_4BIT", "0"),
+           os.environ.get("MTP_Q4K", "0"), os.environ.get("MTP_Q4K_GGUF", ""),
+           os.environ.get("MTP4_SIDECAR", ""))
+    if key in _LOAD_CACHE:
+        model, tok, lm, qh, t_load = _LOAD_CACHE[key]
+        if mtp_on:
+            assert lm.mtp is not None, "no mtp module (cache reuse)"
+        return model, tok, lm, qh, t_load
     t0 = time.time()
     mx.clear_cache()  # guard 2 (cloudy 11-10): known-good pattern, clear before load
     model, tok = load(MODEL)
@@ -266,7 +234,6 @@ def main():
     mx.eval(model.parameters())
     if mtp_on:
         assert lm.mtp is not None, "no mtp module (config.mtp_num_hidden_layers?)"
-        mtp_cache = [KVCache()]
         if os.environ.get("MTP_Q4K", "0") == "1" and os.environ.get("CH_MTP_4BIT", "0") == "1":
             # MTP_Q4K arm (2811-11-11, 2810): reference-numeric dequant MTP
             # module. F32-layout module (plain Linear); norms from the gguf
@@ -313,7 +280,7 @@ def main():
             mx.eval(lm.mtp.parameters())
             print(f"MTP4_ARM {os.path.basename(_side)}", flush=True)
     qh = None
-    if mode in ("3", "4"):
+    if head in ("int2", "int2w", "bf16full"):
         # T1917: the draft-head probe arms (MTP6_DRAFT_HEAD) are available to mode 3 (S=3, K=2) as well as mode 4 (S=4, K=3); int2 build (FIX#2, int2 g128-asymmetric draft head, MTP6_DRAFT_HEAD=bf16 to A/B the model 4-bit head) and bf16full (bf16 dequant, no new weights). int2w = the vectorized int2 kernel (base opt-in, same qh build, wide op).
         if head in ("int2", "int2w") and hasattr(
             mx.fast, "lm_head_int2_wide" if head == "int2w" else "lm_head_int2"
@@ -372,6 +339,63 @@ def main():
             )
         # head == "bf16": qh stays None; draft_tok uses the model's (4-bit quantized) lm_head directly.
 
+
+    _LOAD_CACHE[key] = (model, tok, lm, qh, t_load)
+    return model, tok, lm, qh, t_load
+
+
+def main():
+    mode = os.environ.get("MLX_MTP", "0")
+    assert mode in ("0", "1", "2", "3", "4"), mode
+    mtp_on = mode in ("1", "2", "3", "4")
+    tape_mode = "0"
+    if mode in ("3", "4"):
+        # T1917: the mode-3 (S=3, K=2) tape arm mirrors the mode-4 tape setup; MLX_ROCM_GDN_T3=1 enables the TMAX=3 instantiation (new wheel; the unpatched wheel's T=3 is rejected in use_fallback = clean error, no OOB).
+        tape_mode = os.environ.get("MTP6_TAPE", "1")
+        assert tape_mode in ("0", "1", "hybrid", "r5", "slot", "slot2", "seq"), tape_mode
+        if tape_mode in ("1", "hybrid", "r5", "slot", "slot2", "seq"):
+            if tape_mode == "slot":
+                # SLOT (Phase B): slot op snapshots commit rows; tape env OFF
+                # so the model dispatch (SLOT branch first) selects gdn_fused_step_slot.
+                os.environ["MLX_ROCM_GDN_SLOT"] = "1"
+                os.environ["MLX_ROCM_GDN_TAPE"] = "0"
+            elif tape_mode == "slot2":
+                # SLOT2 (R1b, the fused sequential slot design): the slot2 op
+                # (NON-UNROLLED slot2 kernel: ONE per-row phase for all M
+                # rows; the per-row re-execution of the unrolled 4x phase
+                # copies is amortized into one pass; the weight loads are
+                # loop-invariant and hoisted by LICM; the conv_state_new
+                # output feeds the model conv-state cache update - the
+                # python-side concatenate + take_along_axis is not
+                # dispatched: launch integration, -2 ops per GDN layer per
+                # verify); tape env OFF so the model dispatch (SLOT2 branch
+                # first) selects gdn_fused_step_slot2.
+                os.environ["MLX_ROCM_GDN_SLOT2"] = "1"
+                os.environ["MLX_ROCM_GDN_TAPE"] = "0"
+            elif tape_mode == "seq":
+                # SEQ (Phase 2, the sequential GDN kernel - the llama.cpp GDN
+                # design port): the seq op (the slot contract + the
+                # conv_state_new launch integration) on the COLUMN-PARALLEL
+                # sequential kernel pair (2 launches per GDN layer per step;
+                # the attn intermediate is op-internal); tape/slot/slot2
+                # envs OFF so the model dispatch (SEQ branch first) selects
+                # gdn_fused_step_seq.
+                os.environ["MLX_ROCM_GDN_SEQ"] = "1"
+                os.environ["MLX_ROCM_GDN_TAPE"] = "0"
+            else:
+                os.environ["MLX_ROCM_GDN_TAPE"] = "1"
+            os.environ["MLX_ROCM_GDN_T3"] = "1"
+        os.environ["MLX_ROCM_GDN_FUSE"] = "1"
+    # T1917 head probe env gates (all no-retraining; model weights unchanged):
+    # MTP6_DRAFT_HEAD: int2 (default) | bf16 (model 4-bit QuantizedLinear direct) | bf16full (bf16 dequant of the 4-bit lm_head; bit-width probe).
+    # MTP6_HEAD_H: prenorm (default) | postnorm (trunk final RMSNorm in-bench; input-feature probe).
+    head = os.environ.get("MTP6_DRAFT_HEAD", "int2")
+    assert head in ("int2", "int2w", "bf16", "bf16full"), head
+    head_h = os.environ.get("MTP6_HEAD_H", "prenorm")
+    assert head_h in ("prenorm", "postnorm"), head_h
+    model, tok, lm, qh, t_load = _load_phase(mode, mtp_on, head, head_h)
+    if mtp_on:
+        mtp_cache = [KVCache()]
     prompt_ids = tok.encode(PROMPT, add_special_tokens=False)
     cache = lm.make_cache()
 
@@ -425,6 +449,61 @@ def main():
     def hhead(x):
         # T1917 head input-feature probe (no retraining): postnorm feeds the MTP module the trunk's post-final-norm hidden (the final RMSNorm applied in-bench) instead of the pre-final-norm hidden.
         return lm.model.norm(x) if head_h == "postnorm" else x
+    # MTP6_PREFILL_FILL (H4 decisive test, cloudy ruling 11-12): after the
+    # trunk prefill, fill mtp_cache via the reference-class catch-up - one
+    # lm.mtp forward per prompt position (h_{k-1} from the prefill
+    # return_hidden, k=0 = zero h), so the MTP self-attention sees the full
+    # prompt prefix + draft rows, matching the reference catch-up over
+    # prompt+accepted (speculative.cpp:1669-1715). Default off = the record
+    # behavior bit-exact (fresh/empty mtp_cache; bench:269) - G0 lossless
+    # gate = the K2 canonical stream 64b1b6da must reproduce with the flag
+    # off (verified w1_h4 G0: 64b1b6da, TPK 2.248).
+    prefill_fill = mtp_on and (
+        os.environ.get("MTP6_PREFILL_FILL", "0") == "1"
+        or os.environ.get("MTP6_STREAM_FILL", "0") == "1"
+    )
+    stream_fill = mtp_on and os.environ.get("MTP6_STREAM_FILL", "0") == "1"
+    n_fill_fwd = 0
+    _fresh_sample = False
+    d1pos_on = os.environ.get("MTP6_D1POS", "0") == "1"
+    _d1pos = []
+    # MTP6_MARGIN (R2 2901, 11-13 ruling): per-verify target top-2 logit gap,
+    # band miss-margin readout (early 33-231 / late 512-1023). Requires MTP6_D1POS.
+    # Default off = bit-inert (no extra host reads, no graph touch).
+    margin_on = d1pos_on and os.environ.get("MTP6_MARGIN", "0") == "1"
+    _dmarg = []
+    # MTP6_D3POS (R3 2902, 11-13 ruling; D1POS pattern): per d3 attempt (d2 accepted)
+    # record (pos, d3-accept, d3-tok, target-tok); mode-4 loop only. Default off = bit-inert.
+    d3pos_on = os.environ.get("MTP6_D3POS", "0") == "1"
+    _d3pos = []
+    if prefill_fill:
+        _tf = time.time()
+        _hzero = mx.zeros(hidden.shape[-1], dtype=hidden.dtype)
+        for _k in range(len(prompt_ids)):
+            _hprev = _hzero if _k == 0 else hidden[0, _k - 1]
+            _embk = lm.model.embed_tokens(mx.array([[prompt_ids[_k]]]))
+            lm.mtp(hhead(_hprev), _embk, mtp_cache)
+        mx.eval()
+        print(
+            "PREFILL_FILL rows=%d in %.2fs (DPM AUTO, clock verbatim)"
+            % (len(prompt_ids), time.time() - _tf),
+            flush=True,
+        )
+        if os.environ.get("MTP6_DTYPE_PROBE", "0") == "1":
+        # DTYPE-PROBE (span cost mechanism, H4 11-12): module weight dtypes
+                # post-fill (the lazy MTP6_MOD_BF16 cast fires on the first lm.mtp
+                # call = the first fill forward here).
+                import mlx.nn as _nn
+                _m = lm.mtp
+                _flag = getattr(type(_m), "_MTP6_BF16_CAST_DONE", "?")
+                _wts = {
+                    "fc": _m.fc.weight.dtype,
+                    "q_proj": _m.layers[0].self_attn.q_proj.weight.dtype,
+                    "gate_proj": _m.layers[0].mlp.gate_proj.weight.dtype,
+                    "pre_fc_norm_hidden": _m.pre_fc_norm_hidden.weight.dtype,
+                }
+                print("DTYPE-PROBE post-fill cast_flag=%s %s" % (_flag, {k: str(v) for k, v in _wts.items()}), flush=True)
+                print("DTYPE-PROBE2 hzero=%s hidden00=%s cache_keys=%s cache_values=%s cache_off=%d" % (str(_hzero.dtype), str(hidden[0, 0].dtype), str(mtp_cache[0].keys.dtype), str(mtp_cache[0].values.dtype), mtp_cache[0].size()), flush=True)
     t1 = time.time()
     # t2241 step-decomposition instrumentation (worktree-local copy; record
     # bench 54ce16ac untouched): per-phase wall (perf_counter + mx.eval at
@@ -467,11 +546,13 @@ def main():
                 pending_c = None
                 h = h_r
                 h_r = None
+                _fresh_sample = False
             else:
                 t = int(mx.argmax(l))
                 if t == EOS:
                     break
                 out.append(t)
+                _fresh_sample = True
                 if nfill is not None:
                     nfill.update(t)
                     nfill_len += 1
@@ -685,6 +766,11 @@ def main():
             # t1986: mtp_cache row accounting - n_fwd rows were pushed this step (one per real draft forward; an n-gram fill hit skips the push); a rejection keeps the accepted rows -> trim n_fwd - n_accepted. With fw1=fw2=True (ngram off) this reduces to the canonical 1 (d2 reject) / 2 (d1 reject) constants.
             n_fwd = int(fw1) + int(fw2)
             t2 = int(mx.argmax(l0))
+            if d1pos_on:
+                _d1pos.append((len(out), int(t2 == d1)))
+                if margin_on:
+                    _m1 = float(mx.max(l0))
+                    _dmarg.append((len(out), int(t2 == d1), _m1 - float(mx.max(l0 - _m1))))
             if t2 == EOS:
                 break
             if t2 == d1:
@@ -704,6 +790,26 @@ def main():
             else:
                 # draft1 rejected: commit row 0 (after prev_token), correction token t2; mtp_cache trim = all n_fwd rows.
                 reject(0, l0, hb0, n_fwd, [prev_token], t2)
+            if stream_fill:
+                # Streaming catch-up (spec 874e8eff v2; reference overwrite
+                # semantics): trim the remaining draft rows FIRST, then push
+                # the target-pair rows in position order (prev, t2, t3).
+                # fills/step = TPK by identity (cloudy correction 11-12).
+                if t2 == d1:
+                    mtp_cache[0].trim(2 if t3 == d2 else 1)
+                if _fresh_sample:
+                    # prev = the full-accept carry token (fresh sample, no
+                    # ctoken): the reference re-encodes it as row 0 of this
+                    # batch; its row was never pushed (single-token step has
+                    # no fill) -> push it here with the carried h.
+                    lm.mtp(hhead(h), lm.model.embed_tokens(mx.array([[prev_token]])), mtp_cache)
+                    n_fill_fwd += 1
+                    _fresh_sample = False
+                lm.mtp(hhead(hb0), lm.model.embed_tokens(mx.array([[t2]])), mtp_cache)
+                n_fill_fwd += 1
+                if t2 == d1:
+                    lm.mtp(hhead(hb1), lm.model.embed_tokens(mx.array([[t3]])), mtp_cache)
+                    n_fill_fwd += 1
             if stepdec_on:
                 mx.eval()
                 _t_e = time.perf_counter()
@@ -791,6 +897,11 @@ def main():
                 n_refwd += 1
 
             t2 = int(mx.argmax(l0))
+            if d1pos_on:
+                _d1pos.append((len(out), int(t2 == d1)))
+                if margin_on:
+                    _m1 = float(mx.max(l0))
+                    _dmarg.append((len(out), int(t2 == d1), _m1 - float(mx.max(l0 - _m1))))
             if t2 == EOS:
                 break
             if t2 == d1:
@@ -803,6 +914,8 @@ def main():
                     d2_acc += 1
                     out.append(t3)
                     t4 = int(mx.argmax(l2))
+                    if d3pos_on:
+                        _d3pos.append((len(out), int(t4 == d3), d3, t4))
                     if t4 == EOS:
                         break
                     if t4 == d3:
@@ -819,6 +932,28 @@ def main():
             else:
                 # draft1 rejected: commit row 0 (after prev_token), forward t2.
                 reject(0, l0, hb0, 3, [prev_token], t2)
+            if stream_fill:
+                # Streaming catch-up (spec 874e8eff v2; reference overwrite
+                # semantics): trim the remaining draft rows FIRST, then push
+                # the target-pair rows in position order (prev, t2, t3, t4).
+                # fills/step = TPK by identity (cloudy correction 11-12).
+                if t2 == d1:
+                    if t3 == d2:
+                        mtp_cache[0].trim(3 if t4 == d3 else 2)
+                    else:
+                        mtp_cache[0].trim(1)
+                if _fresh_sample:
+                    lm.mtp(hhead(h), lm.model.embed_tokens(mx.array([[prev_token]])), mtp_cache)
+                    n_fill_fwd += 1
+                    _fresh_sample = False
+                lm.mtp(hhead(hb0), lm.model.embed_tokens(mx.array([[t2]])), mtp_cache)
+                n_fill_fwd += 1
+                if t2 == d1:
+                    lm.mtp(hhead(hb1), lm.model.embed_tokens(mx.array([[t3]])), mtp_cache)
+                    n_fill_fwd += 1
+                    if t3 == d2 and t4 == d3:
+                        lm.mtp(hhead(hb2), lm.model.embed_tokens(mx.array([[t4]])), mtp_cache)
+                        n_fill_fwd += 1
     dt = time.time() - t1
     n = len(out)
     d1pct = 100.0 * d1_acc / verifies if verifies else 0.0
@@ -843,13 +978,50 @@ def main():
             "INFO NGRAM_S3 n=%d NNG=%d" % (ng_n, n_ng),
             flush=True,
         )
+    if d1pos_on and _d1pos:
+        _mid = len(_d1pos) // 2
+        _h1 = sum(m for _, m in _d1pos[:_mid]) / max(_mid, 1)
+        _h2 = sum(m for _, m in _d1pos[_mid:]) / max(len(_d1pos) - _mid, 1)
+        _all = sum(m for _, m in _d1pos) / len(_d1pos)
+        print(
+            "D1POS n=%d ALL=%.4f FIRSTHALF=%.4f SECONDHALF=%.4f POS0=%d"
+            % (len(_d1pos), _all, _h1, _h2, _d1pos[0][0]),
+            flush=True,
+        )
+    if margin_on and _dmarg:
+        # R2 2901 read: early-miss margin class (high-margin deterministic ->
+        # row-content/mechanics; moderate -> module context-length sensitivity).
+        _alls = sorted(v for _, _, v in _dmarg)
+        _med = _alls[len(_alls) // 2]
+        def _band(p0, p1):
+            mm = sorted(v for p, h, v in _dmarg if p0 <= p < p1 and not h)
+            if not mm: return "n=0"
+            q = lambda f: mm[min(len(mm) - 1, int(len(mm) * f))]
+            return "n=%d p25=%.3f p50=%.3f p75=%.3f frac>med=%.2f" % (
+                len(mm), q(0.25), q(0.5), q(0.75), sum(1 for v in mm if v > _med) / len(mm))
+        print("MARGIN n=%d MED=%.3f EARLY[%s] LATE[%s]" % (len(_dmarg), _med, _band(33, 231), _band(512, 1024)), flush=True)
+    if d3pos_on and _d3pos:
+        # R3 2902 read: late-band D3c (pre-registered bands >= 0.65 / < 0.60)
+        # + the d3-miss (d3-tok, target-tok) pair class (top-10).
+        _mid = len(_d3pos) // 2
+        _h1 = sum(m for _, m, _, _ in _d3pos[:_mid]) / max(_mid, 1)
+        _h2 = sum(m for _, m, _, _ in _d3pos[_mid:]) / max(len(_d3pos) - _mid, 1)
+        _all = sum(m for _, m, _, _ in _d3pos) / len(_d3pos)
+        _cnt = {}
+        for _, h, a, b in _d3pos:
+            if not h:
+                _cnt[(a, b)] = _cnt.get((a, b), 0) + 1
+        _top = sorted(_cnt.items(), key=lambda x: (-x[1], x[0]))[:10]
+        print("D3POS n=%d ALL=%.4f FIRSTHALF=%.4f SECONDHALF=%.4f MISSn=%d TOP10=%s" % (len(_d3pos), _all, _h1, _h2, sum(_cnt.values()),
+             ",".join("(%d,%d)x%d" % (a, b, c) for (a, b), c in _top)), flush=True)
     if mode in ("3", "4"):
         import mlx_lm.models.qwen3_5 as _m5
         print(
-            "INFO TAPEMODE=%s REFWDS=%d CDEFERRED=%d GDN_TAPE_CALLS=%d GDN_SLOT_CALLS=%d GDN_SLOT2_CALLS=%d GDN_SEQ_CALLS=%d HEAD=%s HEAD_H=%s" % (
+            "INFO TAPEMODE=%s REFWDS=%d CDEFERRED=%d FILLFWD=%d GDN_TAPE_CALLS=%d GDN_SLOT_CALLS=%d GDN_SLOT2_CALLS=%d GDN_SEQ_CALLS=%d HEAD=%s HEAD_H=%s" % (
                 tape_mode,
                 n_refwd,
                 n_cdeferred,
+                n_fill_fwd,
                 getattr(_m5, "GDN_TAPE_CALLS", -1),
                 getattr(_m5, "GDN_SLOT_CALLS", -1),
                 getattr(_m5, "GDN_SLOT2_CALLS", -1),
