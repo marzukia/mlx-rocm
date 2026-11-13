@@ -21,7 +21,9 @@ The evolution, with the degenerate-trajectory class flagged (the S=3 pure-tape `
 | 1 | 49.07 | stack-assembly (S=3 tape=1, R5 dropped) |
 | 2 | 84.26 | TMAX=3 + postnorm (degenerate tape=1 class, 113.2% of AR 74.44) |
 | 3 | 105.86 | + QMM_M3 (degenerate tape=1, the t2011 record) |
-| 4 | **69.43** | **honest lossless** — hybrid trajectory + QMM_M3, 13-var config, 6/6 ALLTOKS-identical (the number to cite) |
+| 4 | **69.43** | **honest lossless** — hybrid trajectory + QMM_M3, 13-var config, 6/6 ALLTOKS-identical (the 2026-11-07 checkpoint number) |
+
+**Superseded (2026-11-12):** the number of record moved to **107.56 t/s @1024 certified** (W1 sequential GDN, PR #30, merged 2026-11-12; 84.8% of the same-GPU 126.9 t/s reference) — see `REPORT-W1-PHASE1-20261112.md` + `REPORT-W1-PHASE2-REPRO-20261112.md` at the repo root. The table above is the 2026-11-07 checkpoint, kept as history.
 
 Config of record (13 vars): `MLX_MTP=3 MTP6_TAPE=hybrid MLX_ROCM_GDN_TAPE=1 MLX_ROCM_GDN_T3=1 MTP6_HEAD_H=postnorm MTP6_DRAFTGATE=1 MTP6_DGATE_T0=16 MTP6_NGRAM=1 MTP6_NGRAM_N=4 MLX_ROCM_SDPA_S4VA=1 MLX_ROCM_QMV_ROWS=1 MLX_ROCM_REFWD_M1=1 MLX_QMV_MR_LX=0 MLX_ROCM_QMM_M3=1`.
 

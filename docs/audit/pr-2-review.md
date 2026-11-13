@@ -223,8 +223,7 @@ this is fine in practice — noted for completeness.
    `SIZE GATE: OK (0 ratcheted)` (gate is .py-only; largest C++ file fast.cpp is
    1210 non-blank lines, out of gate scope — unchanged by this PR). vjp/jvp/vmap
    for both new primitives work via `Custom::fallback_` (fast.cpp:13-27);
-   `is_equivalent`/`state()` implemented (fast.cpp:299-308, fast_primitives.h).
-   No secrets or personal machine paths in code/scripts/patches (NIT-10 covers reports only).
+   `is_equivalent`/`state()` implemented (fast.cpp:299-308, fast_primitives.h). No secrets or personal machine paths in code/scripts/patches (NIT-10 covers reports only).
 
 ## Evidence assessment
 

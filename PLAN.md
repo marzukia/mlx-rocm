@@ -40,12 +40,6 @@ Projection @93% (595.2 GB/s): 5.95 → 100.0; 5.63 → **105.8 tok/s** (full str
 
 ## Definition of minimum
 
-qmlx-serve runs a 9B-class dense Qwen3 on the build VM (RX 9070 XT / gfx1201, ROCm 10.1),
-correctly, at usable decode speed. MTP, disk KV, 27B+/9B-hybrid = Phase 2.
-Living plan. Full research report: [docs/plan.md](docs/plan.md) (run-386, 2026-10-25).
-
-## Definition of minimum
-
 qmlx-serve runs a 9B-class dense Qwen3 on guest-a (RX 9070 XT / gfx1201, ROCm 10.1),
 correctly, at usable decode speed. MTP, disk KV, 27B+/122B-hybrid = Phase 2.
 
@@ -55,15 +49,14 @@ guest-a is **ROCm 10.1** (core at `/opt/rocm/core-10.1`,
 docs/quickstart.md). Nothing else is verified: 6.4 was the early probe validation and
 7.7 the original target — both are historical, not the verified toolchain.
 
-## Current state (2026-10-25)
+## Current state (2026-11-12)
 
-- Research done (the earlier research pass): the backend is a complete, actively
-  maintained ROCm base; newer forward-merge of the vendor ref.
-  Effort: 2.5-5 person-weeks for the minimum (Phase 0+1).
+- Research done (the earlier research pass): the backend is a complete, actively maintained ROCm base; newer forward-merge of the vendor ref. Effort: 2.5-5 person-weeks for the minimum (Phase 0+1).
 - guest-a is UP (RX 9070 XT; guest userland ROCm 10.1 — the only verified toolchain).
   submitter is building the MVP on the guest-a guest VM (smoke unblocked, relayed to submitter).
 - Repo bootstrapped: hermetic CI (lint/format/pytest/size gate), vendor pin, build +
-  smoke scripts. GPU validation still to be done on guest-a.
+  smoke scripts. GPU validation recorded on the validated guest (W1 107.56 t/s
+  @1024, #30 merged 2026-11-12); 0.2.0-alpha in flight (PR #31).
 
 ## Phases
 
@@ -87,8 +80,7 @@ docs/quickstart.md). Nothing else is verified: 6.4 was the early probe validatio
   (`scripts/smoke-serve.sh`)
 
 ### Phase 2 — Full qMLX stack (deferred; ~2-4 person-weeks)
-GatedDeltaNet (9B hybrid), MoE (A10B/27B+), MTP spec decode (blocked on the M3
-stream-TLS fix), disk KV cache validation. Details in docs/plan.md §Phase 2.
+GatedDeltaNet (9B hybrid), MoE (A10B/27B+), disk KV cache validation. MTP spec decode is adopted and merged (#26/#30) — see the supersession note in docs/plan.md §Open questions. Details in docs/plan.md §Phase 2.
 
 ## Open questions (operator's call)
 
@@ -96,4 +88,4 @@ stream-TLS fix), disk KV cache validation. Details in docs/plan.md §Phase 2.
 2. Wheel vs source: source-on-guest-a for now; PyPI wheel (`mlx-rocm` name slot already held
    by us) is a Phase 2+ concern.
 3. fp8 default: `MLX_ROCM_GEMM_BF16=1` until the gfx1201 fp8 prefill is proven clean on 10.1.
-4. MTP: Phase 2, strictly (M3 stream-TLS fix blocks it either way).
+4. MTP: adopted and merged (#26/#30, the 107.56 t/s @1024 certified record) — the Phase 2 "strictly" framing is superseded (docs/plan.md §Open questions).

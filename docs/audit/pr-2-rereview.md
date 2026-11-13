@@ -101,8 +101,7 @@ the final summary:
    `[1,2,1,8]`, strides `[8,8,1,1]`. `Transpose::eval` inherits
    `flags.contiguous` from the input (a fresh allocation → true) and never
    clears it; `ExpandDims::eval` passes flags through. `no_bsx_size = 16 =
-   data_size` → `contiguous == true` → `assert not keys.flags.contiguous` raises.
-   Additionally, with **B=1** the view is correctly addressed by the fast kernel
+   data_size` → `contiguous == true` → `assert not keys.flags.contiguous` raises. Additionally, with **B=1** the view is correctly addressed by the fast kernel
    (`strides[0] != H*strides[1]` is harmless when B=1), so even without the
    crash the test would not exercise the fallback it claims to.
 2. MAJOR-2 test: `base_r (8,2) → transpose(1,0)` → shape `[2,8]`, strides

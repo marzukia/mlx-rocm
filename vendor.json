@@ -3,8 +3,8 @@
   "primary": {
     "fork": "https://github.com/marzukia/mlx-rocm",
     "ref": "main",
-    "sha": "75ca881",
-    "comment": "The committed vendor/mlx-rocm-upstream/ tree is the authoritative source (byte-verified vs the sha). GDN tail fusion + graph-decode diagnostics on the decode path; launcher pointer fix (host Data* -> gpu_ptr<T>) for the deterministic HSA memory fault. Gates G1/G2 pass (maxdiff 0.0). See docs/quickstart.md."
+    "sha": "aed6a25fb1d38bd3593845108f0243fc5aa015b2",
+    "comment": "The wheel builds from the fetched pinned tree (the repo root is the buildable `pip wheel .` source with the ROCm backend grafted in); the pin must resolve in the fork and `scripts/build-wheel.sh` fails loud otherwise. The committed vendor/mlx-rocm-upstream/ tree is a byte-verified PARTIAL reference snapshot — NOT the build input: it carries no build manifest (no setup.py/pyproject of its own, CMakeLists preserved as CMakeLists.upstream.txt, python/ holds only src/fast.cpp, no tests/). GDN tail fusion + graph-decode diagnostics on the decode path; launcher pointer fix (host Data* -> gpu_ptr<T>) for the deterministic HSA memory fault. Gates G1/G2 pass (maxdiff 0.0). See docs/quickstart.md."
   },
   "build": {
     "hip_architectures": "gfx1201",

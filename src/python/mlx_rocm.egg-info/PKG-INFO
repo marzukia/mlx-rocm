@@ -1,10 +1,10 @@
 Metadata-Version: 2.4
 Name: mlx-rocm
-Version: 0.1.0
-Summary: ROCm backend for MLX (pre-alpha): vendored mlx ROCm backend tree + hipBLASLt GEMM + QMV decode kernels, validated on AMD RDNA4 (gfx1201)
+Version: 0.2.0
+Summary: ROCm backend for MLX (alpha): vendored mlx ROCm backend tree + hipBLASLt GEMM + QMV decode kernels, validated on AMD RDNA4 (gfx1201)
 Author-email: Submitter <submitter@example.org>
 Keywords: mlx,rocm,hip,amd,rdna4,gfx1201
-Classifier: Development Status :: 2 - Pre-Alpha
+Classifier: Development Status :: 3 - Alpha
 Classifier: License :: OSI Approved :: MIT License
 Classifier: Programming Language :: Python :: 3
 Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
@@ -15,18 +15,22 @@ Dynamic: license-file
 
 # mlx-rocm
 
-ROCm backend for [MLX](https://github.com/mlx-project/mlx) — **pre-alpha**
-(first public release 0.1.0).
+ROCm backend for [MLX](https://github.com/mlx-project/mlx) — **alpha**
+(0.2.0-alpha; public line 0.0.0 → 0.1.0 → 0.1.1 → 0.1.2 → 0.2.0-alpha).
 
 Purpose: a ROCm backend for MLX on AMD RDNA4 — validated on the RX 9070 XT
 (**gfx1201** — *not* gfx110x) — targeting the 9B hybrid at high decode
 speed. MTP spec decode and KV management are part of the MLX core path;
 serving is out of scope for this repo.
 
-Stage: **pre-alpha**. 0.1.0 is a public milestone of the current tree, not a
-stability promise — expect breaking changes. The **alpha cut is planned once
-decode reaches close to the card's ceiling** (9B-hybrid target: ~120 tok/s,
-byte-identical vs autoregressive).
+Stage: **alpha** (0.2.0-alpha) — the alpha cut; API and performance are
+not stable, expect breaking changes. Public line: 0.0.0 → 0.1.0 → 0.1.1 →
+0.1.2 (PyPI releases: `0.0.0` and `0.1.2`, uploaded 2026-10-30; the
+0.1.0/0.1.1 tags are git-only, never published) → 0.2.0-alpha (this cut).
+The 9B-hybrid target is ~120 tok/s (byte-identical vs autoregressive); the
+alpha-cut condition (decode close to the card ceiling) is unmet — 0.2.0
+stands at the 107.56 t/s @1024 certified record, 84.8% of the same-GPU
+126.9 t/s reference (in-tree repro: `bench/gdn_seq1024_repro.sh`).
 
 Verified toolchain: ROCm 10.1 userland on the validated guest (core at
 `/opt/rocm/core-10.1`; 6.4 was the early probe validation and 7.7 the original
@@ -43,8 +47,8 @@ Three pieces:
    gfx1200/RDNA4 fixes). Provenance: `vendor/mlx-rocm-upstream/README.md`.
 2. **`src/cpp/mlx_rocm/gemm/`** — a minimal standalone hipBLASLt GEMM
    (bf16 + fp8 e4m3, persistent handle + workspace, heuristic algo,
-   row-major layouts) plus a dependency-free CPU reference GEMM.
-   Modeled on the fork's `gemms/hipblaslt_gemm.cpp`.
+   row-major layouts) plus a dependency-free CPU reference GEMM, modeled
+   on the fork's `gemms/hipblaslt_gemm.cpp`.
 3. **`scripts/smoke.sh`** — builds the GEMM, runs a small GEMM on the
    build host (host-a, CPU reference), then rsyncs the tree to
    guest-a (`ssh operator@<tailnet-ip>`), builds it against local
@@ -85,12 +89,22 @@ cmake -S . -B build -DMLX_ROCM_WITH_HIP=ON -DCMAKE_PREFIX_PATH=/opt/rocm/core-10
 ./build/gemm_smoke hip        # bf16 512^3 + fp8 e4m3 probe
 ```
 
-Full `mlx` wheel from the vendored tree (next phase):
+Full `mlx` wheel — **guest-a-only** (a ROCm gfx1201 box is required; the
+host build above is the CPU-reference path only):
 
 ```
-CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=OpenBLAS -DCMAKE_PREFIX_PATH=/opt/rocm/core-10.1" \
-  python setup.py bdist_wheel   # from vendor/mlx-rocm-upstream layout
+bash scripts/build-wheel.sh   # clones the pinned tree (vendor.json), sha-verified, pip wheel .
 ```
+
+The wheel builds from the *fetched pinned tree* (the repo root is the
+buildable `pip wheel .` source with the ROCm backend grafted in). The
+committed `vendor/mlx-rocm-upstream/` is a partial, byte-verified
+*reference* snapshot — it carries no build manifest (no `setup.py` /
+`pyproject` of its own; `CMakeLists` is preserved as
+`CMakeLists.upstream.txt`; `python/` holds only `src/fast.cpp`; no
+`tests/`) and is NOT the build input. `scripts/build-wheel.sh` fails loud
+if the `vendor.json` pin is unresolvable in the fork or the checkout
+mismatches it.
 
 ## Smoke
 
@@ -109,9 +123,9 @@ check, tar transfer, ROCm build, GPU GEMM + fp8 probe. Results land in
 | Qwen3-0.6B | 8-bit (affine) | validated — benched 207.6–214.3 tok/s (`k2-non-gemm-fusion`) |
 | Qwen3-0.6B | bf16 | Phase 0 smoke target (`scripts/smoke.py` ladder) |
 | 9B-class dense Qwen3 | 4-bit (affine qmm) | validated — benched 55.9–57.8 tok/s A/B (`k2-non-gemm-fusion`), 63.8 tok/s with a 16-token warmup (`opt-gauntlet-areaA`) |
-| 9B hybrid (GDN + FA) | 4-bit (affine) | supported — the main workload; ~73 tok/s AR small-ctx on main, levers in flight toward ~120 |
+| 9B hybrid (GDN + FA) | 4-bit (affine) | supported — the main workload: AR 97.52 t/s @1024, MTP K=2 107.56 t/s @1024 certified (W1, #30; 84.8% of the same-GPU 126.9 t/s reference); the ~120 target in flight |
 | 27B dense / MoE | — | not validated (a 27B load was in flight on the guest, unvalidated) |
-| MTP spec decode | 4-bit | K=2 supported, lossless (merged); slower than AR today — the active speed target |
+| MTP spec decode | 4-bit | K=2 supported, lossless (merged, #26); 107.56 t/s @1024 certified — leads AR (97.52); the ~120 target in flight |
 | non-gfx1201 archs | — | not validated (only gfx1201 is validated in this repo) |
 
 Details, in-flight items, and caveats: `docs/limitations.md`.
@@ -139,21 +153,22 @@ mxfp4 kernel yet.
 
 | Lane | What | Branch |
 |---|---|---|
-| K1 (QMV/GEMV bandwidth) | int8-activation QMV fix (N=12288); no bench yet | `k1-qmv-gemv-bandwidth` |
+| W1 (sequential GDN) | merged (#30) — the current record (107.56 t/s @1024 certified) | — |
+| K1 (QMV/GEMV bandwidth) | int8-activation QMV fix (N=12288) — the kernel + fix are in the committed vendor tree | — |
 | K2 (non-GEMM fusion) | merged (#2) | — |
 | K3 (GDN port) | merged (#3) | — |
 | K4 (MXFP4) | opt-in dequant→bf16 GEMM only; no native kernel, no dedicated branch yet | — |
-| G1 (graph decode) | pilot wiring + ROCm 10.1 `hipStreamIsCapturing` fix; symbol export / engine wiring pending | `g1-graph-decode` |
-| alpha (docs/housekeeping) | alpha-state checklist + this docs wave | `alpha-checklist` / `alpha-docs` |
+| G1 (graph decode) | retired — the graph-capture NO-GO verdict (`docs/audit/slot-path-mtp-verify.md`; the run-1059 digest in `docs/audit/README.md`) | — |
+| alpha (docs/housekeeping) | the 0.2.0-alpha release + this docs wave | `release/0.2.0` (PR #31) |
 
 ## Python package
 
 `pip install mlx-rocm` (`pyproject.toml`, `src/python/mlx_rocm/`): ctypes
 bindings to `libmlx_rocm.so` (host GEMM always; GPU GEMM + fp8 probe in ROCm
-builds) with a pure-numpy bf16 fallback. The published 0.1.0 wheel is this
-package; the full `mlx` wheel (the vendored tree with the ROCm backend,
-`scripts/build-wheel.sh`) is built and validated per workload — the 9B-class
-and 9B-hybrid serve paths are validated on the guest.
+builds) with a pure-numpy bf16 fallback. The published wheels (PyPI `0.0.0`,
+`0.1.2`) are this package; the full `mlx` wheel (the pinned tree with the
+ROCm backend, `scripts/build-wheel.sh`) is built and validated per workload
+— the 9B-class and 9B-hybrid serve paths are validated on the guest.
 
 ## License
 
@@ -166,8 +181,8 @@ MIT (MLX upstream license; see `LICENSE`).
 - `docs/limitations.md` — what works / in flight / not supported / caveats.
 - `docs/quickstart.md` — the verified build + smoke path on a gfx1201 box.
 - `PLAN.md` — living plan (phases, current state, open questions).
-- `vendor.json` — the pinned vendor fork + ref (primary/fallback) and the build flags.
-- `scripts/build-wheel.sh` — build the `mlx` wheel with `-DMLX_BUILD_ROCM=ON` for gfx1201 (runs on guest-a).
+- `vendor.json` — the pinned vendor fork + ref (primary/fallback) and the build flags. The pin is advisory: `scripts/build-wheel.sh` verifies the sha at build time and fails loud (the pin must resolve in the fork; re-pin in a PR when the base moves).
+- `scripts/build-wheel.sh` — build the `mlx` wheel with `-DMLX_BUILD_ROCM=ON` for gfx1201 (guest-a-only: requires a ROCm gfx1201 box).
 - `scripts/smoke.py` — Phase 0 smoke: is_available, matmul/softmax numerics, 0.6B generate.
 - `scripts/smoke-serve.sh` — Phase 1 smoke: qmlx-serve with a 9B-class dense Qwen3.
 - `scripts/size_ratchet.py` + `size-ratchet.json` — deterministic size gate (CI).

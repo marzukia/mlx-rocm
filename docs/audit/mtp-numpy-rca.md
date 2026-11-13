@@ -77,10 +77,8 @@ real mlx MTP path on the fixed file) gives rank 0** — the mlx trunk hidden sta
 
 ## Fix plan (file:line)
 
-1. **`model-mtp.safetensors` (guest, /models/qwen3-9b-mlx/)** — DONE.
-   Rebuilt with the 7 MTP RMSNorm weights = HF_raw + 1 (f32); all other keys
-   byte-identical. Original preserved as `model-mtp.safetensors.bak-wminus1`.
-   Verified by f1step.py (draft D=t2=8160, rank 0). **Follow-up**: the upstream
+1. **`model-mtp.safetensors` (guest, /models/qwen3-9b-mlx/)** — DONE. Rebuilt with the 7 MTP RMSNorm weights = HF_raw + 1 (f32); all other keys
+   byte-identical. Original preserved as `model-mtp.safetensors.bak-wminus1`. Verified by f1step.py (draft D=t2=8160, rank 0). **Follow-up**: the upstream
    conversion recipe that generates `model-mtp.safetensors` must emit norms in
    the `w` convention (same as trunk norms) — pin this in the conversion PR so
    the file is not regenerated broken.
