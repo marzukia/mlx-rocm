@@ -3777,6 +3777,30 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
         batch_count == 1 && x_batch_count == 1 && w_batch_count == 1 && M > 8 &&
         (N % 16 == 0) && group_size_ == 64 && (K % 64 == 0) &&
         (bits_ == 4 || bits_ == 6 || bits_ == 8) && d.has_native_wmma()) {
+      // P1 plan-B (2026-11-16): Q4_K prefill -> the reference ggml mmq
+      // Q4_K x Q8_1 (R6 recipe: q8_1 x q8_1 INT8 WMMA, in-order K lanes,
+      // I=128/J=128/nthreads=256, smem 57856B; plain non-GLU - the in-model
+      // MTP graph uses separate gate/up GEMMs, no MmulQGlu node). Default
+      // ON; MLX_ROCM_MMQ_Q4K=0 restores the wmma launch (the A/B A arm).
+      // Shapes it can't serve (K % 256 != 0 / N % 128 != 0 / bits != 4)
+      // fall through to the wmma launch below (bias-less: the repack
+      // dequants v = q*scale + bias with bias = 0 when the graph has none).
+      static const int mmq_q4k_env = [] {
+        const char* e = std::getenv("MLX_ROCM_MMQ_Q4K");
+        return (e != nullptr && atoi(e) == 0) ? 0 : 1;
+      }();
+      if (mmq_q4k_env == 1 && bits_ == 4 &&
+          (K % 256 == 0) && (N % 128 == 0)) {
+        ::rocm::mmq_q4k_g64(gpu_ptr<const void>(x), true,
+                           gpu_ptr<const void>(w),
+                           gpu_ptr<const void>(scales),
+                           biases.has_value()
+                               ? gpu_ptr<const void>(*biases)
+                               : nullptr,
+                           gpu_ptr<void>(out), out.dtype() == float32,
+                           M, N, K, enc.stream());
+        return;
+      }
       dim3 block(128, 1, 1);
       dim3 grid((M + 63) / 64, (N + 127) / 128, 1);
       const bool hb = biases.has_value();

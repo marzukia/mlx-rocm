@@ -304,18 +304,21 @@ __global__ void mmq_quant_g64_q8_0(const uint32_t* __restrict__ w,
 
 // f32 activations -> Q8_1-mmq layout (144B per 128 values, K-block-major
 // y[k_block][m]). One thread per (m, k128).
-__global__ void mmq_quant_f32_q8_1_mmq(const float* __restrict__ x,
-                                       char* __restrict__ y, int M, int K,
-                                       int64_t total, bool ds4) {
+// P1 plan-B (2026-11-16): templated input (f32 or bf16) - the in-model
+// activations are bf16 (static_cast is the identity for f32).
+template <typename InT>
+__global__ void mmq_quant_in_q8_1_mmq(const InT* __restrict__ x,
+                                     char* __restrict__ y, int M, int K,
+                                     int64_t total, bool ds4) {
   int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= total) return;
   const int kb128 = K / 128;
   const int m = (int)(idx / kb128);
   const int k128 = (int)(idx % kb128);
-  const float* xr = x + (int64_t)m * K + (int64_t)k128 * 128;
+  const InT* xr = x + (int64_t)m * K + (int64_t)k128 * 128;
   float v[128];
 #pragma unroll
-  for (int i = 0; i < 128; ++i) v[i] = xr[i];
+  for (int i = 0; i < 128; ++i) v[i] = static_cast<float>(xr[i]);
   char* yb = y + ((int64_t)k128 * M + m) * 144;
 #pragma unroll
   for (int sub = 0; sub < 4; ++sub) {
@@ -459,7 +462,7 @@ static void mmq_glu_g64(const float* x,
       reinterpret_cast<const uint32_t*>(w_gate), sg, bg,
       reinterpret_cast<block_q8_0*>(wq8_g), N, K, w_total);
   if (prof) CUDA_CHECK(hipEventRecord(ev[2], stream));
-  mmq_quant_f32_q8_1_mmq<<<(x_tiles + tb - 1) / tb, tb, 0, stream>>>(
+  mmq_quant_in_q8_1_mmq<float><<<(x_tiles + tb - 1) / tb, tb, 0, stream>>>(
       x, reinterpret_cast<char*>(xq81), M, K, x_tiles, /*ds4=*/false);
   if (prof) CUDA_CHECK(hipEventRecord(ev[3], stream));
 
@@ -540,9 +543,13 @@ static void mmq_glu_g64(const float* x,
 // superblock d/dmin halves) - the scale byte layout unpack_scales_q45_K
 // reads: byte c (c<4) = sc_c | mn_c<<4 | mn_{c+4}<<6, byte 4+c = mn_c,
 // byte 8+c = sc_{c+4} | mn_{c+4}<<4. One 256-thread block per 256 weights.
+// P1 plan-B (2026-11-16): templated scale/bias dtype (f32 or bf16) - the
+// in-model G64 affine scales/biases are bf16 (the R6 recipe dequants
+// v = q*scale + bias in f32; static_cast is the identity for f32).
+template <typename ST>
 __global__ void mmq_repack_g64_q4k(const uint32_t* __restrict__ w,
-                                   const float* __restrict__ s,
-                                   const float* __restrict__ b,
+                                   const ST* __restrict__ s,
+                                   const ST* __restrict__ b,
                                    block_q4_K* __restrict__ out) {
   const int64_t e0 = (int64_t)blockIdx.x * 256;
   __shared__ float s32[8], m32[8];
@@ -557,8 +564,8 @@ __global__ void mmq_repack_g64_q4k(const uint32_t* __restrict__ w,
   const int sb = (int)(e0 / 64) + warp / 2;  // the G64-64 index for this 32
   const uint32_t wv = w[e0 / 8 + (int64_t)warp * 4 + w_idx];
   const int q = (int)((wv >> (4 * nib)) & 0xF);
-  const float sv = s[sb];
-  const float bv = b[sb];
+  const float sv = static_cast<float>(s[sb]);
+  const float bv = b ? static_cast<float>(b[sb]) : 0.f;
   const float v = (float)q * sv + bv;
   float vmin = v, vmax = v;
   #pragma unroll
@@ -659,17 +666,17 @@ static void mmq_glu_q4k_g64(const float* x,
     if (rc != hipSuccess) fprintf(stderr, "[stage4k] %s rc=%d\n", st, (int)rc);
   };
   // PATCH81: the f32 memset of the temp is gone (no temp; the GEMM writes every element).
-  mmq_repack_g64_q4k<<<(int)w_total256, tb, 0, stream>>>(
+  mmq_repack_g64_q4k<float><<<(int)w_total256, tb, 0, stream>>>(
       reinterpret_cast<const uint32_t*>(w_up), su, bu,
       reinterpret_cast<block_q4_K*>(wq4_u));
   stage4k("repack_u", hipGetLastError());
   if (prof) CUDA_CHECK(hipEventRecord(ev[1], stream));
-  mmq_repack_g64_q4k<<<(int)w_total256, tb, 0, stream>>>(
+  mmq_repack_g64_q4k<float><<<(int)w_total256, tb, 0, stream>>>(
       reinterpret_cast<const uint32_t*>(w_gate), sg, bg,
       reinterpret_cast<block_q4_K*>(wq4_g));
   stage4k("repack_g", hipGetLastError());
   if (prof) CUDA_CHECK(hipEventRecord(ev[2], stream));
-  mmq_quant_f32_q8_1_mmq<<<(x_tiles + tb - 1) / tb, tb, 0, stream>>>(
+  mmq_quant_in_q8_1_mmq<float><<<(x_tiles + tb - 1) / tb, tb, 0, stream>>>(
       x, reinterpret_cast<char*>(xq81), M, K, x_tiles, /*ds4=*/true);
   stage4k("xpreq", hipGetLastError());
   if (prof) CUDA_CHECK(hipEventRecord(ev[3], stream));
@@ -778,6 +785,112 @@ static void mmq_glu_q4k_g64(const float* x,
   }
   CUDA_CHECK(hipFree(xq81));
   // PATCH81: no f32 temp to free.
+}
+
+// P1 plan-B port (2026-11-16): plain (non-GLU) Q4_K-weight mmq launcher -
+// the reference ggml R6 recipe (q8_1 x q8_1 INT8 WMMA, in-order K lanes,
+// I=128/J=128/nthreads=256, smem 57856B) on in-model G64-affine Q4_K.
+// Orientation = the GLU launcher minus fusion: x slot = the Q4_K weights
+// (N rows), y slot = the Q8_1 activations (M rows, in-order DS4), dst
+// row-major (M, N) [the dst_bf16 store - the in-model WMMA out is bf16].
+// Per-call weight repack + activation quant (the established W1 GDN fix
+// structure; 1,992 dispatches per 4K pass). The non-fallback config needs
+// N % I == 0 (I = 128 for the J = 128 row; the dispatch gate enforces
+// N % 128 == 0). M is clamped per-tile by the j_max writeback clamp.
+// (namespace-scope, external linkage: called from qmm.hip's dispatch.)
+void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
+                       const void* scales, const void* biases, void* out,
+                       bool dst_f32, int M, int N, int K,
+                       hipStream_t stream) {
+  ggml_backend_cuda_context ctx(0);
+  const int cc = GGML_CUDA_CC_OFFSET_AMD + 0x1201;
+  const size_t smpbo = ggml_cuda_info().devices[0].smpbo;
+
+  const int64_t w_total256 = (int64_t)N * K / 256;  // q4_K blocks per weight
+  const int64_t x_tiles = (int64_t)M * (K / 128);
+  void* wq4 = nullptr;
+  void* xq81 = nullptr;
+  CUDA_CHECK(hipMalloc(&wq4, (size_t)w_total256 * sizeof(block_q4_K)));
+  CUDA_CHECK(hipMalloc(&xq81, (size_t)x_tiles * 144));
+
+  const int tb = 256;
+  auto stage4k = [](const char* st, hipError_t rc) {
+    if (rc != hipSuccess) fprintf(stderr, "[stage4k] %s rc=%d\n", st, (int)rc);
+  };
+  if (x_bf16) {
+    mmq_repack_g64_q4k<hip_bfloat16><<<(int)w_total256, tb, 0, stream>>>(
+        reinterpret_cast<const uint32_t*>(w),
+        reinterpret_cast<const hip_bfloat16*>(scales),
+        reinterpret_cast<const hip_bfloat16*>(biases),
+        reinterpret_cast<block_q4_K*>(wq4));
+  } else {
+    mmq_repack_g64_q4k<float><<<(int)w_total256, tb, 0, stream>>>(
+        reinterpret_cast<const uint32_t*>(w),
+        reinterpret_cast<const float*>(scales),
+        reinterpret_cast<const float*>(biases),
+        reinterpret_cast<block_q4_K*>(wq4));
+  }
+  stage4k("repack", hipGetLastError());
+  if (x_bf16) {
+    mmq_quant_in_q8_1_mmq<hip_bfloat16><<<(x_tiles + tb - 1) / tb, tb, 0, stream>>>(
+        reinterpret_cast<const hip_bfloat16*>(x),
+        reinterpret_cast<char*>(xq81), M, K, x_tiles, /*ds4=*/true);
+  } else {
+    mmq_quant_in_q8_1_mmq<float><<<(x_tiles + tb - 1) / tb, tb, 0, stream>>>(
+        reinterpret_cast<const float*>(x),
+        reinterpret_cast<char*>(xq81), M, K, x_tiles, /*ds4=*/true);
+  }
+  stage4k("xpreq", hipGetLastError());
+
+  int nthreads_best = 0;
+  // J is the y-slot tile = the activations (M rows).
+  int J_best = ggml_cuda_mmq_get_J_best(GGML_TYPE_Q4_K, M, false, cc,
+                                       smpbo, GGML_PREC_Q8, &nthreads_best);
+  if (const char* je = std::getenv("MLX_MMQ_J")) {
+    int jf = std::atoi(je);
+    if (jf >= 8 && jf <= 128 && jf % 8 == 0) J_best = jf;
+  }
+  const int I_val = ggml_cuda_mmq_get_I(GGML_TYPE_Q4_K, J_best, false, cc,
+                                       GGML_PREC_Q8);
+  // The non-fallback config: full I-tiles of the N (x slot) rows.
+  if (J_best < 8 || N % I_val != 0) {
+    hipFree(wq4);
+    hipFree(xq81);
+    return;
+  }
+  if (const char* cje = std::getenv("MLX_MMQ_CFG")) {
+    const ggml_cuda_mmq_config c =
+        ggml_cuda_mmq_get_config(GGML_TYPE_Q4_K, J_best, false, cc,
+                                GGML_PREC_Q8);
+    fprintf(stderr, "[cfgq4k] M=%d N=%d K=%d cc=%d J=%d nthreads=%d cfg.I=%d cfg.nthreads=%d nbytes=%zu nty=%d ntx=%d\n",
+            M, N, K, cc, J_best, nthreads_best, c.I, c.nthreads,
+            mmq_get_nbytes_shared(c, cc), (int)((M + J_best - 1) / J_best),
+            (int)((N + c.I - 1) / c.I));
+  }
+  float* dst = reinterpret_cast<float*>(out);
+  mmq_args args = {reinterpret_cast<const char*>(wq4), GGML_TYPE_Q4_K,
+                   reinterpret_cast<const int*>(xq81), nullptr, nullptr,
+                   dst, nullptr, K, N, M, K / 256, M, N,
+                   1, 1, 0, 0, 0,
+                   1, 1, 0, 0, 0,
+                   M, J_best, {}};
+  args.dst_bf16 = !dst_f32;
+  mul_mat_q_case<GGML_TYPE_Q4_K, GGML_PREC_Q8>(ctx, args, stream);
+  hipError_t rc = hipGetLastError();
+  if (rc != hipSuccess) {
+    fprintf(stderr, "[stage4k] mmq rc=%d\n", (int)rc);
+    CUDA_CHECK(hipGetLastError());
+  }
+  stage4k("mmq", hipGetLastError());
+  CUDA_CHECK(hipFree(wq4));
+  CUDA_CHECK(hipFree(xq81));
+}
+
+// P1 plan-B build-hygiene canary (host odr-use in mmq-host.hip: volatile
+// array, non-foldable load - the pattern of the B97T2FIX / G1 probes).
+static volatile char P1B_MMQ_PORT_CANARY[] = "P1B-PORT-CANARY-20261116";
+extern "C" const volatile char* mlx_rocm_mmq_p1b_canary() {
+  return P1B_MMQ_PORT_CANARY;
 }
 
 }  // namespace rocm

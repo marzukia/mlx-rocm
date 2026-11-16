@@ -23,6 +23,9 @@
 #include <cstdlib>
 #include <memory>
 
+// P1 plan-B (2026-11-16): the plain Q4_K port canary (defined in mmq.hip).
+extern "C" const volatile char* mlx_rocm_mmq_p1b_canary();
+
 // ------------------------------------------------------------ device runtime
 int ggml_cuda_get_device() {
   return 0;
@@ -162,6 +165,12 @@ void quantize_mmq_fp4_cuda(const float*, const int32_t*, void*, float*,
   // G1.5 probe build-hygiene canary (same volatile-array + host odr-use pattern)
   volatile const char b97probe_canary_ref = B97PROBE_CANARY[0];
   (void)b97probe_canary_ref;
+  // P1 plan-B build-hygiene canary (the plain Q4_K mmq port, mmq.hip):
+  // volatile pointer + volatile element load - non-foldable, keeps the
+  // volatile array (and the port TU) in the linked image.
+  const volatile char* p1b_canary_ref = mlx_rocm_mmq_p1b_canary();
+  volatile const char p1b_canary_ref0 = p1b_canary_ref[0];
+  (void)p1b_canary_ref0;
   mmq_shim_unreachable("quantize_mmq_fp4_cuda");
 }
 void quantize_scatter_mmq_q8_1_cuda(const float*, const int32_t*, void*,
