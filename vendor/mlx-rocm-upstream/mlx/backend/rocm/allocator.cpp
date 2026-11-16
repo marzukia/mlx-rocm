@@ -19,6 +19,41 @@
 
 #include <atomic>
 #include <cassert>
+#include <map>
+#include <mutex>
+#include <vector>
+
+// B97-HBMFIX diagnostics: live-buffer size histogram (debug only).
+static std::map<size_t, long> g_live_hist;
+static std::mutex g_live_mu;
+static inline void dbg_live_add(size_t size, long delta) {
+  if (!getenv("MLX_WORKER_DEBUG"))
+    return;
+  std::lock_guard<std::mutex> g(g_live_mu);
+  auto& v = g_live_hist[size];
+  v += delta;
+  if (v <= 0)
+    g_live_hist.erase(size);
+}
+static inline void dbg_live_dump(const char* tag) {
+  if (!getenv("MLX_WORKER_DEBUG"))
+    return;
+  std::lock_guard<std::mutex> g(g_live_mu);
+  long total = 0;
+  std::vector<std::pair<size_t, long>> e;
+  for (auto& [sz, b] : g_live_hist) {
+    if (b >= 16 * 1024 * 1024)
+      e.push_back({sz, b});
+    total += b;
+  }
+  std::sort(e.begin(), e.end(),
+            [](auto& a, auto& b) { return a.second > b.second; });
+  fprintf(stderr, "[worker] LIVE-DUMP %s total=%ld big=%ld\n", tag, total,
+          e.empty() ? 0 : e[0].second);
+  for (auto& [sz, b] : e)
+    fprintf(stderr, "  size=%zu bytes=%ld count=%ld\n", sz, b,
+            sz ? b / (long)sz : 0);
+}
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -669,6 +704,7 @@ Buffer RocmAllocator::malloc_async(size_t size, int device, void* stream_v) {
           }
         }
         if (!buf) {
+          dbg_live_dump("THROW");
           throw std::runtime_error(
               "[malloc_async] Unable to allocate " + std::to_string(size) +
               " bytes (HBM full after cache reclaim).");
@@ -699,6 +735,7 @@ Buffer RocmAllocator::malloc_async(size_t size, int device, void* stream_v) {
   }
 
   active_memory_ += buf->size;
+  dbg_live_add(buf->size, +1);
   peak_memory_ = std::max(active_memory_, peak_memory_);
   // No eager max_pool_size_ trim here — that was the free/alloc storm.
   // clear_cache() / set_cache_limit() still shrink explicitly.
@@ -808,8 +845,10 @@ void RocmAllocator::free(Buffer buffer, bool force) {
   // Alien sentinel (make_buffer): shell only.
   if (buf->alloc_stream == reinterpret_cast<void*>(static_cast<uintptr_t>(1))) {
     std::lock_guard lock(mutex_);
-    if (active_memory_ >= buf->size)
+    if (active_memory_ >= buf->size) {
       active_memory_ -= buf->size;
+      dbg_live_add(buf->size, -1);
+    }
     delete buf;
     return;
   }
@@ -824,6 +863,7 @@ void RocmAllocator::free(Buffer buffer, bool force) {
 
   std::unique_lock lock(mutex_);
   active_memory_ -= buf->size;
+  dbg_live_add(buf->size, -1);
   // Always recycle; never hipFree on the free() path.
   //
   // rocprof: 90–500 ms GPU idle gaps right before fused_adamw were almost
@@ -861,8 +901,10 @@ void RocmAllocator::release(Buffer buffer) {
   }
   {
     std::lock_guard lock(mutex_);
-    if (active_memory_ >= buf->size)
+    if (active_memory_ >= buf->size) {
       active_memory_ -= buf->size;
+      dbg_live_add(buf->size, -1);
+    }
   }
   const bool alien =
       buf->alloc_stream == reinterpret_cast<void*>(static_cast<uintptr_t>(1));
