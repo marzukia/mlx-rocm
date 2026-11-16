@@ -163,18 +163,11 @@ __global__ void __launch_bounds__(256)
                       + q_start * params.Q_strides[2];
   const int q_valid = min(BLOCK_M, params.qL - q_start);
 
-  // ---- Stage Q once (resident for the whole K loop) ----
-  // Q does not change across K blocks; the old per-block re-staging moved
-  // 2 x BLOCK_M x DW x sizeof(T) of global->LDS traffic per K block for no
-  // reason. The finalize section reuses Q_sh as its temp AFTER the loop.
-  for (int dc = 0; dc < N_DCHUNKS; dc++) {
-    const int d0 = dc * DW;
-    const int dwid = min(DW, D - d0);
-    load_tile<T, Q_PAD>(
-        Q_sh, Q_base + d0, params.Q_strides[2], BLOCK_M, dwid, q_valid, tid,
-        NTHREADS);
-    __syncthreads();
-  }
+  // Q is staged per D-chunk inside the S loop below: all chunks share
+  // one DW-wide LDS region, so a hoisted multi-chunk stage would leave only
+  // the last chunk resident (D=256: chunk 1 overwrites chunk 0 before the
+  // S MMA reads it). The finalize section reuses Q_sh as its temp AFTER
+  // the loop.
 
   // acc-fragment layout on gfx1201 (rocWMMA 16x16x16, f32 accumulator),
   // verified by probe (wmma_probe.hip, 2026-11-16): element e of lane L holds
@@ -213,6 +206,9 @@ __global__ void __launch_bounds__(256)
       for (int dc = 0; dc < N_DCHUNKS; dc++) {
         const int d0 = dc * DW;
         const int dwid = min(DW, D - d0);
+        load_tile<T, Q_PAD>(
+            Q_sh, Q_base + d0, params.Q_strides[2], BLOCK_M, dwid, q_valid, tid,
+            NTHREADS);
         load_tile<T, KV_PAD>(
             KV_sh, K_base + d0, params.K_strides[2], BLOCK_N, dwid, k_valid,
             tid, NTHREADS);
