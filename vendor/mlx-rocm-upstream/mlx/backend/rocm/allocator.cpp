@@ -599,6 +599,15 @@ Buffer RocmAllocator::malloc_async(size_t size, int device, void* stream_v) {
         int64_t over = static_cast<int64_t>(get_active_memory()) +
             static_cast<int64_t>(get_cache_memory()) +
             static_cast<int64_t>(need) - static_cast<int64_t>(hbm_cap);
+        if (getenv("MLX_WORKER_DEBUG")) {
+          size_t _ff = 0, _tt = 0;
+          (void)hipMemGetInfo(&_ff, &_tt);
+          fprintf(stderr,
+              "[worker] RECLAIM over=%ld cache=%zu active=%zu peak=%zu "
+              "hbm_free=%zu hbm_total=%zu arena=%zu\n",
+              (long)over, get_cache_memory(), get_active_memory(),
+              peak_memory_, _ff, _tt, decode_arena_.capacity);
+        }
         if (over > 0 && get_cache_memory() > 0) {
           // free_ callback → free_rocm_buffer → hipFreeAsync when pool path.
           if (getenv("MLX_WORKER_DEBUG")) {
@@ -634,6 +643,17 @@ Buffer RocmAllocator::malloc_async(size_t size, int device, void* stream_v) {
           // fall back to synchronous hipMalloc (regular driver path).
           void* sdata = nullptr;
           hipError_t se = hipMalloc(&sdata, size);
+          if (getenv("MLX_WORKER_DEBUG")) {
+            size_t _ff = 0, _tt = 0;
+            (void)hipMemGetInfo(&_ff, &_tt);
+            fprintf(stderr,
+                "[worker] SYNCFALLBACK size=%zu se=%d (%s) "
+                "hbm_free=%zu hbm_total=%zu active=%zu cache=%zu "
+                "arena=%zu peak=%zu\n",
+                size, (int)se, hipGetErrorString(se), _ff, _tt,
+                get_active_memory(), get_cache_memory(),
+                decode_arena_.capacity, peak_memory_);
+          }
           (void)hipGetLastError();
           if (se == hipSuccess && sdata) {
             buf = new RocmBuffer{
