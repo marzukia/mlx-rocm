@@ -10,6 +10,7 @@
 #include "mlx/primitives.h"
 
 #include <hip/hip_runtime.h>
+#include "mlx/backend/rocm/w1probe.h"
 
 namespace {
 
@@ -36,6 +37,65 @@ void Load::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& encoder = rocm::get_command_encoder(stream());
   auto size = out.size();
   auto nbytes = size * out.itemsize();
+  // GD-idx (t1099 R3): small per-step host loads (the decode token idx, <=16 B)
+  // in a capture/replay step stage through the persistent fixed-VA idx slot
+  // instead of a per-step fresh pinned buffer + per-step out re-allocation. The
+  // re-allocation moved the out VA (arena-active at replay, buffer_cache at a
+  // fresh capture) under the pointer the capture baked into the embedding
+  // gather, so the replayed graph read the capture step's value (the R2
+  // collapse); and the recorded in-graph H2D node's source was the freed
+  // capture-step pinned buffer, so the pre-launch re-delivery replayed that
+  // stale value. The slot's device VA is stable across steps and
+  // incarnations; the 16 B H2D re-executes before every graph launch (the
+  // direct copy here is not launch_kernel-wrapped, so it runs at replay too,
+  // stream-ordered before the graph), and the pre-launch re-delivery sources
+  // the persistent pinned buffer, which the current step's reader just
+  // rewrote in place. GD-idx (R4-fix v2): the gate is the RAW ENV ENABLE
+  // (graph_decode_env_enabled, MLX_GRAPH_DECODE != 0), not the per-window
+  // staging-mode or the post-arm persistent flag: the per-step token Load
+  // is evaluated in the previous step's tail (after the argmax, BEFORE the
+  // arm and before this step's first op), so any window/persistent-gated
+  // path fired 0 times (the R3/R4 reachability gap). When this path fires,
+  // the per-step idx array is a VIEW of the persistent slot buffer, and
+  // the gather's indirect path reads the slot through the pointer slot —
+  // so writing the slot (the 16 B H2D below) IS the per-step delivery.
+  if (rocm::graph_decode_env_enabled() && nbytes <= 16) {
+    auto sl = rocm::allocator().decode_idx_slot();
+    fprintf(stderr,
+            "[gdidx] load: env=1 nbytes=%zu sl.host=%p sl.data=%p\n",
+            nbytes, sl.host, sl.data);
+    if (sl.host && sl.data) {
+      // Zero the full 16 B first: a 4 B (int32) load into an 8 B (int64)
+      // reader would otherwise leave stale high bytes in the slot.
+      memset(sl.host, 0, 16);
+      reader_->read(reinterpret_cast<char*>(sl.host), nbytes, offset_);
+      if (swap_endianness_) {
+        switch (out.itemsize()) {
+          case 2:
+            swap_endianness<2>(reinterpret_cast<uint8_t*>(sl.host), size);
+            break;
+          case 4:
+            swap_endianness<4>(reinterpret_cast<uint8_t*>(sl.host), size);
+            break;
+          case 8:
+            swap_endianness<8>(reinterpret_cast<uint8_t*>(sl.host), size);
+            break;
+        }
+      }
+      out.set_data(rocm::allocator().make_buffer(sl.data, 16));
+      (void)hipMemcpyAsync(
+          sl.data,
+          sl.host,
+          16,
+          hipMemcpyHostToDevice,
+          encoder.stream());
+      rocm::allocator().decode_idx_slot_arm();
+      fprintf(stderr, "[gdidx] load: slot path taken, armed\n");
+      return;
+    } else {
+      fprintf(stderr, "[gdidx] load: FALL-THROUGH (slot null)\n");
+    }
+  }
   out.set_data(mlx::core::rocm::malloc_async(nbytes, encoder));
   // Stage through PINNED host memory. An async H2D copy from pageable memory is
   // unreliable on a discrete GPU over a non-coherent link (TB5 eGPU): the
@@ -61,7 +121,9 @@ void Load::eval_gpu(const std::vector<array>& inputs, array& out) {
           break;
       }
     }
-    (void)hipMemcpy(gpu_ptr<void>(out), out_ptr, nbytes, hipMemcpyHostToDevice);
+    hipError_t w1rc = hipMemcpy(gpu_ptr<void>(out), out_ptr, nbytes, hipMemcpyHostToDevice);
+    w1probe::api_log("hipMemcpy(load_h2d)", gpu_ptr<void>(out), out_ptr, nbytes, (int)w1rc);
+    (void)w1rc;
     free(out_ptr);
     return;
   }

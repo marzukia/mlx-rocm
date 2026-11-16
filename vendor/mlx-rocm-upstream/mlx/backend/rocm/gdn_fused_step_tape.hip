@@ -146,7 +146,8 @@ __global__ __launch_bounds__(256) void gdn_fused_step_tape_kernel(
     int head_dim,
     float inv_scale,
     float rms_eps,
-    float norm_eps) {
+    float norm_eps,
+    int n_slots) {
   const int hv = blockIdx.x;
   const int hk = hv / (num_v_heads / num_k_heads);
   const int tid = threadIdx.x;
@@ -205,11 +206,13 @@ __global__ __launch_bounds__(256) void gdn_fused_step_tape_kernel(
           static_cast<float>(conv_weight[cv * kernel_size + 3]);
       T conv_bf = static_cast<T>(acc);
       s_vconv[tid] = Multiply{}(conv_bf, Sigmoid{}(conv_bf));
+      if (t < n_slots) {
 #pragma unroll
-      for (int j = 0; j < 3; ++j) {
-        int idx = t + 1 + j;
-        conv_state_tape[((size_t)t * 3 + j) * conv_dim + cv] =
-            gdnt_cs_tap(conv_state, v_raw, value_dim, vch, cv, idx, conv_dim);
+        for (int j = 0; j < 3; ++j) {
+          int idx = t + 1 + j;
+          conv_state_tape[((size_t)t * 3 + j) * conv_dim + cv] =
+              gdnt_cs_tap(conv_state, v_raw, value_dim, vch, cv, idx, conv_dim);
+        }
       }
 
       int ck = key_dim + hk * head_dim + tid;
@@ -231,11 +234,13 @@ __global__ __launch_bounds__(256) void gdn_fused_step_tape_kernel(
           static_cast<float>(conv_weight[ck * kernel_size + 3]);
       T conv_bf2 = static_cast<T>(acc2);
       s_kconv[tid] = Multiply{}(conv_bf2, Sigmoid{}(conv_bf2));
+      if (t < n_slots) {
 #pragma unroll
-      for (int j = 0; j < 3; ++j) {
-        int idx = t + 1 + j;
-        conv_state_tape[((size_t)t * 3 + j) * conv_dim + ck] =
-            gdnt_cs_tap(conv_state, k_raw, key_dim, kch, ck, idx, conv_dim);
+        for (int j = 0; j < 3; ++j) {
+          int idx = t + 1 + j;
+          conv_state_tape[((size_t)t * 3 + j) * conv_dim + ck] =
+              gdnt_cs_tap(conv_state, k_raw, key_dim, kch, ck, idx, conv_dim);
+        }
       }
     } else {
       int qi = tid - head_dim;
@@ -258,11 +263,13 @@ __global__ __launch_bounds__(256) void gdn_fused_step_tape_kernel(
           static_cast<float>(conv_weight[cq * kernel_size + 3]);
       T conv_bf = static_cast<T>(acc);
       s_qconv[qi] = Multiply{}(conv_bf, Sigmoid{}(conv_bf));
+      if (t < n_slots) {
 #pragma unroll
-      for (int j = 0; j < 3; ++j) {
-        int idx = t + 1 + j;
-        conv_state_tape[((size_t)t * 3 + j) * conv_dim + cq] =
-            gdnt_cs_tap(conv_state, q_raw, key_dim, qch, cq, idx, conv_dim);
+        for (int j = 0; j < 3; ++j) {
+          int idx = t + 1 + j;
+          conv_state_tape[((size_t)t * 3 + j) * conv_dim + cq] =
+              gdnt_cs_tap(conv_state, q_raw, key_dim, qch, cq, idx, conv_dim);
+        }
       }
     }
     __syncthreads();
@@ -360,8 +367,8 @@ __global__ __launch_bounds__(256) void gdn_fused_step_tape_kernel(
     }
     __syncthreads();
 
-    // ---------------- TAPE: SSM state after row t ---------------- h is the row-t post-update state (register-resident across rows, exactly r4d's T loop); one extra float4x16 store per thread per row. state_tape[t] == state_new when t == TMAX-1 (both are materialized; the model path that consumes state_new is untouched).
-    {
+    // ---------------- TAPE: SSM state after row t ---------------- h is the row-t post-update state (register-resident across rows, exactly r4d's T loop); one extra float4x16 store per thread per row. state_tape[t] == state_new when t == TMAX-1 (both are materialized; the model path that consumes state_new is untouched). n_slots (runtime) gates which rows are snapshotted: the tape op passes TMAX (all rows, unchanged); the slot op passes TMAX-1 (row TMAX-1 is state_new itself - the commit rows are 0..TMAX-2).
+    if (t < n_slots) {
       float* p =
           state_tape + (((size_t)t * num_v_heads + hv) * head_dim + row) *
               head_dim + k0;
@@ -1119,6 +1126,7 @@ int launch_gdn_fused_step_tape(
     float inv_scale,
     float rms_eps,
     float norm_eps,
+    int n_slots,
     hipStream_t stream) {
   using T = hip_bfloat16;
   dim3 block(256);
@@ -1129,7 +1137,8 @@ int launch_gdn_fused_step_tape(
       (const T*)conv_weight, (const T*)z, state, (const T*)norm_weight,
       (T*)result, (float*)state_new, (float*)state_tape,
       (T*)conv_state_tape, key_dim, value_dim, conv_dim, kernel_size,
-      num_v_heads, num_k_heads, head_dim, inv_scale, rms_eps, norm_eps);
+      num_v_heads, num_k_heads, head_dim, inv_scale, rms_eps, norm_eps,
+      n_slots);
   return (int)hipGetLastError();
 }
 
@@ -1313,7 +1322,7 @@ void GdnFusedStepTape::eval_gpu(
               gpu_ptr<void>(state_tape), gpu_ptr<void>(conv_state_tape),
               key_dim, value_dim, conv_dim, 4, num_v_heads, num_k_heads,
               head_dim, inv_scale_, eps_ * inv_scale_ * inv_scale_,
-              norm_eps_, stream)
+              norm_eps_, Tlen, stream)
         : (tmax == 2)
         ? launch_gdn_fused_step_tape<2>(
               gpu_ptr<void>(q), gpu_ptr<void>(k), gpu_ptr<void>(v),
@@ -1324,7 +1333,7 @@ void GdnFusedStepTape::eval_gpu(
               gpu_ptr<void>(state_tape), gpu_ptr<void>(conv_state_tape),
               key_dim, value_dim, conv_dim, 4, num_v_heads, num_k_heads,
               head_dim, inv_scale_, eps_ * inv_scale_ * inv_scale_,
-              norm_eps_, stream)
+              norm_eps_, Tlen, stream)
         : (tmax == 3)
         ? launch_gdn_fused_step_tape<3>(
               gpu_ptr<void>(q), gpu_ptr<void>(k), gpu_ptr<void>(v),
@@ -1335,7 +1344,7 @@ void GdnFusedStepTape::eval_gpu(
               gpu_ptr<void>(state_tape), gpu_ptr<void>(conv_state_tape),
               key_dim, value_dim, conv_dim, 4, num_v_heads, num_k_heads,
               head_dim, inv_scale_, eps_ * inv_scale_ * inv_scale_,
-              norm_eps_, stream)
+              norm_eps_, Tlen, stream)
         : launch_gdn_fused_step_tape<4>(
               gpu_ptr<void>(q), gpu_ptr<void>(k), gpu_ptr<void>(v),
               gpu_ptr<void>(bb), gpu_ptr<void>(aa), gpu_ptr<float>(al),
@@ -1345,12 +1354,120 @@ void GdnFusedStepTape::eval_gpu(
               gpu_ptr<void>(state_tape), gpu_ptr<void>(conv_state_tape),
               key_dim, value_dim, conv_dim, 4, num_v_heads, num_k_heads,
               head_dim, inv_scale_, eps_ * inv_scale_ * inv_scale_,
-              norm_eps_, stream);
+              norm_eps_, Tlen, stream);
   };
   encoder.launch_kernel([&](hipStream_t stream) {
     int rc = launch_one(stream, Tlen);
     if (rc != 0) {
       throw std::runtime_error("gdn_fused_step_tape: launch failed");
+    }
+  });
+}
+
+// ---- GdnFusedStepSlot::eval_gpu ---- Phase B (the re-forward remover): the same fused verify step, but the per-row snapshot (state_slot + conv_slot) covers only the COMMIT ROWS 0..T-2 (row T-1 is state_new). Identical to GdnFusedStepTape::eval_gpu except: (a) the slot outputs are T-1-row-shaped, and (b) the kernel is launched with n_slots = Tlen-1. The tape op (n_slots = Tlen) and the gdn_fused_step op are untouched.
+
+void GdnFusedStepSlot::eval_gpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  auto& s = stream();
+  auto& d = rocm::device(s.device);
+  auto& encoder = d.get_command_encoder(s);
+
+  // Same row-contiguity forcing as GdnFusedStep::eval_gpu (the F-branch passes row-strided slices; the kernel reads them packed).
+  std::unique_ptr<array> tmps[7];
+  const array *pq = &inputs[0], *pk = &inputs[1], *pv = &inputs[2],
+              *pb = &inputs[3], *pa = &inputs[4], *pc = &inputs[7],
+              *pz = &inputs[9];
+  auto maybe_copy = [&](const array& x, const array** slot, int i) {
+    if (!x.flags().contiguous) {
+      tmps[i] = std::unique_ptr<array>(
+          new array(mlx::core::contiguous_copy_gpu(x, s)));
+      encoder.add_temporary(*tmps[i]);
+      *slot = tmps[i].get();
+    }
+  };
+  maybe_copy(inputs[3], &pb, 0);
+  maybe_copy(inputs[4], &pa, 1);
+  maybe_copy(inputs[7], &pc, 2);
+  maybe_copy(inputs[9], &pz, 3);
+  if ((int)inputs[0].shape(1) > 1) {
+    maybe_copy(inputs[0], &pq, 4);
+    maybe_copy(inputs[1], &pk, 5);
+    maybe_copy(inputs[2], &pv, 6);
+  }
+  auto& q = *pq;
+  auto& k = *pk;
+  auto& v = *pv;
+  auto& bb = *pb;
+  auto& aa = *pa;
+  auto& cs = *pc;
+  auto& zg = *pz;
+  auto& al = inputs[5];
+  auto& db = inputs[6];
+  auto& cw = inputs[8];
+  auto& st = inputs[10];
+  auto& nw = inputs[11];
+  auto& result = outputs[0];
+  auto& state_new = outputs[1];
+  auto& state_slot = outputs[2];
+  auto& conv_state_slot = outputs[3];
+
+  result.set_data(mlx::core::rocm::malloc_async(result.nbytes(), encoder));
+  state_new.set_data(
+      mlx::core::rocm::malloc_async(state_new.nbytes(), encoder));
+  state_slot.set_data(
+      mlx::core::rocm::malloc_async(state_slot.nbytes(), encoder));
+  conv_state_slot.set_data(
+      mlx::core::rocm::malloc_async(conv_state_slot.nbytes(), encoder));
+
+  // Shape-based dims (B=1 guaranteed by use_fallback; T is 2, 3 or 4): q [1, T, key_dim]  k [1, T, key_dim]  v [1, T, value_dim] z [1, T, Hv, 128]  nw [128]  cs [3, conv_dim]  cw [conv_dim, 4]
+  int Tlen = (int)q.shape(1);
+  int key_dim = (int)q.shape(2);
+  int value_dim = (int)v.shape(2);
+  int conv_dim = 2 * key_dim + value_dim;
+  int head_dim = (int)nw.size();
+  int num_v_heads = (int)zg.size() / head_dim / Tlen;
+  int num_k_heads = key_dim / head_dim;
+
+  // Slot rows = the commit rows 0..T-2 (Tlen-1 rows; row T-1 is state_new). TMAX is a template constant so the t loop unrolls and the conv-window ternaries fold (identical to GdnFusedStepTape::eval_gpu); n_slots = Tlen-1 gates the per-row snapshot stores.
+  auto launch_one = [&](hipStream_t stream, int tmax) {
+    return (tmax == 2)
+        ? launch_gdn_fused_step_tape<2>(
+              gpu_ptr<void>(q), gpu_ptr<void>(k), gpu_ptr<void>(v),
+              gpu_ptr<void>(bb), gpu_ptr<void>(aa), gpu_ptr<float>(al),
+              gpu_ptr<float>(db), gpu_ptr<void>(cs), gpu_ptr<void>(cw),
+              gpu_ptr<void>(zg), gpu_ptr<float>(st), gpu_ptr<void>(nw),
+              gpu_ptr<void>(result), gpu_ptr<void>(state_new),
+              gpu_ptr<void>(state_slot), gpu_ptr<void>(conv_state_slot),
+              key_dim, value_dim, conv_dim, 4, num_v_heads, num_k_heads,
+              head_dim, inv_scale_, eps_ * inv_scale_ * inv_scale_,
+              norm_eps_, Tlen - 1, stream)
+        : (tmax == 3)
+        ? launch_gdn_fused_step_tape<3>(
+              gpu_ptr<void>(q), gpu_ptr<void>(k), gpu_ptr<void>(v),
+              gpu_ptr<void>(bb), gpu_ptr<void>(aa), gpu_ptr<float>(al),
+              gpu_ptr<float>(db), gpu_ptr<void>(cs), gpu_ptr<void>(cw),
+              gpu_ptr<void>(zg), gpu_ptr<float>(st), gpu_ptr<void>(nw),
+              gpu_ptr<void>(result), gpu_ptr<void>(state_new),
+              gpu_ptr<void>(state_slot), gpu_ptr<void>(conv_state_slot),
+              key_dim, value_dim, conv_dim, 4, num_v_heads, num_k_heads,
+              head_dim, inv_scale_, eps_ * inv_scale_ * inv_scale_,
+              norm_eps_, Tlen - 1, stream)
+        : launch_gdn_fused_step_tape<4>(
+              gpu_ptr<void>(q), gpu_ptr<void>(k), gpu_ptr<void>(v),
+              gpu_ptr<void>(bb), gpu_ptr<void>(aa), gpu_ptr<float>(al),
+              gpu_ptr<float>(db), gpu_ptr<void>(cs), gpu_ptr<void>(cw),
+              gpu_ptr<void>(zg), gpu_ptr<float>(st), gpu_ptr<void>(nw),
+              gpu_ptr<void>(result), gpu_ptr<void>(state_new),
+              gpu_ptr<void>(state_slot), gpu_ptr<void>(conv_state_slot),
+              key_dim, value_dim, conv_dim, 4, num_v_heads, num_k_heads,
+              head_dim, inv_scale_, eps_ * inv_scale_ * inv_scale_,
+              norm_eps_, Tlen - 1, stream);
+  };
+  encoder.launch_kernel([&](hipStream_t stream) {
+    int rc = launch_one(stream, Tlen);
+    if (rc != 0) {
+      throw std::runtime_error("gdn_fused_step_slot: launch failed");
     }
   });
 }

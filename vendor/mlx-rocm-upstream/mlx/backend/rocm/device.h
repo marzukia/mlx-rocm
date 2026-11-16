@@ -43,6 +43,11 @@ bool use_hip_graphs();
 extern std::atomic<long> g_inline_launches_;
 extern std::atomic<bool> g_decode_capturing;
 extern std::atomic<int> g_decode_capture_slot;
+// The current step's valid token-id count in the token slot's pinned buffer
+// (the S>1 verify gather's eval fills it and sets this; the pre-launch H2D
+// delivers n*8 bytes to the fixed VA; 0 = not filled this step, no H2D).
+extern std::atomic<int> g1_token_ids_n;
+extern std::atomic<int> g1_token_ids_sz;  // the current step's token-id element size in bytes (4 or 8; the verify idx may be int32 or int64)
 // Diagnostics: tag inline launches by the primitive currently in eval_gpu.
 void set_current_prim(const char* name);
 void record_inline_launch();
@@ -314,21 +319,27 @@ class CommandEncoder {
   bool decode_capture_replay(int slot); // relaunch the captured exec in slot
   void decode_capture_destroy(); // free both exec/graph slots
   bool decode_captured(int slot) const {
-    return decode_cap_exec_[slot & 1] != nullptr;
+    if (slot < 0 || slot >= 4)
+      return false;
+    return decode_cap_exec_[slot] != nullptr;
   }
 
  private:
-  hipGraphExec_t decode_cap_exec_[2]{
+  hipGraphExec_t decode_cap_exec_[4]{
       nullptr,
-      nullptr}; // per-parity captured exec
-  hipGraph_t decode_cap_graph_[2]{
+      nullptr,
+      nullptr,
+      nullptr}; // per-step-class captured exec (0: T=1 AR, 1: S=3 verify, 2: S=4 verify, 3: other S>1)
+  hipGraph_t decode_cap_graph_[4]{
+      nullptr,
+      nullptr,
       nullptr,
       nullptr}; // their source graphs (owned)
   // G1X: slot-owned persistent kernel-param value stores + H2D host-source
   // copies. Stream-capture nodes reference the caller's stack arg storage,
   // which is dead by replay; end_record re-points every kernel node (and
   // H2D memcpy source) at these slot-owned copies.
-  std::vector<std::shared_ptr<void>> decode_cap_keepalive_[2];
+  std::vector<std::shared_ptr<void>> decode_cap_keepalive_[4];
   // G1H2D: the in-graph H2D memcpy nodes (per-step host staging value
   // uploads, e.g. the dynamic-offset slot) are not reliably delivered on this vGPU. At capture we record each node's (host_src, dev_dst, bytes), neutralize the node (0-byte copy) so it cannot overwrite the freshly delivered value mid-graph with a stale one, and re-deliver the value pre-launch on the launch stream (g1_prelaunch_recorded_h2d).
   struct G1H2DRec {
@@ -336,7 +347,7 @@ class CommandEncoder {
     void* dev_dst;
     size_t bytes;
   };
-  std::vector<G1H2DRec> g1h2d_recs_[2];
+  std::vector<G1H2DRec> g1h2d_recs_[4];
   void g1_prelaunch_recorded_h2d(int slot, hipStream_t st);
   void decode_capture_record_neutralize_h2d(int slot, hipGraph_t g);
 };
@@ -469,6 +480,8 @@ void clear_all_encoders();
 // inits that abort under capture (e.g. hipblasLtCreate) check this.
 bool stream_capturing();
 void set_stream_capturing(bool v);
+hipStream_t capture_stream();
+void set_capture_stream(hipStream_t s);
 void set_graph_active(bool v);
 
 // True from capture start until the captured graph is destroyed. The allocator
@@ -481,6 +494,16 @@ bool graph_active();
 // disables. See device.cpp.
 bool graph_decode_mode();
 void set_graph_decode_mode(bool v);
+// GD-idx (R4-fix): the raw env enable (MLX_GRAPH_DECODE != 0), regardless of the
+// per-window staging/persistent state: the per-step token Load is evaluated in the
+// previous step's tail - before the pilot arms and before the next step's prepare -
+// so the delivery gate must be live before the window; the window/persistent state
+// only describes in-window staging.
+bool graph_decode_env_enabled();
+// GD-idx (R4): persistent post-arm state for the token Load small path (set at
+// arm / arena prepare, cleared on teardown + big/micro retract); see device.cpp.
+bool gd_idx_persistent();
+void set_gd_idx_persistent(bool v);
 void flush_graph_deferred_frees();
 // Per-generation deferred-free lifetime: each graph chunk (commit) frees its
 // own buffers once its launch completes, instead of hoarding until synchronize.

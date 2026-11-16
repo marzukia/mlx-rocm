@@ -33,6 +33,11 @@ struct RocmBuffer {
   void* host_shadow;
   bool host_dirty;
   void* alloc_stream; // stream used for hipMallocAsync / hipFreeAsync
+  // True when `data` is CPU-visible without a copy: a pinned host
+  // (hipHostMalloc) allocation, or a decode-arena wrapper whose arena base
+  // is host memory. Set at allocation. In-capture, raw_ptr() returns `data`
+  // directly for host-backed buffers (a blocking legacy-stream D2H 906s).
+  bool host_backed;
 };
 
 // ---------------------------------------------------------------------------
@@ -70,6 +75,8 @@ class SmallSizePool {
 struct DecodeArena {
   void* base{nullptr};
   size_t capacity{0};
+  // True when base is host memory (the hipHostMalloc fallback).
+  bool base_host{false};
   size_t offset{0};
   bool active{false};
   bool overflowed{false};
@@ -79,6 +86,21 @@ struct DecodeArena {
   size_t high_water{0};
   size_t floor_offset{0};
   size_t floor_wrapper{0};
+  // Per-exec-slot prefix floors (graph-decode multi-class): each step class
+  // (T=1 AR, S=3 verify, S=4 verify, other) owns a DISJOINT prefix region
+  // of the shared arena. A step resets to its own key's floor (the prefix
+  // start), so its re-allocations reclaim only its own prefix and never
+  // touch another class' live prefix (a shared single-floor reset would
+  // let the second class' prefix reallocate over the first class' live
+  // buffers, whose VAs the first class' exec baked in). A first capture for
+  // an unfrozen key starts above everything live (the shared slot region +
+  // the other keys' prefixes) so the regions are disjoint by construction.
+  static constexpr int kNumKeys = 4;
+  size_t key_floor[kNumKeys]{0, 0, 0, 0};
+  size_t key_floor_wrapper[kNumKeys]{0, 0, 0, 0};
+  bool key_floor_frozen[kNumKeys]{false, false, false, false};
+  int current_key{-1};  // the class whose step is allocating (the cross-key boundary guard)
+  bool slots_allocated{false};  // the shared slot region (6 wrappers: value 0-3 + zero + token) has been allocated in this base's history
 
   bool contains(const void* p) const {
     return base && p >= base && p < static_cast<const char*>(base) + capacity;
@@ -136,6 +158,17 @@ class RocmAllocator : public allocator::Allocator {
   void decode_arena_freeze_floor();
   void decode_arena_reset_to_floor();
   void decode_arena_end();
+  // Per-exec-slot (key) prefix floors: see DecodeArena::key_floor. reset_to_floor(key) moves the offset to the key's prefix start (its own prefix is reclaimable; the other keys' live prefixes are not); freeze_floor(key) records the key's prefix start (called after the shared slots have been settled, before the step's prefix allocates); offset_to_high_water starts an unfrozen key's first capture above everything live.
+  void decode_arena_reset_to_floor(int key);
+  void decode_arena_freeze_floor(int key);
+  bool decode_arena_floor_frozen(int key) const;
+  void decode_arena_offset_to_high_water();
+  // The class whose step is currently allocating (arena_alloc's cross-key boundary guard: a step that grows past the next class' live prefix floor marks the step overflowed — the pilot then grows the arena and re-captures instead of clobbering the other class' prefix).
+  void decode_arena_set_current_key(int key);
+  // Whether the shared slot region has been allocated (the slot wrappers are a no-op re-use once allocated).
+  bool decode_slots_allocated() const {
+    return decode_arena_.slots_allocated;
+  }
   bool decode_arena_active() const {
     return decode_arena_.active;
   }
@@ -164,6 +197,44 @@ class RocmAllocator : public allocator::Allocator {
   DecodeValueSlot decode_zero_slot();
   // K3 (t1082): per-step cursor into the 4 KB value slot 3 (gather out). Each small gather's row is placed at a distinct 256 B aligned offset so rows do not clobber each other in-graph (a decode step has several fast_rows gathers). Returns the row's offset, or the 4 KB capacity if it does not fit (the caller falls back to a stable-arena buffer). Reset with the arena.
   size_t decode_value_slot3_cursor(size_t size);
+  // GD-idx (t1099 R3): the per-step token-idx staging slot. A 4 KB device buffer on its OWN hipMalloc (not arena: the token array is evaluated when its python object is created — before the step's first op, when a fresh capture's arena is not yet active) + a 16 B pinned host. Its device VA is stable across steps AND arena incarnations, so the capture can bake it into the embedding gather; the token H2D re-executes before every graph launch (eval-time copy + pre-launch re-delivery, both sourced from the persistent pinned buffer, which the neutralized in-graph node pattern keeps current). The per-step re-allocation of the old per-step pinned path moved the out VA under the baked pointer, so the replayed graph read the capture step's value (the R2 collapse).
+  DecodeValueSlot decode_idx_slot();
+  // Arm is set by the token staging (Load small path, previous step's tail); consumed by the first single-row fast_rows gather of the step (the embedding). NOT cleared with the arena reset or by any per-capture reset (it must survive to the step's first gather, which comes after both).
+  void decode_idx_slot_arm();
+  bool decode_idx_slot_take();
+  // GD-idx (R4-fix v2): per-gather indirect-idx delivery. The per-step idx
+  // buffer (the bench makes a FRESH per-step mx.array; its device VA is
+  // never stable and the Load path does not see it in MTP=0 decode) is
+  // reached by the gather kernel through an INDIRECTION. Each in-step
+  // single-row gather k (the in-step ordinal resets with the arena, so
+  // capture and replay steps map identically) owns: an 8 B PINNED host
+  // buffer holding the current per-step idx buffer's device VA (the
+  // gather op rewrites it IN PLACE every step — no hip call) plus an 8 B
+  // persistent device pointer slot. The slot is written by an async H2D
+  // (pinned source, no allocation, no blocking copy) which is
+  // capture-safe and, when recorded, re-executes at every graph launch
+  // re-reading the CURRENT pinned host contents (the persistent
+  // re-delivery pattern). The gather kernel dereferences the slot and
+  // reads the live per-step idx buffer — neither the token nor its
+  // buffer's VA is baked into the recorded kernel, a recorded node only
+  // ever reads a STABLE VA, and NO blocking hip* exists on this path (the
+  // R4 first-capture crash class is out by construction). Count bounded by
+  // the 4-pair array (the K=4 value-slot convention); >4 in-step
+  // single-row gathers fall back to the direct per-step idx read. Pairs
+  // materialized at arm / prepare (decode_idx_ptrs_materialize, BEFORE the
+  // capture window — a hip* during a capture invalidates it on ROCm
+  // 10.1) and NEVER freed (each VA is baked into every exec that
+  // references it, the same never-free rule as the slot's device buffer).
+  void decode_idx_ptrs_materialize();
+  void* decode_idx_ptr_slot(int i);
+  uint64_t* decode_idx_ptr_host(int i);
+  int decode_idx_stage_next();
+  bool decode_idx_slot_locked_materialize();  // caller holds mutex_ + outside the capture window
+  // True iff p is one of the persistent staging host buffers (value slots 0-3 or the idx slot). Pre-launch re-delivery of a recorded in-graph H2D must skip any other (per-step) source: it is freed at step end, and copying from it is a UAF read of the stale capture-step value.
+  bool is_persistent_staging_host(const void* p) const;
+
+  // The per-step token-id slot for the S>1 verify subgraph: a small stable arena buffer + a pinned host buffer (up to 64 x int64 token ids). A verify step’s [1, S] token-id H2D must not be a captured memcpy (kernel pointers are recorded by value — a recorded H2D re-delivers the captured host value, or reads freed staging, on replay). Instead the verify gather’s eval fills the pinned buffer (a CPU side effect each step), H2Ds it to the fixed VA (the node is recorded at capture, neutralized at end_record, re-delivered pre-launch), and the kernel reads the fixed VA.
+  DecodeValueSlot decode_token_slot();
 
   bool train_arena_begin(size_t capacity, int device, void* stream) {
     return decode_arena_begin(capacity, device, stream);
@@ -204,6 +275,9 @@ class RocmAllocator : public allocator::Allocator {
   friend RocmAllocator& allocator();
 
   RocmBuffer* arena_alloc(size_t size);
+  // A new arena session (see the implementation note in allocator.cpp); the
+  // caller holds mutex_.
+  void decode_arena_session_reset(bool base_reallocated);
 
   std::mutex mutex_;
   size_t memory_limit_;
@@ -227,6 +301,16 @@ class RocmAllocator : public allocator::Allocator {
   };
   DecodeValueSlotState decode_value_slot_state_[4];
   DecodeValueSlotState decode_zero_state_;
+  DecodeValueSlotState decode_token_state_;
+  struct DecodeIdxSlotState {
+    Buffer buf{nullptr};
+    int64_t* host{nullptr};  // pinned, 4 KB, persistent: word 0 = the token shadow (the Load path's host source), words 1..4 = the per-gather pointer shadows (the H2D host sources, rewritten in place by the gather op every step)
+    void* data{nullptr};  // device, 4 KB, persistent: word 0 = the token slot, words 1..4 = the per-gather pointer slots
+  };
+  DecodeIdxSlotState decode_idx_state_;
+  bool idx_slot_armed_{false};  // set by the token Load (previous step's tail, before the arm/prepare), consumed by the step's first single-row gather; NOT cleared by the arena reset, so it survives to the step's first gather
+  int decode_idx_stage_seq_{0};  // in-step gather ordinal (reset with the arena)
+  void decode_idx_ptrs_init_locked();  // materialize the 4 pointer pairs (caller holds mutex_)
   size_t decode_slot3_cursor_{0};
 };
 

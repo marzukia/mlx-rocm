@@ -1,6 +1,7 @@
 // Copyright © 2024 Apple Inc.
 
 #include <hip/hip_runtime.h>
+#include "mlx/backend/rocm/w1probe.h"
 
 #include <algorithm>
 #include <mutex>
@@ -102,6 +103,7 @@ bool staged_write(io::Writer& out, const array& a) {
     // hipMemcpyDefault infers direction from pointer attributes and picks the
     // fastest engine (measured 50.4 GB/s vs 10.4 GB/s for an explicit D2H).
     hipError_t err = hipMemcpy(pin, src + off, c, hipMemcpyDefault);
+    w1probe::api_log("hipMemcpy(staged_d2h)", pin, src + off, c, (int)err);
     g1_check_hip("hipMemcpy D2H (staged_write)", err);
     if (err != hipSuccess) {
       std::ostringstream oss;

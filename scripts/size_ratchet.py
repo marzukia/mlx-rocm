@@ -30,6 +30,9 @@ EXCLUDE = [
     re.compile(r"\.venv"),
     re.compile(r"__pycache__"),
     re.compile(r"(^|/)migrations/"),
+    # The vendored box SoT tree (PR #34 catch-up sync, state dcd1c69): byte-verbatim
+    # with the box, not lane code — the size gate must not see the 256 synced box files.
+    re.compile(r"(^|/)vendor/mlx-rocm-upstream/"),
 ]
 
 # Anchor to the repo root (the parent of scripts/) so the gate is cwd-independent.

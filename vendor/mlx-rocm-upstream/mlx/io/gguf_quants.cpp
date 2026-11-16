@@ -4,6 +4,7 @@
 #include <cstring>
 #include <numeric>
 
+#include "mlx/allocator.h"
 #include "mlx/io/gguf.h"
 
 namespace mlx::core {
@@ -168,6 +169,77 @@ void gguf_load_quantized(
       name.substr(0, name.length() - weight_suffix.length());
   check_insert(a.emplace(name_prefix + ".scales", std::move(scales)));
   check_insert(a.emplace(name_prefix + ".biases", std::move(biases)));
+}
+
+// WS3: K-quant (Q2_K/Q5_K/Q6_K) tensors are stored as the raw compressed
+// byte stream (no re-quantization, no CPU dequant): dtype uint8, shape
+// {nblocks, block_bytes}. Block geometry is format-level constants:
+// Q2_K 84 B / 256, Q5_K 176 B / 256, Q6_K 210 B / 256. The consumer
+// dequantizes on the GPU at GEMM time via fast::kquant_dequantize
+// (mx.rocm.kq_dequant; ktype = the GGUF type code).
+void gguf_load_kquant_raw(
+    std::unordered_map<std::string, array>& a,
+    const gguf_tensor& tensor) {
+  static const struct {
+    uint32_t type;
+    int bytes_per_block;
+    int elems_per_block;
+  } ktypes[] = {
+      {GGUF_TYPE_Q2_K, 84, 256},
+      {GGUF_TYPE_Q5_K, 176, 256},
+      {GGUF_TYPE_Q6_K, 210, 256},
+  };
+  std::string name(tensor.name, tensor.namelen);
+  int bpb = -1;
+  int epb = -1;
+  for (const auto& kt : ktypes) {
+    if (kt.type == tensor.type) {
+      bpb = kt.bytes_per_block;
+      epb = kt.elems_per_block;
+    }
+  }
+  if (bpb < 0) {
+    std::ostringstream msg;
+    msg << "[load_gguf] K-quant tensor '" << name
+        << "' has an unsupported type " << tensor.type
+        << " (expected Q2_K/Q5_K/Q6_K). Perhaps an incomplete download "
+           "or corrupt file?";
+    throw std::runtime_error(msg.str());
+  }
+  uint64_t nelem = 1;
+  for (int i = 0; i < tensor.ndim; ++i) {
+    nelem *= tensor.dim[i];
+  }
+  if (nelem % (uint64_t)epb != 0) {
+    std::ostringstream msg;
+    msg << "[load_gguf] K-quant tensor '" << name
+        << "' has an element count that is not a multiple of the "
+           "quantization block size. Perhaps an incomplete download or "
+           "corrupt file?";
+    throw std::runtime_error(msg.str());
+  }
+  uint64_t nblocks = nelem / (uint64_t)epb;
+  if (tensor.weights_data == nullptr) {
+    std::ostringstream msg;
+    msg << "[load_gguf] K-quant tensor '" << name
+        << "' has a NULL data pointer. Perhaps an incomplete download or "
+           "corrupt file?";
+    throw std::runtime_error(msg.str());
+  }
+  if (tensor.bsize != nblocks * (uint64_t)bpb) {
+    std::ostringstream msg;
+    msg << "[load_gguf] K-quant tensor '" << name
+        << "' has a compressed byte size that does not match the "
+           "K-quant block geometry. Perhaps an incomplete download or "
+           "corrupt file?";
+    throw std::runtime_error(msg.str());
+  }
+  size_t nbytes = (size_t)nblocks * (size_t)bpb;
+  array loaded_array(
+      allocator::malloc(nbytes),
+      Shape{(ShapeElem)nblocks, (ShapeElem)bpb},
+      uint8);
+  a.insert({name, loaded_array});
 }
 
 } // namespace mlx::core

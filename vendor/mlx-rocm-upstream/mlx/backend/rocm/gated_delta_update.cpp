@@ -214,7 +214,31 @@ void GatedDeltaUpdate::eval_gpu(
   if (std::getenv("MLX_GDN_DEBUG")) fprintf(stderr, "GDN-DBG pre-out-set\n");
   out.set_data(mlx::core::rocm::malloc_async(out.nbytes(), encoder));
   if (std::getenv("MLX_GDN_DEBUG")) fprintf(stderr, "GDN-DBG post-out-set\n");
-  state.set_data(mlx::core::rocm::malloc_async(state.nbytes(), encoder));
+  if (rocm::graph_decode_mode() && h0.flags().row_contiguous &&
+      state.nbytes() == h0.nbytes()) {
+    // GD (R4-fix v2.1): in-place state update in graph decode mode. A fresh
+    // per-step state allocation is the R3/R4 stale-read class for a
+    // cross-step dependency: at the capture the node reads the PREVIOUS
+    // (persistent, pre-capture) state buffer P and writes the FRESH per-
+    // step buffer X; at replay the recorded node reads P FOREVER (the
+    // state at the capture step) while the host-side state has moved to X
+    // — the state never accumulates across replay steps (the first
+    // replay step coincidentally matches: P was the correct previous
+    // state at that moment). Aliasing the output to the input buffer
+    // (the recurrent kernel reads its whole tile into registers before
+    // writing — verified in-place safe) makes read and write hit the SAME
+    // stable VA: at replay the node reads the state the PREVIOUS launch
+    // wrote. The buffer stays alive (the host cache holds it; the shared
+    // ptr keeps it). Non-graph-decode keeps the fresh allocation.
+    state.copy_shared_buffer(hc);
+    if (std::getenv("MLX_GDN_DEBUG")) {
+      fprintf(stderr, "GDN-DBG in-place state alias h0=%p state=%p\n",
+              (void*)h0.data_shared_ptr().get(),
+              (void*)state.data_shared_ptr().get());
+    }
+  } else {
+    state.set_data(mlx::core::rocm::malloc_async(state.nbytes(), encoder));
+  }
   if (std::getenv("MLX_GDN_DEBUG")) fprintf(stderr, "GDN-DBG post-state-set\n");
   if (std::getenv("MLX_GDN_DEBUG")) {
     fprintf(stderr,

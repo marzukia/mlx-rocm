@@ -177,9 +177,14 @@ set(HIP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/gemms/gemv.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/gemms/naive_gemm.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/quantized/affine_quantize.hip
+    ${CMAKE_CURRENT_SOURCE_DIR}/quantized/kquants.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/quantized/fp_quantize.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/quantized/convert_fp8.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/quantized/qmm.hip
+    ${CMAKE_CURRENT_SOURCE_DIR}/quantized/mmq/mmq.hip
+    ${CMAKE_CURRENT_SOURCE_DIR}/quantized/mmq/mmq-host.hip
+    ${CMAKE_CURRENT_SOURCE_DIR}/quantized/kquant_q4k.hip
+    ${CMAKE_CURRENT_SOURCE_DIR}/quantized/kquant_file_gemm.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/quantized/qmv_tiled_kernel.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/conv/gemm_conv.hip)
 

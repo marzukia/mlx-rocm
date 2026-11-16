@@ -10,6 +10,7 @@
 #include "mlx/utils.h"
 
 #include <chrono>
+#include <execinfo.h>
 #include <sys/user.h>
 #include <sys/syscall.h>
 #include <cstdio>
@@ -81,6 +82,8 @@ std::atomic<long> g_inline_launches_{0};
 // skip the host callback and signal completion inline instead (see Worker).
 std::atomic<bool> g_decode_capturing{false};
 std::atomic<int> g_decode_capture_slot{0};
+std::atomic<int> g1_token_ids_n{0};
+std::atomic<int> g1_token_ids_sz{8};
 
 // G1X_OFF: env-gate the G1X deep copy (isolation test).
 static bool g1x_off() {
@@ -286,6 +289,22 @@ static void g1_prelaunch_slot_h2d(hipStream_t st) {
       }
     }
   }
+  // GD-idx (t1099 R3): the token idx slot is re-delivered from its persistent
+  // pinned buffer as well: it covers the case where the capture's direct H2D
+  // was not recorded (discarded by the runtime), and is a redundant no-op
+  // (same value) otherwise. Ordered before the graph launch on the same
+  // stream, so the slot holds the current step's token when the baked-in
+  // embedding gather reads it.
+  auto ixs = alc.decode_idx_slot();
+  if (ixs.host && ixs.data) {
+    hipError_t e = hipMemcpyAsync(
+        ixs.data, ixs.host, 16, hipMemcpyHostToDevice, st);
+    g1_check_hip("hipMemcpyAsync (pre-launch idx-slot H2D)", e);
+    if (logh) {
+      fprintf(stderr, "[g1h] idxslot %p <- 16B\n", ixs.data);
+      fflush(stderr);
+    }
+  }
   // The idx (zero) slot must read 0 at every launch: the capture step's kernels can leave arena garbage in it (and nothing re-zeroes it), which a gather then reads as an index -> off-arena fault address.
   auto zs = alc.decode_zero_slot();
   if (zs.data) {
@@ -296,12 +315,36 @@ static void g1_prelaunch_slot_h2d(hipStream_t st) {
       fflush(stderr);
     }
   }
+  // The token-id slot (the S>1 verify subgraph): deliver the current step's
+  // [1, S] token ids to the fixed VA before every launch. The verify
+  // gather's eval fills the pinned buffer and sets g1_token_ids_n each step;
+  // the captured H2D node was neutralized at end_record, so this pre-launch
+  // copy is what the replayed graph's gather reads. 0 (not filled this
+  // step): skip (a T=1 launch's graph does not read the token VA).
+  auto ts = alc.decode_token_slot();
+  int tn = g1_token_ids_n.load(std::memory_order_relaxed);
+  if (ts.host && ts.data && tn > 0) {
+    int tsz = g1_token_ids_sz.load(std::memory_order_relaxed);
+    if (tsz < 4 || tsz > 8)
+      tsz = 8;
+    if (tn > 64)
+      tn = 64;
+    // The pinned host buffer is 512 B (64 x int64); never read past it.
+    while (tn > 1 && (long)tn * tsz > 512)
+      tn--;
+    hipError_t e = hipMemcpyAsync(ts.data, ts.host, (size_t)tn * tsz,
+                                 hipMemcpyHostToDevice, st);
+    g1_check_hip("hipMemcpyAsync (pre-launch token-id H2D)", e);
+    if (logh) {
+      fprintf(stderr, "[g1h] token %p <- %d ids\n", ts.data, tn);
+      fflush(stderr);
+    }
+  }
 }
 // G1H2D: record each in-graph H2D memcpy node's (host_src, dev_dst, bytes) into the slot's staging list and neutralize the node (0-byte copy) so it cannot overwrite the pre-launch-delivered value mid-graph with a stale one. Runs once per capture, on the source graph BEFORE the exec is (re)instantiated, so the instantiated exec carries the neutralized nodes. The [g1m] memcpy lines (original params) are dumped here so the diagnostic shows the values as captured.
 void CommandEncoder::decode_capture_record_neutralize_h2d(int slot,
                                                        hipGraph_t g) {
-  slot &= 1;
-  if (slot < 0 || slot > 1)
+  if (slot < 0 || slot >= 4)
     slot = 0;
   g1h2d_recs_[slot].clear();
   size_t qn = 0;
@@ -370,13 +413,24 @@ void CommandEncoder::decode_capture_record_neutralize_h2d(int slot,
 }
 // G1H2D: re-deliver the recorded in-graph H2D staging values on the launch stream immediately before hipGraphLaunch (same pattern as g1_prelaunch_slot_h2d): a plain stream op ordered before every graph node, so the device staging buffer holds the current host value when the graph's kernels read it.
 void CommandEncoder::g1_prelaunch_recorded_h2d(int slot, hipStream_t st) {
-  slot &= 1;
+  if (slot < 0 || slot >= 4)
+    slot = 0;
   if (!graph_decode_mode())
     return;
   if (const char* e = std::getenv("MLX_G1_NO_PREH2D"); e && e[0] == '1')
     return;
   const bool logh = std::getenv("MLX_G1_H2DLOG") != nullptr;
   for (auto& r : g1h2d_recs_[slot]) {
+    // GD-idx (t1099 R3): re-deliver only from the persistent staging buffers.
+    // A per-step source (the old Load path's fresh pinned buffer) is freed at
+    // step end; copying from it here is a UAF read of the stale capture-step
+    // value (the R2 collapse's re-delivery leg). Its neutralized in-graph
+    // node already does nothing, so skipping loses nothing. The token load's
+    // record now sources the persistent idx-slot host and delivers the new
+    // value (redundant with the eval-time copy; same value).
+    if (!rocm::allocator().is_persistent_staging_host(r.host_src)) {
+      continue;
+    }
     hipError_t e = hipMemcpyAsync(r.dev_dst, r.host_src, r.bytes,
                                  hipMemcpyHostToDevice, st);
     g1_check_hip("hipMemcpyAsync (pre-launch recorded H2D)", e);
@@ -1294,6 +1348,18 @@ inline void g1_record_first(const char* call, int code, const char* msg,
 void g1_check_hip(const char* call, hipError_t err, const char* phase) {
   if (err == hipSuccess)
     return;
+  auto& fe = g1_first_error();
+  if (!fe.reported.load() && g1_fe_on() &&
+      g_decode_capturing.load(std::memory_order_relaxed)) {
+    // First in-capture error: dump the call stack. A 906 (a legacy-stream
+    // copy against a capturing stream) needs its caller named to fix the
+    // root cause; the log line alone says which HIP call, not who ran it.
+    void* bt[96];
+    int n = backtrace(bt, 96);
+    fprintf(stderr, "[g1fe] first-error backtrace (%d frames) at %s\n",
+            n, call);
+    backtrace_symbols_fd(bt, n, 2);
+  }
   g1_record_first(call, static_cast<int>(err), hipGetErrorString(err), phase);
 }
 void g1_check_rocblas(const char* call, rocblas_status st) {
@@ -1445,8 +1511,8 @@ static void g1_prewarm_rocblas(Device& dev, hipStream_t stream) {
 // those fixed buffers before each relaunch.
 
 void* CommandEncoder::decode_capture_persist_alloc(size_t n) {
-  int slot = g_decode_capture_slot.load(std::memory_order_relaxed) & 1;
-  if (slot < 0 || slot > 1)
+  int slot = g_decode_capture_slot.load(std::memory_order_relaxed);
+  if (slot < 0 || slot >= 4)
     slot = 0;
   auto blk = std::make_shared<std::vector<uint8_t>>(n + 128);
   decode_cap_keepalive_[slot].push_back(blk);
@@ -1454,8 +1520,8 @@ void* CommandEncoder::decode_capture_persist_alloc(size_t n) {
 }
 
 void CommandEncoder::decode_capture_keep(std::shared_ptr<void> p) {
-  int slot = g_decode_capture_slot.load(std::memory_order_relaxed) & 1;
-  if (slot < 0 || slot > 1)
+  int slot = g_decode_capture_slot.load(std::memory_order_relaxed);
+  if (slot < 0 || slot >= 4)
     slot = 0;
   decode_cap_keepalive_[slot].push_back(std::move(p));
 }
@@ -1509,12 +1575,14 @@ bool CommandEncoder::decode_capture_begin(int slot) {
   // was previously never set, so the capture step's first GEMM could hit
   // hipBLASLt's non-capturable lazy init).
   set_stream_capturing(true);
+  set_capture_stream(stream_);
   hipError_t e =
       hipStreamBeginCapture(stream_, hipStreamCaptureModeGlobal);
   g1_check_hip("hipStreamBeginCapture", e, "begin");
   if (e != hipSuccess) {
     g_decode_capturing.store(false, std::memory_order_relaxed);
     set_stream_capturing(false);
+    set_capture_stream(nullptr);
     (void)hipGetLastError();
     static const bool dbg = std::getenv("MLX_PURE_DEBUG") != nullptr;
     if (dbg)
@@ -1538,7 +1606,8 @@ bool CommandEncoder::decode_capture_begin(int slot) {
 
 bool CommandEncoder::decode_capture_end_record(int slot) {
   device_.make_current();
-  slot &= 1;
+  if (slot < 0 || slot >= 4)
+    slot = 0;
   static const bool dbg = std::getenv("MLX_PURE_DEBUG") != nullptr;
   if (g1_trace_on()) {
     hipStreamCaptureStatus st = hipStreamCaptureStatusNone;
@@ -1561,6 +1630,14 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
   g1_check_hip("hipStreamEndCapture", ee, "end");
   g_decode_capturing.store(false, std::memory_order_relaxed);
   set_stream_capturing(false);
+  set_capture_stream(nullptr);
+  // GD-idx (R4): the staging-source seed is delivered IN-window as a
+  // recorded memcpy node (the fresh-capture gather branch records an
+  // async H2D from the pinned shadow, or a D2D from the per-step idx
+  // buffer which the recorded buffer-creation H2D precedes in stream
+  // order) — no blocking copy is needed between the EndCapture and the
+  // deferred buffer frees, and the first graph launch carries the
+  // capture step's token.
   // Run the completion handlers (buffer frees) that were deferred during the
   // capture. Doing this now (after the stream is no longer capturing) avoids
   // the cross-thread hipFreeAsync invalidating the capture.
@@ -2139,7 +2216,8 @@ bool CommandEncoder::decode_capture_end_record(int slot) {
 }
 
 bool CommandEncoder::decode_capture_replay(int slot) {
-  slot &= 1;
+  if (slot < 0 || slot >= 4)
+    slot = 0;
   if (!decode_cap_exec_[slot])
     return false;
   device_.make_current();
@@ -2154,7 +2232,7 @@ bool CommandEncoder::decode_capture_replay(int slot) {
 }
 
 void CommandEncoder::decode_capture_destroy() {
-  for (int s = 0; s < 2; ++s) {
+  for (int s = 0; s < 4; ++s) {
     if (decode_cap_exec_[s]) {
       (void)hipGraphExecDestroy(decode_cap_exec_[s]);      decode_cap_exec_[s] = nullptr;
       decode_cap_keepalive_[s].clear();
@@ -2358,6 +2436,27 @@ void CommandEncoder::commit() {
 }
 
 void CommandEncoder::synchronize() {
+  // S>1 fix: synchronize() on an actively-capturing stream deadlocks (a
+  // capturing stream never goes idle). Reached when a primitive throws
+  // mid-capture and the eval error path syncs the open stream. Abort the
+  // capture instead: the pilot sees end_record fail and cools down to
+  // eager (the capture is broken by the throw anyway; no hang).
+  hipStreamCaptureStatus cs = hipStreamCaptureStatusNone;
+  (void)hipStreamIsCapturing(stream_, &cs);
+  if (cs == hipStreamCaptureStatusActive) {
+    fprintf(stderr,
+            "[g1] synchronize() on a capturing stream: aborting capture "
+            "(hang safety net)\n");
+    g_decode_capturing.store(false, std::memory_order_relaxed);
+    set_stream_capturing(false);
+    set_capture_stream(nullptr);
+    hipGraph_t stale = nullptr;
+    (void)hipStreamEndCapture(stream_, &stale);
+    if (stale)
+      (void)hipGraphDestroy(stale);
+    (void)hipGetLastError();
+    return;
+  }
   (void)hipStreamSynchronize(stream_);
   auto p = std::make_shared<std::promise<void>>();
   std::future<void> f = p->get_future();
@@ -2385,6 +2484,18 @@ void set_stream_capturing(bool v) {
   g_stream_capturing.store(v, std::memory_order_relaxed);
 }
 
+// GD-idx (R4): the stream currently recording a graph capture, so that
+// pinned-memory flushes (allocator::shadow_chunked_copy) can be RECORDED
+// (hipMemcpyAsync on the capture stream -> replayed at the launch) instead
+// of run as a blocking hipMemcpy, which 906s inside a capture window and
+// taints the stream (the R4 re-capture crash: the fill-loop gpu_ptr flush
+// of the per-step idx buffer fired in-window on the re-capture, where the
+// buffer's pinned shadow exists, and every later launch failed with
+// "operation failed due to a previous error during capture").
+static hipStream_t g_capture_stream{nullptr};
+hipStream_t capture_stream() { return g_capture_stream; }
+void set_capture_stream(hipStream_t s) { g_capture_stream = s; }
+
 std::atomic<bool> g_graph_active{false};
 bool graph_active() {
   return g_graph_active.load(std::memory_order_relaxed);
@@ -2407,6 +2518,33 @@ bool graph_decode_mode() {
 }
 void set_graph_decode_mode(bool v) {
   g_graph_decode_mode.store(v, std::memory_order_relaxed);
+}
+
+bool graph_decode_env_enabled() {
+  static const bool enabled = [] {
+    const char* e = std::getenv("MLX_GRAPH_DECODE");
+    return !(e && std::string(e) == "0");
+  }();
+  return enabled;
+}
+
+// GD-idx (R4): persistent post-arm token-delivery state for the Load small
+// path. The per-step token Load is evaluated in the previous step's tail
+// (after the argmax, before the arm and before the next step's first op),
+// i.e. outside the per-window staging-mode window, so the Load path must gate
+// on a flag that survives between windows: set when the pilot arms (or a
+// capture/replay step's arena is prepared), cleared on teardown and on the
+// big/micro retract. True from the first arm until teardown.
+static std::atomic<bool> g_gd_idx_persistent{false};
+bool gd_idx_persistent() {
+  static const bool enabled = [] {
+    const char* e = std::getenv("MLX_GRAPH_DECODE");
+    return !(e && std::string(e) == "0");
+  }();
+  return enabled && g_gd_idx_persistent.load(std::memory_order_relaxed);
+}
+void set_gd_idx_persistent(bool v) {
+  g_gd_idx_persistent.store(v, std::memory_order_relaxed);
 }
 
 std::unordered_map<int, Device>& get_devices() {

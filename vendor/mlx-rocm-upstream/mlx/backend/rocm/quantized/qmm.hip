@@ -6,6 +6,7 @@
 #include "mlx/backend/rocm/gemms/hipblaslt_gemm.h"
 #include "mlx/backend/rocm/gemms/rocblas_gemm.h"
 #include "mlx/backend/rocm/kernel_utils.hpp"
+#include "mlx/backend/rocm/quantized/mmq/mmq.hip"
 #include "mlx/backend/rocm/quantized/quantized.h"
 #include "mlx/backend/rocm/quantized/qmv_tiled_kernel.hip"
 #include "mlx/backend/rocm/quantized/qmv_lx_kernel.hip"
@@ -21,6 +22,7 @@ __device__ inline float load_scale_value(ScaleT raw);
 #include "mlx/backend/rocm/quantized/qmv_wide_mr_kernel.hip"
 #include "mlx/backend/rocm/quantized/qmv_rows_msg_kernel.hip"
 #include "mlx/backend/rocm/quantized/qmv_wide_mr3_kernel.hip"
+#include "mlx/backend/rocm/quantized/qmv_wide_mr3_pref_kernel.hip"
 #include "mlx/primitives.h"
 
 #include <hip/hip_bfloat16.h>
@@ -30,6 +32,14 @@ __device__ inline float load_scale_value(ScaleT raw);
 #include <rocblas/rocblas.h>
 #include <algorithm>
 #include <numeric>
+#include <atomic>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
+#include <unordered_set>
+#include "mlx/backend/rocm/w1probe.h"
+
+
 // rocWMMA is only supported on CDNA (gfx9xx) and RDNA 3+ (gfx11xx, gfx12xx).
 // Guard the include so it doesn't trigger static_assert on RDNA 1/2 (gfx10xx).
 // During host compilation __HIP_DEVICE_COMPILE__ is 0 so rocwmma defines
@@ -3573,6 +3583,10 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   out.set_data(mlx::core::rocm::malloc_async(out.nbytes(), enc));
 
+
+
+
+
   array x = ensure_row_contiguous_matrix(inputs[0], enc, s);
   array w = ensure_row_contiguous_matrix(inputs[1], enc, s);
   array scales = ensure_row_contiguous_matrix(inputs[2], enc, s);
@@ -3592,6 +3606,98 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   int K = x.shape(-1);
   int M = out.shape(-2);
   int N = out.shape(-1);
+
+  {
+    static std::atomic<int> qmm_gate_dbg{0};
+    if (qmm_gate_dbg.fetch_add(1) == 0 &&
+        std::getenv("MLX_Q8_0_MMQ") && std::getenv("MLX_Q8_0_MMQ")[0] == '1') {
+      fprintf(stderr,
+          "[mmq-gate-dbg] transpose_=%d bits_=%d gs_=%d has_bias=%d M=%d N=%d K=%d "
+          "xdt=%d outdt=%d\n",
+          (int)transpose_, bits_, group_size_, (int)has_bias, M, N, K,
+          static_cast<int>(x.dtype().val()), static_cast<int>(out.dtype().val()));
+    }
+  }
+
+  // W1 GDN prefill fix (2026-11-14): the llama b2766e3 mmq (the int8 matmul) -
+  // x f32 (the affine op promotes it) -> Q8_0 prequant, weights mlx G64 4-bit affine -> Q8_1 (per call,
+  // decode -> int8 in the kernel, the same dp4a core); dst f32 direct (bf16 out: f32 temp + convert).
+  // Opt-in: MLX_Q8_0_MMQ=1. Dense (no MoE), affine G64 with bias only.
+  if (std::getenv("MLX_Q8_0_MMQ") && std::getenv("MLX_Q8_0_MMQ")[0] == '1' &&
+      transpose_ && bits_ == 4 && group_size_ == 64 && has_bias && M > 8 && M % 32 == 0 &&
+      K % 128 == 0 && N % 16 == 0 && x.dtype() == float32 &&
+      (out.dtype() == bfloat16 || out.dtype() == float32)) {
+    static std::atomic<int> mmq_dispatch_count{0};
+    const int mmq_c = mmq_dispatch_count.fetch_add(1);
+    if (mmq_c == 0) {
+      fprintf(stderr, "[mmq] first dispatch: M=%d N=%d K=%d (MLX_Q8_0_MMQ=1)\n",
+              M, N, K);
+    }
+    ::rocm::mmq_q8_0_g64(
+        gpu_ptr<const float>(x), gpu_ptr<const uint32_t>(w),
+        gpu_ptr<const float>(scales), gpu_ptr<const float>(biases.value()),
+        out.data<char>(), out.dtype() == float32, M, N, K,
+        static_cast<hipStream_t>(enc.stream()));
+    return;
+  }
+
+  // W1 in_ba non-repro PROBE v7 (cloudy order 2026-11-13, step 1b):
+  // handout-state capture of out + x + w + scales for the fused N=64 GEMM
+  // class (K=4096, 4-bit, transpose), one per distinct M; decision log;
+  // pointer-classified reads (host-pinned pool = plain host read).
+  if (const char* w1ap = std::getenv("MLX_W1_INBA_ALLOC_PROBE");
+      w1ap && w1ap[0] == '1') {
+    if (transpose_ && bits_ == 4 && out.shape(-1) == 64 &&
+        inputs[0].shape(-1) == 4096) {
+      int pm = out.shape(-2);
+      static std::mutex w1ap_mx;
+      static std::unordered_set<int> w1ap_done;
+      static std::atomic<int> w1ap_seq{0};
+      std::lock_guard<std::mutex> lk(w1ap_mx);
+      if (w1ap_done.insert(pm).second) {
+        fprintf(stderr,
+                "[w1inba-decision] M=%d N=%d K=%d bits=%d gs=%d transpose=1 "
+                "wmma_env=%s native=%d\n",
+                pm, N, K, bits_, group_size_,
+                std::getenv("MLX_ROCM_WMMA_QMM")
+                    ? std::getenv("MLX_ROCM_WMMA_QMM")
+                    : "(unset)",
+                (int)d.has_native_wmma());
+        auto w1cap = [&](const char* role, const array& a) {
+          size_t nb = a.nbytes();
+          void* srcp = const_cast<void*>(a.buffer().ptr());
+          if (srcp == nullptr || nb == 0)
+            return;
+          unsigned int sq = w1ap_seq.fetch_add(1);
+          std::vector<unsigned char> host(nb + 32, 0);
+          int rc = w1probe::read_buf(srcp, nb, host,
+                                     static_cast<hipStream_t>(enc.stream()));
+          unsigned int crc = 0;
+          for (size_t i = 32; i < host.size(); i++)
+            crc = (crc >> 5) ^ (crc << 27) ^ host[i];
+          const unsigned int hd[8] = {
+              sq, (unsigned)pm, (unsigned)N, (unsigned)K, (unsigned)nb, crc,
+              (unsigned)bits_, (unsigned)group_size_};
+          memcpy(host.data(), hd, 32);
+          const char* tag = std::getenv("W1_PROBE_TAG");
+          char path[320];
+          snprintf(path, sizeof(path), "/tmp/w1inba_ap_%s_M%d_%s.bin",
+                   tag ? tag : "x", pm, role);
+          FILE* f = fopen(path, "wb");
+          if (f) {
+            fwrite(host.data(), 1, host.size(), f);
+            fclose(f);
+          }
+          fprintf(stderr, "[w1inba-cap] M=%d role=%s nb=%zu rc=%d ptr=%p crc=%08x\n",
+                  pm, role, nb, rc, srcp, crc);
+        };
+        w1cap("out", out);
+        w1cap("x", x);
+        w1cap("w", w);
+        w1cap("sc", scales);
+      }
+    }
+  }
 
   int64_t matrix_size = static_cast<int64_t>(M) * N;
   int batch_count = static_cast<int>(out.size() / matrix_size);
@@ -3776,6 +3882,30 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
           lru.splice(lru.begin(), lru, it->second.lru_it);
           w_dequant = it->second.weight;
           cache_hit = true;
+        }
+      }
+
+      if (w1probe::enabled() && N == 64 && K == 4096 && bits_ == 4 &&
+          transpose_) {
+        static std::mutex w1deq_mx;
+        static std::unordered_set<int> w1deq_done;
+        std::lock_guard<std::mutex> w1deq_lk(w1deq_mx);
+        if (w1deq_done.insert(M).second) {
+          size_t wq_nbytes = w_dequant.nbytes();
+          void* wq_ptr = w_dequant.buffer().ptr();
+          std::vector<unsigned char> wq_host;
+          int wq_rc = w1probe::read_buf(wq_ptr, wq_nbytes, wq_host,
+                                        static_cast<hipStream_t>(enc.stream()));
+          unsigned int wq_crc = 0;
+          for (unsigned char c : wq_host)
+            wq_crc = (wq_crc >> 5) ^ (wq_crc << 27) ^ c;
+          fprintf(stderr,
+                  "[w1inba-dequant] M=%d hit=%d cache_n=%zu cached_bytes=%zu "
+                  "wq_nbytes=%zu wq_ptr=%p wq_crc=%08x wq_rc=%d "
+                  "x_ptr=%p w_ptr=%p sc_ptr=%p\n",
+                  M, (int)cache_hit, cache.size(), cached_bytes, wq_nbytes,
+                  wq_ptr, wq_crc, wq_rc,
+                  x.buffer().ptr(), w.buffer().ptr(), scales.buffer().ptr());
         }
       }
 
@@ -4144,20 +4274,52 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
       static int mr2_min_n_env = parse_non_negative_int_env("MLX_QMV_MR2_MIN_N", 0);
       int mr2_min_n = (mr2_min_n_env > 0) ? mr2_min_n_env : 16384;
       // t1253: rows-msg — multi-row QMV with shared weight decode (the MTPLX msg morphology ported to gfx1201/HIP; see qmv_rows_msg_kernel.hip). One workgroup = 6 waves, each wave owns BN=4 columns and all M rows in a 16- accumulator array; full-K lane-strided over 128-bit pack- interleaved weight loads; each 4/8-bit weight tile is decoded once and MAC'd against all rows (one shared weight-tile read regardless of M). No LDS, no barriers. Per-row math transcribes qmv_wide verbatim (row-exact contract: output row r == quantized_matmul(x[r:r+1]) bit for bit). Large-N band (N >= rows_min_n). OPT-IN ONLY: MLX_ROCM_QMV_ROWS=1 (DEFAULT OFF — zero behavior change when unset); band floor: MLX_ROCM_QMV_ROWS_MIN_N (default 16384).
-      static bool use_rows_qmv = (std::getenv("MLX_ROCM_QMV_ROWS") != nullptr);
+      // W1-FIX 2026-11-10 (OP ruling: the verify_wall 20.8-vs-16.0 regression
+      // is code, not machine): the record 1024 battery ran QMV_ROWS=1
+      // (rows_msg for N >= 16384, 4-bit M=2..4); the k2arm reference arms ran
+      // it unset (mr2) and the per-class span table names the Q4 tiling as the
+      // carrier. DEFAULT ON, opt out with MLX_ROCM_QMV_ROWS=0. The row-exact
+      // contract is unchanged (per-row math transcribes qmv_wide; bit-exact vs
+      // the reference quantized_matmul). M=1 dispatch untouched.
+      const char* w1fix_rows_env = std::getenv("MLX_ROCM_QMV_ROWS");
+      static bool use_rows_qmv =
+          (w1fix_rows_env == nullptr) || (w1fix_rows_env[0] != '0');
       static bool use_hoist =
           (std::getenv("MLX_ROCM_QMV_ROWS_HOIST") != nullptr);
       static int rows_min_n_env =
           parse_non_negative_int_env("MLX_ROCM_QMV_ROWS_MIN_N", 0);
+      // F3-M4X (120+ lane, per RCA-r3 section 6.1 + RCA-r1 section 3.8):
+      // two pre-registered M=4 variants, both DEFAULT OFF (zero behavior
+      // change when unset; the K=2 / M=3 record path is untouched).
+      // VARIANT A (MLX_ROCM_M4ROWEXACT): at M = 4 (the K = 3 verify
+      // lm_head shape) skip the unproven rows_msg and fall through to
+      // the proven row-exact shared-decode record kernel (qmv_wide_mr3,
+      // 4-bit; 8-bit falls to the per-row wide / mr2 path). Structural
+      // bit-exactness: the per-row FMA order is the verbatim qmv_wide
+      // traversal (audit: rows_msg per-row math is already a verbatim
+      // transcription for all rows — no row 2/3-specific path; the
+      // audit found one lx 0.0f*Inf edge, fixed in-kernel).
+      // VARIANT B (MLX_ROCM_M4PREF): (a) the mr3 M = 4 arm runs the
+      // x-load-prefetch kernel (software-pipelined 16B x-tile double
+      // buffer across the k-loop; FMA order unchanged, bf16 x); (b)
+      // rows_msg at M = 4 launches the 3-wave (96-thread / 12-col)
+      // block split to relieve the 16-accumulator register-pressure /
+      // scheduler candidate (per-wave math unchanged).
+      static bool m4rexact =
+          (std::getenv("MLX_ROCM_M4ROWEXACT") != nullptr);
+      static bool m4pref =
+          (std::getenv("MLX_ROCM_M4PREF") != nullptr);
       int rows_min_n = (rows_min_n_env > 0) ? rows_min_n_env : 16384;
       bool rows_ok = use_rows_qmv && (M >= 2) && (M <= 4) &&
           (N >= rows_min_n) && (K % 32 == 0);
-      if (rows_ok) {
-        dim3 rblock(32 * 6);
-        dim3 rgrid((N + 23) / 24, 1);
+      if (rows_ok && !(m4rexact && M == 4)) {
+        // F3-M4X B(b): block split at M = 4 (3 waves / 12 cols vs 6 / 24).
+        const int rw = (m4pref && M == 4 && !use_hoist) ? 3 : 6;
+        dim3 rblock(32 * rw);
+        dim3 rgrid((N + rw * 4 - 1) / (rw * 4), 1);
 #define LAUNCH_QMV_ROWS_MSG(TT, ST, GS, BV)                              \
   enc.add_kernel_node(                                                  \
-      &rocm::qmv_rows_msg_kernel<TT, ST, GS, BV>, rgrid, rblock, 0u,   \
+      (rw == 3) ? &rocm::qmv_rows_msg_kernel<TT, ST, GS, BV, 3> : &rocm::qmv_rows_msg_kernel<TT, ST, GS, BV, 6>, rgrid, rblock, 0u,   \
       (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr,                 \
       (const ST*)biases_ptr, (TT*)out_ptr, M, N, K, has_bias)
 #define LAUNCH_QMV_ROWS_MSG_H(TT, ST, GS, BV)                              \
@@ -4201,7 +4363,8 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
           (x.dtype() != float32);
       bool mr2_ok = use_mr_qmv && mr2_f32_ok && (bits_ == 4) && (M >= 2) &&
           (M <= 4) && (K % 1024 == 0) && ((K / 4) % 32 == 0) &&
-          (N >= mr2_min_n) && (mr2_lds + 1024 <= 65536);
+          (N >= mr2_min_n) && (mr2_lds + 1024 <= 65536) &&
+          !(m4rexact && M == 4);
       if (mr2_ok) {
         dim3 mr2block(32, 16);
         dim3 mr2grid((N + 15) / 16, (M + 3) / 4);
@@ -4224,7 +4387,7 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
       }
       // M>=2: the multi-row kernel batches up to 4 rows per block to share one weight-tile read. At M=1 (eager decode) three of the four rows are padding: no bandwidth win, plus LDS staging + sync overhead. Measured on gfx1201 bare metal 2026-11-01: M=1 AR 77.39 tok/s with MR on vs 80.94 with MLX_QMV_NO_MR=1 (-4.5% eager tax). The multi-row win is real at M=2..4 (MTP verify / batch decode), where the shared weight read is fully utilized, so gate on M instead of defaulting off.
       bool mr_ok = use_mr_qmv && (M <= 4) && (M >= 2) && (mr_lds <= 32768) &&
-          (N >= mr2_min_n);  // t1251: small-N per-row wins (lab 2026-11-01)
+          (N >= mr2_min_n) && !(m4rexact && M == 4);  // t1251 + F3-M4X A
       // run-852: the MR kernel's in-k-loop __syncthreads (LX hoist) requires
       // uniform k-iteration counts across lanes: K % (32 * WPER) == 0
       // (K % 1024 == 0 for 4-bit, K % 512 == 0 for 8-bit). Shapes that do
@@ -4242,11 +4405,40 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
         // order). No LDS (x read directly from global with 16B vector
         // loads). Opt-in: MLX_ROCM_QMM_M3 (DEFAULT OFF — the per-row path
         // runs verbatim when unset).
-        static bool use_qmm_m3 = (std::getenv("MLX_ROCM_QMM_M3") != nullptr);
+        // W1-FIX 2026-11-10: DEFAULT ON, opt out with MLX_ROCM_QMM_M3=0 —
+        // the record 1024 battery ran QMM_M3=1 (qmv_wide_mr3, the dense
+        // multi-row wide kernel: one shared weight-tile dequant MAC'd against
+        // all M rows vs the per-row kernel's 3x weight re-read at M=3); the
+        // unset-env reference arms fell to the per-row wide / mr2 path and the
+        // per-class span table names the Q4 tiling as the regression carrier.
+        // Bit-identical per row (same values, same per-(row, col) FMA order);
+        // M=1 dispatch untouched.
+        const char* w1fix_m3_env = std::getenv("MLX_ROCM_QMM_M3");
+        static bool use_qmm_m3 =
+            (w1fix_m3_env == nullptr) || (w1fix_m3_env[0] != '0');
         bool m3ok = use_qmm_m3 && (bits_ == 4) && (M >= 2) && (M <= 4);
         if (m3ok) {
           dim3 m3block(32, 16);
           dim3 m3grid((N + 15) / 16, (M + 3) / 4);
+          // F3-M4X B(a): M = 4 x-load prefetch kernel (bf16 only — the
+          // double buffer is 16 uint4 = 64 VGPR per buffer).
+          if (m4pref && M == 4 && x.dtype() == bfloat16) {
+#define LAUNCH_QMV_WIDE_MR3P(TT, ST, GS)                              \
+  enc.add_kernel_node(                                                \
+      &rocm::qmv_wide_mr3_pref_kernel<TT, ST, GS>, m3grid, m3block, 0u, \
+      (const TT*)x_ptr, w_ptr, (const ST*)scales_ptr,             \
+      (const ST*)biases_ptr, (TT*)out_ptr, M, N, K, has_bias)
+#define LAUNCH_QMV_WIDE_MR3P_GS(TT, ST)                             \
+  do {                                                                  \
+    if (group_size_ == 32) { LAUNCH_QMV_WIDE_MR3P(TT, ST, 32); }   \
+    else if (group_size_ == 64) { LAUNCH_QMV_WIDE_MR3P(TT, ST, 64); } \
+    else { LAUNCH_QMV_WIDE_MR3P(TT, ST, 128); }                      \
+  } while (0)
+            LAUNCH_QMV_WIDE_MR3P_GS(hip_bfloat16, hip_bfloat16);
+#undef LAUNCH_QMV_WIDE_MR3P_GS
+#undef LAUNCH_QMV_WIDE_MR3P
+            return;
+          }
 #define LAUNCH_QMV_WIDE_MR3(TT, ST, GS)                                 \
   enc.add_kernel_node(                                                \
       &rocm::qmv_wide_mr3_kernel<TT, ST, GS>, m3grid, m3block, 0u,   \
@@ -4348,8 +4540,8 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   // MLX_QMV_IDOT so it's an opt-in A/B against the tiled path.
   static bool use_idot_qmv = (std::getenv("MLX_QMV_IDOT") != nullptr);
   if (use_idot_qmv && bits_ == 4 && mode_ == QuantizationMode::Affine &&
-      has_bias && transpose_ && batch_count == 1 && non_batched && M >= 1 &&
-      M <= 8 && (K % 8 == 0) && (K % group_size_ == 0) &&
+      transpose_ && batch_count == 1 && non_batched && M >= 1 &&
+      (K % 8 == 0) && (K % group_size_ == 0) &&
       (group_size_ == 32 || group_size_ == 64 || group_size_ == 128) &&
       (x.dtype() == bfloat16 || x.dtype() == float16)) {
     int ng = K / group_size_;

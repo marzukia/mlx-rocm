@@ -674,6 +674,24 @@ void init_fast(nb::module_& parent_module) {
                 LAST row (the post-pass conv state for cache[0]).
         )");
   m.def(
+      "mmul_q_glu",
+      &mlx::core::fast::mmul_q_glu,
+      "x"_a,
+      "w_up"_a,
+      "ws_up"_a,
+      "wb_up"_a,
+      "w_gate"_a,
+      "ws_gate"_a,
+      "wb_gate"_a,
+      "stream"_a = nb::none(),
+      R"(
+            GLU-fused quantized GEMM (R6 recipe item 1, the llama mmq dp4a
+            has_fusion port): out = up * silu(gate) with up = x @ W_up^T,
+            gate = x @ W_gate^T; W is mlx 4-bit affine G64 (raw + scales +
+            biases, group 64). Gated by MLX_GLU_MMQ=1 (DEFAULT OFF: the
+            fallback dequantize + matmul + silu chain).
+        )");
+  m.def(
       "lm_head_int2",
       &mlx::core::fast::lm_head_int2,
       "x"_a,
