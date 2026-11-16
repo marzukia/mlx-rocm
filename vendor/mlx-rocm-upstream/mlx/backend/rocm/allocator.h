@@ -38,6 +38,10 @@ struct RocmBuffer {
   // is host memory. Set at allocation. In-capture, raw_ptr() returns `data`
   // directly for host-backed buffers (a blocking legacy-stream D2H 906s).
   bool host_backed;
+  // B97-HBMFIX: set when `data` came from the synchronous hipMalloc
+  // fallback (async pool failed to extend); free must use hipFree,
+  // not hipFreeAsync (pool-memory-only).
+  bool sync_alloc;
 };
 
 // ---------------------------------------------------------------------------

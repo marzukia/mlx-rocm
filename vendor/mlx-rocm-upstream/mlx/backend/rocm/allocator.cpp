@@ -398,6 +398,18 @@ void RocmAllocator::free_async(RocmBuffer& buf, void* stream_v) {
   if (!buf.data) {
     return;
   }
+  if (buf.sync_alloc) {
+    // B97-HBMFIX: synchronous hipMalloc buffer (not pool memory):
+    // immediate hipFree is the only valid free.
+    if (getenv("MLX_WORKER_DEBUG")) {
+      fprintf(stderr, "[worker] FREE-SYNCALLOC ptr=%p size=%zu\n",
+              buf.data, buf.size);
+    }
+    hipError_t fs = hipFree(buf.data);
+    g1_check_hip("hipFree (sync_alloc)", fs, "worker");
+    buf.data = nullptr;
+    return;
+  }
   if (buf.device == -1) {
     unified_free(buf.data, buf.is_managed);
   } else if (
@@ -615,6 +627,26 @@ Buffer RocmAllocator::malloc_async(size_t size, int device, void* stream_v) {
         lock.unlock();
         if (!buf) {
           buf = try_device_alloc();
+        }
+        if (!buf) {
+          // B97-HBMFIX: the HSA async pool (memory pool) can fail to extend
+          // even with HBM physically free (BlockAllocator::alloc failed);
+          // fall back to synchronous hipMalloc (regular driver path).
+          void* sdata = nullptr;
+          hipError_t se = hipMalloc(&sdata, size);
+          (void)hipGetLastError();
+          if (se == hipSuccess && sdata) {
+            buf = new RocmBuffer{
+                sdata,
+                size,
+                /*is_managed=*/false,
+                device,
+                nullptr,
+                false,
+                nullptr,
+                false,
+                true /*sync_alloc*/};
+          }
         }
         if (!buf) {
           throw std::runtime_error(
