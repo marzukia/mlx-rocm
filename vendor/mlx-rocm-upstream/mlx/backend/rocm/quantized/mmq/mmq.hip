@@ -819,16 +819,16 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
     const char* ae = std::getenv("MLX_ROCM_MMQ_Q4K_ALLOC");
     return (ae != nullptr && atoi(ae) == 0) ? 1 : 0;
   }();
-  mlx::core::Buffer wq4_b{nullptr}, xq81_b{nullptr};
+  mlx::core::allocator::Buffer wq4_b{nullptr}, xq81_b{nullptr};
   void* wq4 = nullptr;
   void* xq81 = nullptr;
   if (alloc_raw) {
     CUDA_CHECK(hipMalloc(&wq4, (size_t)w_total256 * sizeof(block_q4_K)));
     CUDA_CHECK(hipMalloc(&xq81, (size_t)x_tiles * 144));
   } else {
-    wq4_b = allocator().malloc_async(
+    wq4_b = mlx::core::rocm::allocator().malloc_async(
         (size_t)w_total256 * sizeof(block_q4_K), 0, (void*)stream);
-    xq81_b = allocator().malloc_async((size_t)x_tiles * 144, 0, (void*)stream);
+    xq81_b = mlx::core::rocm::allocator().malloc_async((size_t)x_tiles * 144, 0, (void*)stream);
     wq4 = wq4_b.raw_ptr();
     xq81 = xq81_b.raw_ptr();
   }
