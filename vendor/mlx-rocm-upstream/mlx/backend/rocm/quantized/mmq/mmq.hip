@@ -32,6 +32,7 @@
 
 #include "mlx/backend/gpu/copy.h"
 #include "mlx/backend/rocm/device.h"
+#include "mlx/backend/rocm/allocator.h"
 #include "mlx/backend/rocm/kernel_utils.hpp"
 #include "mlx/fast_primitives.h"
 
@@ -808,10 +809,29 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
 
   const int64_t w_total256 = (int64_t)N * K / 256;  // q4_K blocks per weight
   const int64_t x_tiles = (int64_t)M * (K / 128);
+  // P1B4-SCRATCH-FIX (2026-11-17, RCA t3116 accepted 05:53Z/05:56Z, op
+  // order 06:1xZ): route the per-dispatch scratch through the hardened
+  // rocm allocator pool. Raw hipMalloc/hipFree per call bypassed the pool
+  // (hipFree = whole-device sync; HSA async-signal pool edge under churn);
+  // 1992 dispatches per 4K pass stalled the in-model P arm (GPU 41 MHz
+  // idle, rc=124). MLX_ROCM_MMQ_Q4K_ALLOC=0 restores raw hipMalloc (A/B).
+  static const int alloc_raw = [] {
+    const char* ae = std::getenv("MLX_ROCM_MMQ_Q4K_ALLOC");
+    return (ae != nullptr && atoi(ae) == 0) ? 1 : 0;
+  }();
+  mlx::core::Buffer wq4_b{nullptr}, xq81_b{nullptr};
   void* wq4 = nullptr;
   void* xq81 = nullptr;
-  CUDA_CHECK(hipMalloc(&wq4, (size_t)w_total256 * sizeof(block_q4_K)));
-  CUDA_CHECK(hipMalloc(&xq81, (size_t)x_tiles * 144));
+  if (alloc_raw) {
+    CUDA_CHECK(hipMalloc(&wq4, (size_t)w_total256 * sizeof(block_q4_K)));
+    CUDA_CHECK(hipMalloc(&xq81, (size_t)x_tiles * 144));
+  } else {
+    wq4_b = allocator().malloc_async(
+        (size_t)w_total256 * sizeof(block_q4_K), 0, (void*)stream);
+    xq81_b = allocator().malloc_async((size_t)x_tiles * 144, 0, (void*)stream);
+    wq4 = wq4_b.raw_ptr();
+    xq81 = xq81_b.raw_ptr();
+  }
 
   const int tb = 256;
   auto stage4k = [](const char* st, hipError_t rc) {
@@ -854,9 +874,11 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
                                        GGML_PREC_Q8);
   // The non-fallback config: full I-tiles of the N (x slot) rows.
   if (J_best < 8 || N % I_val != 0) {
-    hipFree(wq4);
-    hipFree(xq81);
-    return;
+    if (alloc_raw) {
+      hipFree(wq4);
+      hipFree(xq81);
+    }
+    return;  // pool path: RAII release at scope end
   }
   if (const char* cje = std::getenv("MLX_MMQ_CFG")) {
     const ggml_cuda_mmq_config c =
@@ -882,13 +904,16 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
     CUDA_CHECK(hipGetLastError());
   }
   stage4k("mmq", hipGetLastError());
-  CUDA_CHECK(hipFree(wq4));
-  CUDA_CHECK(hipFree(xq81));
+  if (alloc_raw) {
+    CUDA_CHECK(hipFree(wq4));
+    CUDA_CHECK(hipFree(xq81));
+  }
+  // pool path: the Buffers release to the allocator at scope end
 }
 
 // P1 plan-B build-hygiene canary (host odr-use in mmq-host.hip: volatile
 // array, non-foldable load - the pattern of the B97T2FIX / G1 probes).
-static volatile char P1B_MMQ_PORT_CANARY[] = "P1B-PORT-CANARY-20261116";
+static volatile char P1B_MMQ_PORT_CANARY[] = "P1B4-SCRATCH-FIX-20261117";
 extern "C" const volatile char* mlx_rocm_mmq_p1b_canary() {
   return P1B_MMQ_PORT_CANARY;
 }
