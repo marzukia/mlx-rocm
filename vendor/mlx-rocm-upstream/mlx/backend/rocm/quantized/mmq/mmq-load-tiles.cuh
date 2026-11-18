@@ -1,4 +1,4 @@
-#define DBG_T4K 1  // PATCH61-TMP (loader debug; mmq-vec-dot.cuh defines it later too)
+#define DBG_T4K 0  // P1B19 convention: probes off for measurement builds (in-kernel printf stalls the model run)
 static volatile const char B97T2FIX_CANARY[] = "B97T2FIX-CANARY-20261115";
 static_assert(sizeof(B97T2FIX_CANARY) > 16, "canary");
 static volatile const char B97PROBE_CANARY[] = "B97PROBE-CANARY-20261116";

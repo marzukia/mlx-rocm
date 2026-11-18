@@ -1,6 +1,6 @@
 #pragma once
 
-#define DBG_T4K 1  // PATCH60-TMP
+#define DBG_T4K 0  // P1B19 convention: probes off for measurement builds (record protocol state)
 // build96 (2026-11-15): zero-init all mma C accumulator tiles. Uninitialized tile_C C/; the i32 WMMA builtin reads C as input accumulator -> per-k-block garbage (prev-iteration mma result) added to every product. Named by kprobe 2026-11-15: per-k-block const-magnitude random-sign error, prefix rms linear in K, output-relative via GLU amplification, p10-small elements exact.
 
 #include "vecdotq.cuh"
