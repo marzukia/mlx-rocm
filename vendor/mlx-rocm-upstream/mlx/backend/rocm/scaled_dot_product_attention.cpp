@@ -52,6 +52,27 @@ void sdpa_flash_wmma(
     Stream s,
     array* lse = nullptr);
 
+// Defined in flash_attention_fattn.hip
+bool supports_sdpa_flash_fattn(
+    const array& q,
+    const array& k,
+    const array& v,
+    bool has_arr_mask,
+    bool output_logsumexp);
+
+// LDS bytes the ported fattn kernel needs for a given head dim (v1: D=256).
+int sdpa_flash_fattn_smem(int D);
+
+void sdpa_flash_fattn(
+    const array& q,
+    const array& k,
+    const array& v,
+    float scale,
+    array& o,
+    bool do_causal,
+    Stream s,
+    array* lse = nullptr);
+
 // Defined in flash_attention_bwd_wmma.hip
 bool supports_sdpa_flash_wmma_bwd(
     const array& q,
@@ -172,11 +193,23 @@ bool ScaledDotProductAttention::use_fallback(
   if (output_logsumexp) {
     wmma_ok = wmma_ok && q.shape(2) > 4;
   }
+  // Ported fattn kernel (stage-1 isolation): routed only when MLX_SDPA_FATTN=1;
+  // unset leaves this gate false -> bit-identical to the pre-port wheel.
+  static const bool fattn_enabled = std::getenv("MLX_SDPA_FATTN") != nullptr;
+  bool fattn_ok = fattn_enabled &&
+      supports_sdpa_flash_fattn(q, k, v, has_arr_mask, output_logsumexp) &&
+      s.device == Device::gpu && rocm::device(s.device).has_native_wmma() &&
+      sdpa_flash_fattn_smem(q.shape(-1)) <=
+          rocm::device(s.device).max_shared_memory_per_block();
+  if (output_logsumexp) {
+    fattn_ok = fattn_ok && q.shape(2) > 4;
+  }
 #else
   bool wmma_ok = false;
+  bool fattn_ok = false;
   (void)s;
 #endif
-  return !vector_ok && !flash_ok && !wmma_ok;
+  return !vector_ok && !flash_ok && !wmma_ok && !fattn_ok;
 }
 
 bool ScaledDotProductAttention::supports_bool_mask() {
@@ -222,10 +255,28 @@ void ScaledDotProductAttention::eval_gpu(
       q, k, v, has_mask, has_arr_mask, do_causal_, output_logsumexp_);
   bool flash_supported = supports_sdpa_flash(
       q, k, v, has_mask, has_arr_mask, do_causal_, output_logsumexp_);
+  // Ported fattn kernel (stage-1 isolation): MLX_SDPA_FATTN=1 routes prefill
+  // SDPA to it; unset leaves this false -> the chain below is bit-identical
+  // to the pre-port wheel (arm A wmma kernel, mmq banked work, S1 fix path).
+#ifdef MLX_HAS_ROCM_WMMA
+  static const bool fattn_enabled = std::getenv("MLX_SDPA_FATTN") != nullptr;
+  bool fattn_supported = fattn_enabled &&
+      supports_sdpa_flash_fattn(q, k, v, has_arr_mask, output_logsumexp_) &&
+      !has_sinks_ && rocm::device(s.device).has_native_wmma() &&
+      sdpa_flash_fattn_smem(q.shape(-1)) <=
+          rocm::device(s.device).max_shared_memory_per_block();
+#else
+  bool fattn_supported = false;
+#endif
   bool flash_first = flash_supported &&
       prefer_flash_for_decode(q, k, has_arr_mask, has_sinks_);
 
-  if (wmma_supported && q.shape(2) > 4) {
+  if (fattn_supported && q.shape(2) > 4) {
+#ifdef MLX_HAS_ROCM_WMMA
+    // v1: no LSE (lse = null), bf16 out, causal on-the-fly.
+    sdpa_flash_fattn(q, k, v, scale_, out, do_causal_, s, nullptr);
+#endif
+  } else if (wmma_supported && q.shape(2) > 4) {
 #ifdef MLX_HAS_ROCM_WMMA
     // Use WMMA kernel for prefill (qL > 4); decode still uses vector kernel.
     // When output_logsumexp_ is set (training + fast VJP), write LSE into

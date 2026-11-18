@@ -192,6 +192,10 @@ if(MLX_HAS_ROCM_WMMA)
   list(APPEND HIP_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/flash_attention_wmma.hip)
   list(APPEND HIP_SOURCES
        ${CMAKE_CURRENT_SOURCE_DIR}/flash_attention_bwd_wmma.hip)
+  # Ported fattn kernel (attention port, v3 card 35ce5495): RDNA WMMA mma-f16
+  # path from ggml b12062, instance <256,256,16,4>. Device code in
+  # flash_attention_fattn_device.cuh (included by this TU).
+  list(APPEND HIP_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/flash_attention_fattn.hip)
 endif()
 
 # Create output directory for compiled objects
