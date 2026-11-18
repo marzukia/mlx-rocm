@@ -158,6 +158,16 @@ bool prefer_flash_for_decode(
   return q.dtype() == float16 || q.dtype() == bfloat16;
 }
 
+bool sdpa_fattn_enabled() {
+  // MLX_SDPA_FATTN gate (read once): unset or "0" = off (bit-identical
+  // pre-port dispatch); any other value (e.g. "1") = on.
+  static const bool enabled = [] {
+    const char* v = std::getenv("MLX_SDPA_FATTN");
+    return v != nullptr && v[0] != '\0' && v[0] != '0';
+  }();
+  return enabled;
+}
+
 } // namespace
 
 namespace fast {
@@ -193,10 +203,12 @@ bool ScaledDotProductAttention::use_fallback(
   if (output_logsumexp) {
     wmma_ok = wmma_ok && q.shape(2) > 4;
   }
-  // Ported fattn kernel (stage-1 isolation): routed only when MLX_SDPA_FATTN=1;
-  // unset leaves this gate false -> bit-identical to the pre-port wheel.
-  static const bool fattn_enabled = std::getenv("MLX_SDPA_FATTN") != nullptr;
-  bool fattn_ok = fattn_enabled &&
+  // Ported fattn kernel (stage-1 isolation): routed only when MLX_SDPA_FATTN=1
+  // (unset or =0 leaves this gate false -> bit-identical to the pre-port
+  // wheel). Sinks asymmetry mirrors the wmma gate above: use_fallback is
+  // static (no has_sinks_), so env-set + sinks falls through to the eval_gpu
+  // throw - same documented class as wmma.
+  bool fattn_ok = sdpa_fattn_enabled() &&
       supports_sdpa_flash_fattn(q, k, v, has_arr_mask, output_logsumexp) &&
       s.device == Device::gpu && rocm::device(s.device).has_native_wmma() &&
       sdpa_flash_fattn_smem(q.shape(-1)) <=
@@ -259,8 +271,7 @@ void ScaledDotProductAttention::eval_gpu(
   // SDPA to it; unset leaves this false -> the chain below is bit-identical
   // to the pre-port wheel (arm A wmma kernel, mmq banked work, S1 fix path).
 #ifdef MLX_HAS_ROCM_WMMA
-  static const bool fattn_enabled = std::getenv("MLX_SDPA_FATTN") != nullptr;
-  bool fattn_supported = fattn_enabled &&
+  bool fattn_supported = sdpa_fattn_enabled() &&
       supports_sdpa_flash_fattn(q, k, v, has_arr_mask, output_logsumexp_) &&
       !has_sinks_ && rocm::device(s.device).has_native_wmma() &&
       sdpa_flash_fattn_smem(q.shape(-1)) <=

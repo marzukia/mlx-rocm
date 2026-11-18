@@ -43,7 +43,8 @@
 //   Q_hi [NC][128] = 16,384 B   (d-half 1, zero pad)
 //   KV   [FA][256] x2 = 32,768 B (K then V, co-resident, zero pad)
 // P (bf16, [NC col][FA]) aliases the K region (written after the S mmas
-// consume K; read during the O mmas, co-resident with V). Zero-pad layout:
+// consume K - barrier-enforced below; read during the O mmas, co-resident
+// with V). Zero-pad layout:
 // gfx1201 LDS has no NVIDIA-style bank-conflict class and the ref itself
 // runs an unaligned 264-elem stride; fallback if exactly-max launch fails =
 // Q-in-regs (32,768 B, the ref's Q_in_reg footprint class).
@@ -280,6 +281,10 @@ __global__ void __launch_bounds__(fattn::NTHREADS) kernel_sdpa_flash_fattn(
         }
       }
     }
+    // Barrier: every thread's S-mma K reads (load_matrix_sync above) must
+    // complete before any thread writes P into the aliased K region below.
+    // P aliases K_t; a lagging reader of K rows 0..7 would race the write.
+    __syncthreads();
 
     // ---- Causal mask (on-the-fly) + online softmax, per col chunk ----
 #pragma unroll
