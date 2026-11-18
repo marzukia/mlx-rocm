@@ -26,9 +26,12 @@
 #include <hip/hip_bfloat16.h>
 
 #include <atomic>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <mutex>
+#include <unordered_map>
 
 #include "mlx/backend/gpu/copy.h"
 #include "mlx/backend/rocm/device.h"
@@ -617,12 +620,24 @@ __global__ void mmq_repack_g64_q4k(const uint32_t* __restrict__ w,
       ? (int) rintf((v + m32c) / s32c)
       : 0;
   const int q4kc = max(0, min(15, q4k));
-  // build 63f: single-writer nibble pack. The two-lane byte |= raced on LDS
-  // (lost updates + uninitialized shared bits) and scrambled the nibbles.
-  // The even lane fetches its odd partner via shfl and writes the whole byte.
-  const int q4k_pair = __shfl_xor(q4kc, 1);
-  if (lane % 2 == 0) {
-    qs128[warp * 16 + lane / 2] = (uint8_t)(q4kc | (q4k_pair << 4));
+  // P1B4-STDQS (2026-11-17, audit vs 29c720eaf quantize_row_q4_K_ref): the
+  // CANONICAL q4_K qs layout - per 64 group, 32 bytes:
+  //   byte 32*g4 + l = (elem 64g4+32+l << 4) | elem 64g4+l, l = 0..31.
+  // The reference WMMA two-line staging (loader P1B4-C, verbatim from
+  // 29c720eaf) unpermutes exactly this layout to natural K lanes (mma word
+  // w = elements 4w..4w+3) - the D1 battery-verified reference combination.
+  // The build-63f per-subblock (elem 2j, 2j+1) pack is a different layout:
+  // every loader variant tried against it mispairs (AUDIT3: candidate B
+  // RELERR 1.9 c=-0.004; B97-era raw-stream 8.9x c=0.01).
+  // Two-phase shared pack (no byte |= race: phase 1 writes every byte once,
+  // phase 2 reads it back, ORs the partner warp's nibble, stores).
+  if ((warp % 2) == 0) {
+    qs128[32 * (warp / 2) + lane] = (uint8_t)q4kc;
+  }
+  __syncthreads();
+  if ((warp % 2) == 1) {
+    qs128[32 * (warp / 2) + lane] =
+        (uint8_t)(qs128[32 * (warp / 2) + lane] | (q4kc << 4));
   }
   __syncthreads();
   if (warp == 0) {
@@ -799,6 +814,159 @@ static void mmq_glu_q4k_g64(const float* x,
 // N % I == 0 (I = 128 for the J = 128 row; the dispatch gate enforces
 // N % 128 == 0). M is clamped per-tile by the j_max writeback clamp.
 // (namespace-scope, external linkage: called from qmm.hip's dispatch.)
+// P1B20 (KPROF2 fix line, 2026-11-17): persistent mmq scratch cache.
+// Mechanism (scratch path read first, per the fix-line gate): mmq_q4k_g64
+// allocates+releases wq4 (N*K/256*320B repack buffer) and xq81 (M*K/128*144B
+// activation staging buffer) on EVERY dispatch. 1992 dispatches per 4K pass:
+//   - raw hipMalloc/hipFree (ALLOC=0): hipFree = whole-device sync = the 3.2x
+//     e2e drag (GEMM-only ~12% of the raw wall, per KPROF2);
+//   - pool malloc_async (default): the pool retains the high-water mark =
+//     3/3 HBM-full on neon 16GB (18,874,368B request at the first prefill
+//     eval, GPU idle, VRAM 0% between runs) + state-dependent OOM on helium.
+// Fix: persistent raw-hipMalloc buffers keyed (N,K,stream)/(M,K,stream),
+// LRU-evicted past the cap - no per-dispatch alloc, no free, outside the pool
+// (no HWM retention). MLX_ROCM_MMQ_Q4K_SCRATCH=0 restores the legacy path.
+// Plan-D (2026-11-18, 3.7K lane): per-shape cap on the repack content
+// cache. MLX_ROCM_MMQ_REPACK_MAX_SHAPES = maximum number of cached
+// repacked weight buffers (the P1B23 LRU/drop-oldest eviction already
+// orders the entries; this adds a count bound). MLX_ROCM_MMQ_REPACK_MAX_BYTES
+// = optional byte-budget override for the same cache (the default is the
+// P1B23 8GB cap). Both unset = legacy (8GB byte cap, unlimited shapes).
+// The P1B24 repack-ON steady retention (+3.70GB vs repack OFF) is what
+// the cap bounds (~max_shapes x per-weight bytes, drop-oldest).
+static size_t mmq_repack_max_shapes() {
+  static const size_t v = [] {
+    const char* e = std::getenv("MLX_ROCM_MMQ_REPACK_MAX_SHAPES");
+    if (!e) {
+      return static_cast<size_t>(0);
+    }
+    long v = std::atol(e);
+    return v > 0 ? static_cast<size_t>(v) : static_cast<size_t>(0);
+  }();
+  return v;
+}
+static size_t mmq_repack_max_bytes() {
+  static const size_t v = [] {
+    const char* e = std::getenv("MLX_ROCM_MMQ_REPACK_MAX_BYTES");
+    if (!e) {
+      return static_cast<size_t>(0);
+    }
+    long v = std::atol(e);
+    return v > 0 ? static_cast<size_t>(v) : static_cast<size_t>(0);
+  }();
+  return v;
+}
+struct mmq_scratch_cache {
+  std::mutex mtx;
+  std::unordered_map<uint64_t, std::pair<void*, size_t>> m;
+  std::deque<uint64_t> lru;  // back = MRU
+  size_t total = 0;
+  size_t cap;
+  // Plan-D (2026-11-18, 3.7K lane): 0 = unlimited (legacy); otherwise
+  // the maximum number of cached shapes (eviction drops the LRU-oldest
+  // entry first, i.e. the deque front).
+  size_t max_entries;
+  explicit mmq_scratch_cache(size_t c, size_t me = 0) : cap(c), max_entries(me) {}
+};
+// Plan-D: the byte cap honors MLX_ROCM_MMQ_REPACK_MAX_BYTES (default:
+// the P1B23 8GB); the shape count honors MLX_ROCM_MMQ_REPACK_MAX_SHAPES
+// (default: unlimited).
+static mmq_scratch_cache g_wq4_cache(
+    mmq_repack_max_bytes() ? mmq_repack_max_bytes() : (8ULL << 30),
+    mmq_repack_max_shapes());
+static mmq_scratch_cache g_xq81_cache(1ULL << 30);  // 1GB
+static bool mmq_scratch_enabled() {
+  static const bool en = [] {
+    const char* e = std::getenv("MLX_ROCM_MMQ_Q4K_SCRATCH");
+    return !(e != nullptr && e[0] == '0');
+  }();
+  return en;
+}
+static uint64_t mmq_key3(int a, int b, hipStream_t st) {
+  uint64_t h = (uint64_t)(uint32_t)a * 1315423911ull;
+  h ^= (uint64_t)(uint32_t)b * 2654435761ull;
+  h ^= (uint64_t)(uintptr_t)st * 2246822519ull;
+  return h;
+}
+// P1B23 (repack content cache, 2026-11-17, cloudy ruling 21:3xZ): the
+// repacked q4_K buffer is a pure function of the weight identity
+// (w, scales, biases, N, K, dtype). Key the wq4 buffer by that identity and
+// skip the mmq_repack_g64_q4k launch on a content-valid hit. P1B20's
+// (N,K,stream) key shared one buffer across all weights of equal shape, so
+// the content was stale across weights and the repack ran every call (1608
+// per 4K pass = 37.1% of the measure wall, P1B22). Cost: one repack buffer
+// per unique weight = the full repack set resident (~5.5GB class;
+// HBM-fit pre-registered: CH512 arm < 1200 t/s = LRU/fit class named with
+// raw bytes; CH1024 HBM-full death = THE LINE). The 8GB LRU cap holds the
+// full set for qwen3-9b. MLX_ROCM_MMQ_Q4K_REPACK=0 restores the P1B20 key
+// + always-repack.
+static bool mmq_repack_cache_enabled() {
+  static const bool en = [] {
+    const char* e = std::getenv("MLX_ROCM_MMQ_Q4K_REPACK");
+    return !(e != nullptr && e[0] == '0');
+  }();
+  return en;
+}
+static uint64_t mmq_wkey(const void* w, const void* sc, const void* bi, int N,
+                         int K, hipStream_t st, bool bf16) {
+  uint64_t h = (uint64_t)(uintptr_t)w * 1315423911ull;
+  h ^= (uint64_t)(uintptr_t)sc * 2654435761ull;
+  h ^= (uint64_t)(uintptr_t)bi * 97531ull;
+  h ^= (uint64_t)(uint32_t)N * 1597334671ull;
+  h ^= (uint64_t)(uint32_t)K * 3938420197ull;
+  h ^= (uint64_t)(uintptr_t)st * 2246822519ull ^
+       (bf16 ? 0xA5A5A5ull : 0x5A5A5Aull);
+  return h;
+}
+// Content-valid peek: existing same-size buffer for key -> ptr + LRU
+// promotion; miss or size mismatch -> nullptr (no allocation, no mutation
+// beyond LRU order).
+static void* mmq_scratch_peek(mmq_scratch_cache& c, uint64_t key, size_t need) {
+  if (!mmq_scratch_enabled()) return nullptr;
+  std::lock_guard<std::mutex> lk(c.mtx);
+  auto it = c.m.find(key);
+  if (it == c.m.end() || it->second.second < need) return nullptr;
+  auto pos = std::find(c.lru.begin(), c.lru.end(), key);
+  if (pos != c.lru.end()) { c.lru.erase(pos); c.lru.push_back(key); }
+  return it->second.first;
+}
+// Hit (or fresh/evicting fill) -> true + *out set. Miss -> false, *out untouched.
+static bool mmq_scratch_try(mmq_scratch_cache& c, uint64_t key, size_t need, void** out) {
+  if (!mmq_scratch_enabled()) return false;
+  std::lock_guard<std::mutex> lk(c.mtx);
+  auto it = c.m.find(key);
+  if (it != c.m.end() && it->second.second >= need) {
+    auto pos = std::find(c.lru.begin(), c.lru.end(), key);
+    if (pos != c.lru.end()) { c.lru.erase(pos); c.lru.push_back(key); }
+    *out = it->second.first;
+    return true;
+  }
+  if (it != c.m.end()) {  // grow in place
+    hipFree(it->second.first);
+    c.total -= it->second.second;
+    c.m.erase(it);
+  }
+  // Plan-D: the per-shape cap evicts the LRU-oldest entries first
+  // (drop-oldest = deque front) when the cache holds max_entries shapes.
+  while (!c.lru.empty() &&
+         (c.total + need > c.cap ||
+          (c.max_entries > 0 && c.lru.size() >= c.max_entries))) {
+    uint64_t old = c.lru.front();
+    c.lru.pop_front();
+    auto oit = c.m.find(old);
+    if (oit == c.m.end()) continue;
+    hipFree(oit->second.first);
+    c.total -= oit->second.second;
+    c.m.erase(oit);
+  }
+  void* p = nullptr;
+  if (hipMalloc(&p, need) != hipSuccess || p == nullptr) return false;
+  c.m[key] = {p, need};
+  c.total += need;
+  c.lru.push_back(key);
+  *out = p;
+  return true;
+}
 void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
                        const void* scales, const void* biases, void* out,
                        bool dst_f32, int M, int N, int K,
@@ -822,33 +990,62 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
   mlx::core::allocator::Buffer wq4_b{nullptr}, xq81_b{nullptr};
   void* wq4 = nullptr;
   void* xq81 = nullptr;
-  if (alloc_raw) {
-    CUDA_CHECK(hipMalloc(&wq4, (size_t)w_total256 * sizeof(block_q4_K)));
-    CUDA_CHECK(hipMalloc(&xq81, (size_t)x_tiles * 144));
-  } else {
-    wq4_b = mlx::core::rocm::allocator().malloc_async(
-        (size_t)w_total256 * sizeof(block_q4_K), 0, (void*)stream);
-    xq81_b = mlx::core::rocm::allocator().malloc_async((size_t)x_tiles * 144, 0, (void*)stream);
-    wq4 = wq4_b.raw_ptr();
-    xq81 = xq81_b.raw_ptr();
+  // P1B20: cache hit -> no per-dispatch alloc, no free at scope end. Miss -> legacy path.
+  // P1B23: wq4 key = weight identity when the repack cache is enabled; the
+  // cached buffer's CONTENT is then valid and the repack kernel is skipped
+  // below. REPACK=0 -> P1B20 (N,K) key, always repack (exact old behavior).
+  const bool repack_cache = mmq_repack_cache_enabled();
+  const uint64_t wq4_key = repack_cache
+                               ? mmq_wkey(w, scales, biases, N, K, stream, x_bf16)
+                               : mmq_key3(N, K, stream);
+  const size_t need_wq4 = (size_t)w_total256 * sizeof(block_q4_K);
+  const bool wq4_valid = repack_cache &&
+                         (mmq_scratch_peek(g_wq4_cache, wq4_key, need_wq4) != nullptr);
+  const bool from_cache =
+      mmq_scratch_try(g_wq4_cache, wq4_key, need_wq4, &wq4) &&
+      mmq_scratch_try(g_xq81_cache, mmq_key3(M, K, stream),
+                      (size_t)x_tiles * 144, &xq81);
+  if (!from_cache) {
+    if (alloc_raw) {
+      CUDA_CHECK(hipMalloc(&wq4, (size_t)w_total256 * sizeof(block_q4_K)));
+      CUDA_CHECK(hipMalloc(&xq81, (size_t)x_tiles * 144));
+    } else {
+      wq4_b = mlx::core::rocm::allocator().malloc_async(
+          (size_t)w_total256 * sizeof(block_q4_K), 0, (void*)stream);
+      xq81_b = mlx::core::rocm::allocator().malloc_async((size_t)x_tiles * 144, 0, (void*)stream);
+      wq4 = wq4_b.raw_ptr();
+      xq81 = xq81_b.raw_ptr();
+    }
   }
 
   const int tb = 256;
+  if (std::getenv("MLX_MMQ_DBG")) {
+    fprintf(stderr, "[mmq-dbg] M=%ld N=%ld K=%ld wq4=%p(%ldB) xq81=%p(%ldB) out=%p(%ldB) w=%p x=%p\n",
+            (long)M, (long)N, (long)K, wq4, (long)w_total256*sizeof(block_q4_K),
+            xq81, (long)x_tiles*144, out, (long)M*N*(dst_f32?4:2), w, x);
+  }
+
   auto stage4k = [](const char* st, hipError_t rc) {
     if (rc != hipSuccess) fprintf(stderr, "[stage4k] %s rc=%d\n", st, (int)rc);
   };
-  if (x_bf16) {
-    mmq_repack_g64_q4k<hip_bfloat16><<<(int)w_total256, tb, 0, stream>>>(
-        reinterpret_cast<const uint32_t*>(w),
-        reinterpret_cast<const hip_bfloat16*>(scales),
-        reinterpret_cast<const hip_bfloat16*>(biases),
-        reinterpret_cast<block_q4_K*>(wq4));
-  } else {
-    mmq_repack_g64_q4k<float><<<(int)w_total256, tb, 0, stream>>>(
-        reinterpret_cast<const uint32_t*>(w),
-        reinterpret_cast<const float*>(scales),
-        reinterpret_cast<const float*>(biases),
-        reinterpret_cast<block_q4_K*>(wq4));
+  // P1B23: skip the repack when the cached wq4 content is valid for this
+  // weight identity. !from_cache always implies a fresh/legacy wq4 buffer
+  // (the legacy path reassigns wq4), so the repack must run then even if a
+  // valid cached entry exists under wq4_key.
+  if (!wq4_valid || !from_cache) {
+    if (x_bf16) {
+      mmq_repack_g64_q4k<hip_bfloat16><<<(int)w_total256, tb, 0, stream>>>(
+          reinterpret_cast<const uint32_t*>(w),
+          reinterpret_cast<const hip_bfloat16*>(scales),
+          reinterpret_cast<const hip_bfloat16*>(biases),
+          reinterpret_cast<block_q4_K*>(wq4));
+    } else {
+      mmq_repack_g64_q4k<float><<<(int)w_total256, tb, 0, stream>>>(
+          reinterpret_cast<const uint32_t*>(w),
+          reinterpret_cast<const float*>(scales),
+          reinterpret_cast<const float*>(biases),
+          reinterpret_cast<block_q4_K*>(wq4));
+    }
   }
   stage4k("repack", hipGetLastError());
   if (x_bf16) {
@@ -874,11 +1071,11 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
                                        GGML_PREC_Q8);
   // The non-fallback config: full I-tiles of the N (x slot) rows.
   if (J_best < 8 || N % I_val != 0) {
-    if (alloc_raw) {
+    if (alloc_raw && !from_cache) {
       hipFree(wq4);
       hipFree(xq81);
     }
-    return;  // pool path: RAII release at scope end
+    return;  // pool path: RAII release at scope end; P1B20 cached buffers persist
   }
   if (const char* cje = std::getenv("MLX_MMQ_CFG")) {
     const ggml_cuda_mmq_config c =
@@ -904,18 +1101,31 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
     CUDA_CHECK(hipGetLastError());
   }
   stage4k("mmq", hipGetLastError());
-  if (alloc_raw) {
+  if (alloc_raw && !from_cache) {
     CUDA_CHECK(hipFree(wq4));
     CUDA_CHECK(hipFree(xq81));
   }
   // pool path: the Buffers release to the allocator at scope end
+  // P1B20: cached scratch persists across dispatches (no free)
 }
 
 // P1 plan-B build-hygiene canary (host odr-use in mmq-host.hip: volatile
 // array, non-foldable load - the pattern of the B97T2FIX / G1 probes).
-static volatile char P1B_MMQ_PORT_CANARY[] = "P1B4-SCRATCH-FIX-20261117";
+static volatile char P1B_MMQ_PORT_CANARY[] = "P1B4-STDQS-20261117";
 extern "C" const volatile char* mlx_rocm_mmq_p1b_canary() {
   return P1B_MMQ_PORT_CANARY;
+}
+// P1B23 canary (repack content cache, 2026-11-17): host volatile array,
+// odr-used; verify by strings|grep on the built lib.
+static volatile char P1B23_REPACK_CANARY[] = "P1B23-REPACK-20261117";
+extern "C" const volatile char* mlx_rocm_mmq_p1b23_canary() {
+  return P1B23_REPACK_CANARY;
+}
+// Plan-D (2026-11-18, 3.7K lane): per-shape repack cap canary - verify by
+// strings|grep on the built lib (harness-readable gate presence proof).
+static volatile char PLAN_D_REPACKCAP_CANARY[] = "PLAND-REPACKCAP-20261118";
+extern "C" const volatile char* mlx_rocm_plan_d_repackcap_canary() {
+  return PLAN_D_REPACKCAP_CANARY;
 }
 
 }  // namespace rocm

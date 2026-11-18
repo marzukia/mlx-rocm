@@ -1013,10 +1013,27 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
     constexpr ggml_cuda_mmq_load_tiles_t load_tiles = ggml_cuda_mmq_get_load_tiles<type, J, fallback, prec_src1, has_fusion>();
     constexpr ggml_cuda_mmq_vec_dot_t    vec_dot    = ggml_cuda_mmq_get_vec_dot<type, J, fallback, prec_src1>();
     constexpr ggml_cuda_mmq_write_back_t write_back = ggml_cuda_mmq_get_write_back<type, J, fallback, prec_src1, has_fusion>();
+    // P1B5-B: see the wb_ids block after the tile_x setup (AUDIT6: the []-alias was a separate shared region).
+
 
     extern __shared__ int data_mul_mat_q[];
     int * tile_y = data_mul_mat_q + J;
     int * tile_x = tile_y + GGML_PAD(J*MMQ_TILE_Y_K, nwarps*warp_size);
+    // P1B5B (2026-11-17): dense paths pass ids_dst=nullptr (the ref only ran padded
+    // identity buffers for MoE; should_use_mmq=false for dense Q4_K RDNA4-M, so the ref
+    // never exercised this write-back on gfx1201). AUDIT6: an extern []-alias in a
+    // sibling function was a SEPARATE shared region (wb index still garbage) - fill the
+    // identity in THIS function's own array (the free [0,J) prefix before tile_y).
+    for (int j0 = 0; j0 < J; j0 += nwarps*warp_size) {
+        const int j = j0 + threadIdx.y*warp_size + threadIdx.x;
+        if (j < J) data_mul_mat_q[j] = j;
+    }
+    __syncthreads();
+    const int * wb_ids = ids_dst ? ids_dst : data_mul_mat_q;
+    if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0 && threadIdx.y == 0) {
+        if (false) printf("[p1b5b] wb_ids=%p ids_dst=%p data_mul_mat_q=%p wb0=%d wb5=%d stride=%d ncols_y=%d dst_bf16=%d\n",
+               (void *) wb_ids, (void *) ids_dst, (void *) data_mul_mat_q, wb_ids[0], wb_ids[5], stride_col_dst, ncols_y, (int) dst_bf16);
+    }
 
 #if defined(BLACKWELL_MMA_AVAILABLE)
     // FP4 tile stores 8 blocks. src1 above Q4 uses the generic
@@ -1037,7 +1054,7 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
     for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
         load_tiles(x, x_gate, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
         {
-            const int * by0 = y + ncols_y * (kb0 * qk / ne_block) * sz;
+            const int * by0 = y + ncols_y * (kb0 * 2 * MMQ_TILE_Y_K); // P1B6: 144B tile per 128 elems (2 per kb0)
 #pragma unroll
             for (int l0 = 0; l0 < J * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
                 int l = l0 + threadIdx.y*warp_size + threadIdx.x;
@@ -1049,6 +1066,12 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
         __syncthreads();
 
 
+        if (blockIdx.x == 0 && blockIdx.y == 0 && kb0 < 2 && threadIdx.x == 0 && threadIdx.y == 0) {
+            if (false) printf("[t4y1] kb0=%d %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n", (int)kb0,
+                   (unsigned)tile_y[0],(unsigned)tile_y[1],(unsigned)tile_y[2],(unsigned)tile_y[3],(unsigned)tile_y[4],
+                   (unsigned)tile_y[5],(unsigned)tile_y[6],(unsigned)tile_y[7],(unsigned)tile_y[8],(unsigned)tile_y[9],
+                   (unsigned)tile_y[10],(unsigned)tile_y[11],(unsigned)tile_y[12],(unsigned)tile_y[13],(unsigned)tile_y[14]);
+        }
         vec_dot(tile_x, tile_y, sum, 0);
 
 
@@ -1056,7 +1079,7 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
         __syncthreads();
 
         {
-            const int * by0 = y + ncols_y * ((kb0 * qk / ne_block) * sz + sz);
+            const int * by0 = y + ncols_y * ((kb0 * qk / ne_block) * sz + sz); // P1B7: reference-verbatim (AUDIT9)
 #pragma unroll
             for (int l0 = 0; l0 < J * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
                 int l = l0 + threadIdx.y*warp_size + threadIdx.x;
@@ -1067,15 +1090,41 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
 
         __syncthreads();
 
+        if (blockIdx.x == 0 && blockIdx.y == 0 && kb0 < 2 && threadIdx.x == 0 && threadIdx.y == 0) {
+            if (false) printf("[t4y2] kb0=%d %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n", (int)kb0,
+                   (unsigned)tile_y[0],(unsigned)tile_y[1],(unsigned)tile_y[2],(unsigned)tile_y[3],(unsigned)tile_y[4],
+                   (unsigned)tile_y[5],(unsigned)tile_y[6],(unsigned)tile_y[7],(unsigned)tile_y[8],(unsigned)tile_y[9],
+                   (unsigned)tile_y[10],(unsigned)tile_y[11],(unsigned)tile_y[12],(unsigned)tile_y[13],(unsigned)tile_y[14]);
+        }
         vec_dot(tile_x, tile_y, sum, MMQ_TILE_NE_K);
+        // P1B14 (AUDIT16): per-pass partial sum[] dump - warp 0 (threadIdx.y==0), after each kb pass
+        if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.y == 0) {
+            const int tid = threadIdx.x;
+            const int NS = (int)(sizeof(sum)/sizeof(float));
+            for (int s0 = 0; s0 < NS; s0 += 16) {
+                if (false) printf("[t5p] kb=%d tid=%d s0=%d: %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g\n",
+                       kb0, tid, s0, sum[s0],sum[s0+1],sum[s0+2],sum[s0+3],sum[s0+4],sum[s0+5],sum[s0+6],sum[s0+7],
+                       sum[s0+8],sum[s0+9],sum[s0+10],sum[s0+11],sum[s0+12],sum[s0+13],sum[s0+14],sum[s0+15]);
+            }
+        }
 
         __syncthreads();
     }
 
+    // P1B13 (AUDIT15): full sum[] dump - all 256 threads of block (0,0), after K loop
+    if (blockIdx.x == 0 && blockIdx.y == 0) {
+        const int tid = threadIdx.y*32 + threadIdx.x;
+        const int NS = (int)(sizeof(sum)/sizeof(float));
+        for (int s0 = 0; s0 < NS; s0 += 16) {
+            if (false) printf("[t5s] tid=%d s0=%d: %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g\n",
+                   tid, s0, sum[s0],sum[s0+1],sum[s0+2],sum[s0+3],sum[s0+4],sum[s0+5],sum[s0+6],sum[s0+7],
+                   sum[s0+8],sum[s0+9],sum[s0+10],sum[s0+11],sum[s0+12],sum[s0+13],sum[s0+14],sum[s0+15]);
+        }
+    }
     if (fixup) {
-        write_back(sum, ids_dst, tmp_fixup + blockIdx.x*(J*I), y_scale, I, I, J, glu_op, glu_limit, false);
+        write_back(sum, wb_ids, tmp_fixup + blockIdx.x*(J*I), y_scale, I, I, J, glu_op, glu_limit, false);
     } else {
-        write_back(sum, ids_dst, dst, y_scale, stride_col_dst, tile_x_max_i, tile_y_max_j, glu_op, glu_limit, dst_bf16);
+        write_back(sum, wb_ids, dst, y_scale, stride_col_dst, tile_x_max_i, tile_y_max_j, glu_op, glu_limit, dst_bf16);
     }
 }
 
@@ -1196,7 +1245,12 @@ static __global__ void mul_mat_q(
 
         constexpr bool fixup = false;
         mul_mat_q_process_tile<type, J, fallback, fixup, prec_src1, has_fusion>
-            (x, x_gate, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, y_scale_tile,
+            (x, x_gate, offset_x, // P1B18 (AUDIT20): dst_bf16 - offset_dst is in OUTPUT-ELEMENT units (bf16 = 2B),
+            // dst is float* (4B/step) -> advance by offset_dst/2 (even: jt*J*N + it*I, J=I=128).
+            // Unfixed: every nonzero (jt,it) tile lands at 2x offset - M=256 J-tile1 OOB
+            // (region = stale HBM), M=128 it-odd zero / it-even shifted +128 w-cols, M=512
+            // row-512 OOB corner; block (0,0) offset 0 stayed clean through AUDIT14-19.
+            y + offset_y, ids_dst_shared, dst + (dst_bf16 ? offset_dst/2 : offset_dst), tmp_fixup, y_scale_tile,
              glu_op, glu_limit, stride_row_x, ncols_y, stride_col_dst,
              tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00.z, dst_bf16);
         return;
@@ -1290,7 +1344,12 @@ static __global__ void mul_mat_q(
 
         constexpr bool fixup = false; // All but (potentially) the last iterations write their data to dst rather than the fixup buffer.
         mul_mat_q_process_tile<type, J, fallback, fixup, prec_src1, false>
-            (x, x_gate, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, y_scale_tile,
+            (x, x_gate, offset_x, // P1B18 (AUDIT20): dst_bf16 - offset_dst is in OUTPUT-ELEMENT units (bf16 = 2B),
+            // dst is float* (4B/step) -> advance by offset_dst/2 (even: jt*J*N + it*I, J=I=128).
+            // Unfixed: every nonzero (jt,it) tile lands at 2x offset - M=256 J-tile1 OOB
+            // (region = stale HBM), M=128 it-odd zero / it-even shifted +128 w-cols, M=512
+            // row-512 OOB corner; block (0,0) offset 0 stayed clean through AUDIT14-19.
+            y + offset_y, ids_dst_shared, dst + (dst_bf16 ? offset_dst/2 : offset_dst), tmp_fixup, y_scale_tile,
              glu_op, glu_limit, stride_row_x, ncols_y, stride_col_dst,
              tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop, dst_bf16);
 
@@ -1374,7 +1433,12 @@ static __global__ void mul_mat_q(
 
     constexpr bool fixup = true; // Last index writes its data to fixup buffer to avoid data races with other blocks.
     mul_mat_q_process_tile<type, J, fallback, fixup, prec_src1, false>
-        (x, x_gate, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup, y_scale_tile,
+        (x, x_gate, offset_x, // P1B18 (AUDIT20): dst_bf16 - offset_dst is in OUTPUT-ELEMENT units (bf16 = 2B),
+            // dst is float* (4B/step) -> advance by offset_dst/2 (even: jt*J*N + it*I, J=I=128).
+            // Unfixed: every nonzero (jt,it) tile lands at 2x offset - M=256 J-tile1 OOB
+            // (region = stale HBM), M=128 it-odd zero / it-even shifted +128 w-cols, M=512
+            // row-512 OOB corner; block (0,0) offset 0 stayed clean through AUDIT14-19.
+            y + offset_y, ids_dst_shared, dst + (dst_bf16 ? offset_dst/2 : offset_dst), tmp_fixup, y_scale_tile,
          glu_op, glu_limit, stride_row_x, ncols_y, stride_col_dst,
          tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop, dst_bf16);
 }
@@ -1465,7 +1529,7 @@ static __global__ void mul_mat_q_stream_k_fixup(
 
     if (!ids_dst) {
         const int offset_dst = wt*stride_sample_dst + zt*stride_channel_dst + jt*J*stride_col_dst + it*I;
-        dst += offset_dst;
+        dst += (dst_bf16 ? offset_dst/2 : offset_dst); // P1B18: bf16 out -> half the float* step
 
         const int i_max = nrows_x   - it*I - 1;
         const int j_max = ncols_dst - jt*J - 1;
@@ -1560,6 +1624,11 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
     const int nty  = (args.nrows_x   + I_dst - 1) / I_dst;
     const int ntx  = (args.ncols_max + config.J - 1) / config.J;
     const int ntzw = args.nchannels_y * args.nsamples_y;
+    if (type == GGML_TYPE_Q4_K && std::getenv("MLX_MMQ_CFG") != nullptr) {
+        fprintf(stderr, "[launch4k] cc=%d J=%d fb=%d cfg{I=%d J=%d nthreads=%d K_vram=%d stream_k=%d} nrows_x=%ld ncols_max=%ld ntx=%d nty=%d ntzw=%d smem=%zu\n",
+                cc, J, (int)fallback, config.I, config.J, config.nthreads, config.K_vram, (int)config.stream_k,
+                (long)args.nrows_x, (long)args.ncols_max, ntx, nty, ntzw, (size_t)nbytes_shared);
+    }
     // Column tiles innermost so that the concurrently running blocks share the same tile of x and read it from L2.
     const dim3 block_nums_xy_tiling(ntx, nty, ntzw);
     GGML_ASSERT(args.nchannels_y % args.nchannels_x == 0);
@@ -1584,10 +1653,7 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
              ntx_fd, args.dst_bf16);
         if constexpr (type == GGML_TYPE_Q4_K) {
             hipError_t lrc = hipGetLastError();
-            fprintf(stderr, "[stage4k] mmq-launch J=%d grid=(%u,%u,%u) block=(%u,%u) smem=%zu rc=%d\n",
-                    J, (unsigned)block_nums_xy_tiling.x, (unsigned)block_nums_xy_tiling.y,
-                    (unsigned)block_nums_xy_tiling.z, (unsigned)block_dims.x, (unsigned)block_dims.y,
-                    (size_t)nbytes_shared, (int)lrc);
+            if (lrc != hipSuccess) fprintf(stderr, "[stage4k] mmq-launch rc=%d\n", (int)lrc);
         }
         return;
     }

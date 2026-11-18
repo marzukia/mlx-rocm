@@ -18,6 +18,15 @@
 #include "mlx/transforms_impl.h"
 #include "mlx/types/limits.h"
 #include "mlx/utils.h"
+#include <cstdlib>
+
+// Plan-D (2026-11-18, 3.7K lane): MLX_ROCM_LOGITS_BF16 canary - harness
+// readable via strings on the built lib (the gate holds the lm-head
+// logits in bfloat16 when the activation is bf16; unset = unchanged).
+static volatile char PLAN_D_LOGITS_CANARY[] = "PLAND-LOGITS-BF16-20261118";
+extern "C" const volatile char* mlx_rocm_plan_d_logits_bf16_canary() {
+  return PLAN_D_LOGITS_CANARY;
+}
 
 namespace mlx::core {
 
@@ -3503,6 +3512,16 @@ array matmul(
         << " in " << out_type << ", which is not a floating point type.";
     throw std::invalid_argument(msg.str());
   }
+  // Plan-D (2026-11-18, 3.7K lane): MLX_ROCM_LOGITS_BF16=1 holds the
+  // matmul output in bfloat16 when it would otherwise be f32 with a bf16
+  // activation (the plain-Linear / tied-embedding lm-head path). Unset /
+  // != 1 = unchanged (the f32 default is preserved).
+  if (out_type == float32 && a.dtype() == bfloat16) {
+    const char* g = std::getenv("MLX_ROCM_LOGITS_BF16");
+    if (g && g[0] == '1' && g[1] == '\0') {
+      out_type = bfloat16;
+    }
+  }
   if (a.dtype() != out_type) {
     a = astype(a, out_type, s);
   }
@@ -4780,6 +4799,16 @@ array quantized_matmul(
     msg << "[quantized_matmul] Only real floating types are supported but "
         << "x.dtype() == " << x.dtype() << ".";
     throw std::invalid_argument(msg.str());
+  }
+  // Plan-D (2026-11-18, 3.7K lane): MLX_ROCM_LOGITS_BF16=1 holds the
+  // matmul output in bfloat16 when it would otherwise be f32 with a bf16
+  // activation (halves the lm-head logits HBM term). Unset / != 1 =
+  // unchanged (the f32 default is preserved).
+  if (dtype == float32 && x.dtype() == bfloat16) {
+    const char* g = std::getenv("MLX_ROCM_LOGITS_BF16");
+    if (g && g[0] == '1' && g[1] == '\0') {
+      dtype = bfloat16;
+    }
   }
   std::vector<array> inputs;
   if (qmode == QuantizationMode::Affine) {

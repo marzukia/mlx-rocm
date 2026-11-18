@@ -1,4 +1,4 @@
-#define DBG_T4K 0  // P1B19 convention: probes off for measurement builds (in-kernel printf stalls the model run)
+#define DBG_T4K 0 // P1B19: probes off (measurement build, cloudy cross-box data point)  // P1B4-AUDIT2: effective define (load-tiles is last-include)  // PATCH61-TMP disabled for the P1 plan-B measurement build (in-kernel printf stalls the model run)
 static volatile const char B97T2FIX_CANARY[] = "B97T2FIX-CANARY-20261115";
 static_assert(sizeof(B97T2FIX_CANARY) > 16, "canary");
 static volatile const char B97PROBE_CANARY[] = "B97PROBE-CANARY-20261116";
@@ -804,18 +804,17 @@ template <ggml_type type, int J, bool fallback, bool has_fusion> static __device
         const int qs0 = get_int_b4(bxi->qs, txi);
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-        // B97 (2026-11-16, p97p [t4r] byte-verified): the WMMA int8 mma consumes
-        // 8 consecutive words as 32 IN-ORDER K lanes (D1 fragment layout).
-        // The even/odd nibble split (upstream mma Q8_1 shape, kept for Q4_K here)
-        // pairs weight element f(k) = 64*(k//64) + 2*(k%32) + (k%64>=32) with
-        // activation element k -> a 256-periodic K permutation: on-card C0 =
-        // sum_k w(f(k))*x(k) (p97p: even/odd sim 4/4 byte-exact, in-order 0/4).
-        // Write 4 codes per word IN ORDER: word 2t = c(8t..8t+3),
-        // word 2t+1 = c(8t+4..8t+7) (qs0 byte j = (c(2j+1)<<4)|c(2j)).
-        const int q4b0 = (qs0 >>  0) & 0xFF, q4b1 = (qs0 >>  8) & 0xFF;
-        const int q4b2 = (qs0 >> 16) & 0xFF, q4b3 = (qs0 >> 24) & 0xFF;
-        x_qs[i*sram_stride + 2*txi]   = q4b0 | ((q4b0 >> 4) <<  8) | (q4b1 << 16) | ((q4b1 >> 4) << 24);
-        x_qs[i*sram_stride + 2*txi+1] = q4b2 | ((q4b2 >> 4) <<  8) | (q4b3 << 16) | ((q4b3 >> 4) << 24);
+        // P1B4-C (2026-11-17): REFERENCE-VERBATIM staging (29c720eaf
+        // ggml-cuda/mmq-load-tiles.cuh, load_tiles_q4_K AMD branch). The mma
+        // D1 word pattern is natural K (word w = elements 4w..4w+3); this
+        // two-line gather unpermutes the CANONICAL q4_K qs layout (the
+        // P1B4-STDQS repack emits exactly quantize_row_q4_K_ref order) to
+        // that order - the reference's own combination, D1 battery-verified
+        // on this box (clear2 500x 3683 t/s). B97 raw-byte-stream (permuted
+        // on canonical input: p97p on-card) and candidate B (stride-2
+        // mispair: AUDIT3 RELERR 1.9, FITC c=-0.004) both measured wrong.
+        x_qs[i*sram_stride + 16*(txi/8) + txi % 8 + 0] = (qs0 >> 0) & 0x0F0F0F0F;
+        x_qs[i*sram_stride + 16*(txi/8) + txi % 8 + 8] = (qs0 >> 4) & 0x0F0F0F0F;
 #else
         // PORT-INTERLEAVE-Q4K-DP4A (PATCH58, 2026-11-15): the dp4a q4_K dot
         // (vec_dot_q4_K_q8_1_impl_mmq) pairs tile word m (g=m/8, j=m%8),
@@ -884,7 +883,7 @@ template <ggml_type type, int J, bool fallback, bool has_fusion> static __device
             const uint8_t * sc8 = (const uint8_t *) &sc32;
             const uint8_t *  m8 = (const uint8_t *)  &m32;
 
-            const half2 dm = bxi->dm * make_half2(1.0f, -1.0f);
+            const half2 dm = bxi->dm * make_half2(1.0f, -1.0f); // P1B9: flip restored (kq identity v = d1*q - m1)
 
 #if DBG_T4K
             if (i == 0 && blockIdx.x == 0 && kbx0 == 0 && threadIdx.x < 2) {

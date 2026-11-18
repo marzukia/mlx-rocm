@@ -58,6 +58,54 @@ static inline void dbg_live_dump(const char* tag) {
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
+#include <algorithm>
+
+// Plan-D (2026-11-18, 3.7K lane): bounded staging/arena retention budget.
+// MLX_ROCM_STAGING_RETAIN_CAP = byte budget (plain bytes or a k/m/g
+// suffix; 0 = unlimited; unset = disabled = legacy unbounded retention)
+// on the retained (freed-but-held) device memory: the buffer-cache
+// freelist + graph-deferred frees + the decode-arena capacity. When the
+// retained bytes exceed the budget the excess is released to the pool
+// (release_cached_buffers -> hipFree/hipFreeAsync), bounding the steady
+// post-clear_cache retention floor (P1B24: 0.94GB-class runtime
+// retention; the b97-hbmfix reclaim/fallback/arena surface is the cap
+// surface).
+static size_t retain_cap_bytes() {
+  static const size_t cap = [] {
+    const char* e = std::getenv("MLX_ROCM_STAGING_RETAIN_CAP");
+    if (!e) {
+      return static_cast<size_t>(0);
+    }
+    char* end = nullptr;
+    unsigned long long v = std::strtoull(e, &end, 10);
+    if (end && *end != '\0') {
+      size_t mult = 1;
+      switch (*end) {
+        case 'k':
+        case 'K':
+          mult = 1024;
+          break;
+        case 'm':
+        case 'M':
+          mult = 1024 * 1024;
+          break;
+        case 'g':
+        case 'G':
+          mult = 1024ULL * 1024 * 1024;
+          break;
+        default:
+          return static_cast<size_t>(0);
+      }
+      return static_cast<size_t>(v) * mult;
+    }
+    return static_cast<size_t>(v);
+  }();
+  return cap;
+}
+static volatile char PLAN_D_RETAINCAP_CANARY[] = "PLAND-RETAINCAP-20261118";
+extern "C" const volatile char* mlx_rocm_plan_d_retaincap_canary() {
+  return PLAN_D_RETAINCAP_CANARY;
+}
 #include <sstream>
 #include <string>
 #include <vector>
@@ -634,6 +682,21 @@ Buffer RocmAllocator::malloc_async(size_t size, int device, void* stream_v) {
         int64_t over = static_cast<int64_t>(get_active_memory()) +
             static_cast<int64_t>(get_cache_memory()) +
             static_cast<int64_t>(need) - static_cast<int64_t>(hbm_cap);
+        // Plan-D: retention-cap pressure (in addition to the 85% HBM
+        // cap); the excess is released to the pool by the existing
+        // release_cached_buffers path below.
+        const size_t rcap = retain_cap_bytes();
+        if (rcap) {
+          size_t retained = get_cache_memory() + graph_deferred_bytes() +
+              (decode_arena_.active ? decode_arena_.capacity : 0);
+          if (retained > rcap) {
+            int64_t o2 =
+                static_cast<int64_t>(retained) - static_cast<int64_t>(rcap);
+            if (o2 > over) {
+              over = o2;
+            }
+          }
+        }
         if (getenv("MLX_WORKER_DEBUG")) {
           size_t _ff = 0, _tt = 0;
           (void)hipMemGetInfo(&_ff, &_tt);
@@ -874,6 +937,19 @@ void RocmAllocator::free(Buffer buffer, bool force) {
   // + max_pool_size_ trim there), where a miss already has to wait.
   w1probe::note_recycle(buf->size, buf->data);
   buffer_cache_.recycle_to_cache(buf);
+  // Plan-D: bounded retention - after this buffer lands in the freelist,
+  // release the excess (over the cap) to the pool (lock is held).
+  // Deferred/arena bytes count into the budget but are not released here
+  // (the deferred path retires by generation; the arena resets per step).
+  const size_t rcap = retain_cap_bytes();
+  if (rcap) {
+    size_t retained = buffer_cache_.cache_size() + graph_deferred_bytes() +
+        (decode_arena_.active ? decode_arena_.capacity : 0);
+    if (retained > rcap && buffer_cache_.cache_size() > 0) {
+      buffer_cache_.release_cached_buffers(
+          std::min(retained - rcap, buffer_cache_.cache_size()));
+    }
+  }
 }
 
 Buffer RocmAllocator::make_buffer(void* ptr, size_t size) {

@@ -1,6 +1,6 @@
 #pragma once
 
-#define DBG_T4K 0  // P1B19 convention: probes off for measurement builds (record protocol state)
+#define DBG_T4K 0 // P1B19: probes off (measurement build, cloudy cross-box data point)  // P1B4-AUDIT 07:2xZ: t4k single-fire dump (block0 i0 j0 thread0)  // PATCH60-TMP disabled for the P1 plan-B measurement build (in-kernel printf stalls the model run)
 // build96 (2026-11-15): zero-init all mma C accumulator tiles. Uninitialized tile_C C/; the i32 WMMA builtin reads C as input accumulator -> per-k-block garbage (prev-iteration mma result) added to every product. Named by kprobe 2026-11-15: per-k-block const-magnitude random-sign error, prefix rms linear in K, output-relative via GLU amplification, p10-small elements exact.
 
 #include "vecdotq.cuh"
@@ -322,7 +322,10 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
     constexpr data_layout input_layout = get_input_data_layout();
     typedef tile<16,  8, int, input_layout>        tile_A;
     typedef tile<16,  8, int, input_layout>        tile_B;
-    typedef tile<16, 16, int, DATA_LAYOUT_J_MAJOR> tile_C;
+    // P1B16 (AUDIT18): C tile = I_MAJOR (probed gfx1201 fragment layout, 93 fix) - the
+    // J_MAJOR transpose mislabels the raw wmma fragment: += used x-scale row c and
+    // y-scale col 8h instead of row 8h+l / col c (AUDIT17 t6a: executed (i,j)=(t%16, 8h)).
+    typedef tile<16, 16, int, DATA_LAYOUT_I_MAJOR> tile_C;
 
     constexpr int sram_stride   = ggml_cuda_mmq_get_sram_stride(type, J, fallback, GGML_PREC_Q8);
     constexpr int rows_per_warp = ggml_cuda_mmq_get_rows_per_warp(type, J, fallback, GGML_PREC_Q8);
@@ -366,8 +369,113 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
                     sum[(j0/tile_C::J + n)*tile_C::ne + l] += dmA.x*dsB.x*C.x[l];
                     sum[(j0/tile_C::J + n)*tile_C::ne + l] += dmA.y*dsB.y;
 #if DBG_T4K
+                    {
+                        const int sl = (j0/tile_C::J + n)*tile_C::ne + l;
+                        if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.y == 0 && j0 == 0 && k01 == 0 && k00 == 0) {
+                            if (false) printf("[t6a] t=%d l=%d i=%d j=%d slot=%d C=%d dma=%08x dsb=%08x T=%.9g\n",
+                                   (int)threadIdx.x, (int)l, (int)i, (int)j, (int)sl, (int)C.x[l],
+                                   (unsigned)*(const uint32_t*)&dmA, (unsigned)*(const uint32_t*)&dsB,
+                                   dmA.x*dsB.x*C.x[l] + dmA.y*dsB.y);
+                        }
+                    }
+#endif
+#if DBG_T4K
+                    if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.y == 0 && l == 0 && j0 == 0 && k0 % 8 == 0 && k0 < 64) {
+                        // P1B11 (AUDIT13): per-thread full-K dump - C.x[0..7] + 8 x_dm words (rows 8h..8h+7) + y_dm word (col c)
+                        const int h4 = threadIdx.x >> 4;
+                        const int c4 = threadIdx.x & 15;
+                        if (false) printf("[t4p] t=%d k0=%d C: %d %d %d %d %d %d %d %d dma: %08x %08x %08x %08x %08x %08x %08x %08x dsb: %08x\n",
+                               (int)threadIdx.x, (int)k0,
+                               (int)C.x[0],(int)C.x[1],(int)C.x[2],(int)C.x[3],(int)C.x[4],(int)C.x[5],(int)C.x[6],(int)C.x[7],
+                               (unsigned)*(const uint32_t*)&x_dm[(8*h4+0)*sram_stride + k0/8],
+                               (unsigned)*(const uint32_t*)&x_dm[(8*h4+1)*sram_stride + k0/8],
+                               (unsigned)*(const uint32_t*)&x_dm[(8*h4+2)*sram_stride + k0/8],
+                               (unsigned)*(const uint32_t*)&x_dm[(8*h4+3)*sram_stride + k0/8],
+                               (unsigned)*(const uint32_t*)&x_dm[(8*h4+4)*sram_stride + k0/8],
+                               (unsigned)*(const uint32_t*)&x_dm[(8*h4+5)*sram_stride + k0/8],
+                               (unsigned)*(const uint32_t*)&x_dm[(8*h4+6)*sram_stride + k0/8],
+                               (unsigned)*(const uint32_t*)&x_dm[(8*h4+7)*sram_stride + k0/8],
+                               (unsigned)*(const uint32_t*)&y_dm[c4*MMQ_TILE_Y_K + k01/8]);
+                    }
+                    if (k0 == 0 && j0 == 0 && l == 0 && threadIdx.x == 0 && threadIdx.y == 0) {
+                        // P1B17 (AUDIT19): x-tile rows 0..1 words 0..63 for blocks (0,0)/(0,1)/(0,2),
+                        // y-tile rows 0..1 words 0..35 for blocks (0,0)/(1,0) - first pass only (k00==0 && k01==0)
+                        if ((blockIdx.x == 0 && blockIdx.y < 3) || (blockIdx.x == 1 && blockIdx.y == 0)) {
+                            if (k00 == 0 && k01 == 0) {
+                                for (int r = 0; r < 2; ++r) {
+                                    if (false) printf("[t4qx] k0=0 bx=%d by=%d row%d : %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n", (int)blockIdx.x, (int)blockIdx.y, r,
+                                           (unsigned)x_qs[r*sram_stride+0],(unsigned)x_qs[r*sram_stride+8],(unsigned)x_qs[r*sram_stride+16],(unsigned)x_qs[r*sram_stride+24],(unsigned)x_qs[r*sram_stride+32],(unsigned)x_qs[r*sram_stride+40],(unsigned)x_qs[r*sram_stride+48],(unsigned)x_qs[r*sram_stride+56],
+                                           (unsigned)x_qs[r*sram_stride+1],(unsigned)x_qs[r*sram_stride+9],(unsigned)x_qs[r*sram_stride+17],(unsigned)x_qs[r*sram_stride+25],(unsigned)x_qs[r*sram_stride+33],(unsigned)x_qs[r*sram_stride+41],(unsigned)x_qs[r*sram_stride+49],(unsigned)x_qs[r*sram_stride+57],
+                                           (unsigned)x_qs[r*sram_stride+2],(unsigned)x_qs[r*sram_stride+10],(unsigned)x_qs[r*sram_stride+18],(unsigned)x_qs[r*sram_stride+26],(unsigned)x_qs[r*sram_stride+34],(unsigned)x_qs[r*sram_stride+42],(unsigned)x_qs[r*sram_stride+50],(unsigned)x_qs[r*sram_stride+58],
+                                           (unsigned)x_qs[r*sram_stride+3],(unsigned)x_qs[r*sram_stride+11],(unsigned)x_qs[r*sram_stride+19],(unsigned)x_qs[r*sram_stride+27],(unsigned)x_qs[r*sram_stride+35],(unsigned)x_qs[r*sram_stride+43],(unsigned)x_qs[r*sram_stride+51],(unsigned)x_qs[r*sram_stride+59],
+                                           (unsigned)x_qs[r*sram_stride+4],(unsigned)x_qs[r*sram_stride+12],(unsigned)x_qs[r*sram_stride+20],(unsigned)x_qs[r*sram_stride+28],(unsigned)x_qs[r*sram_stride+36],(unsigned)x_qs[r*sram_stride+44],(unsigned)x_qs[r*sram_stride+52],(unsigned)x_qs[r*sram_stride+60],
+                                           (unsigned)x_qs[r*sram_stride+5],(unsigned)x_qs[r*sram_stride+13],(unsigned)x_qs[r*sram_stride+21],(unsigned)x_qs[r*sram_stride+29],(unsigned)x_qs[r*sram_stride+37],(unsigned)x_qs[r*sram_stride+45],(unsigned)x_qs[r*sram_stride+53],(unsigned)x_qs[r*sram_stride+61],
+                                           (unsigned)x_qs[r*sram_stride+6],(unsigned)x_qs[r*sram_stride+14],(unsigned)x_qs[r*sram_stride+22],(unsigned)x_qs[r*sram_stride+30],(unsigned)x_qs[r*sram_stride+38],(unsigned)x_qs[r*sram_stride+46],(unsigned)x_qs[r*sram_stride+54],(unsigned)x_qs[r*sram_stride+62],
+                                           (unsigned)x_qs[r*sram_stride+7],(unsigned)x_qs[r*sram_stride+15],(unsigned)x_qs[r*sram_stride+23],(unsigned)x_qs[r*sram_stride+31],(unsigned)x_qs[r*sram_stride+39],(unsigned)x_qs[r*sram_stride+47],(unsigned)x_qs[r*sram_stride+55],(unsigned)x_qs[r*sram_stride+63]);
+                                }
+                                if (blockIdx.x == 1 || blockIdx.y == 0) {
+                                    for (int r = 0; r < 2; ++r) {
+                                        if (false) printf("[t4qy] k0=0 bx=%d by=%d row%d : %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n", (int)blockIdx.x, (int)blockIdx.y, r,
+                                               (unsigned)y_qs[r*MMQ_TILE_Y_K+0],(unsigned)y_qs[r*MMQ_TILE_Y_K+1],(unsigned)y_qs[r*MMQ_TILE_Y_K+2],(unsigned)y_qs[r*MMQ_TILE_Y_K+3],(unsigned)y_qs[r*MMQ_TILE_Y_K+4],(unsigned)y_qs[r*MMQ_TILE_Y_K+5],(unsigned)y_qs[r*MMQ_TILE_Y_K+6],(unsigned)y_qs[r*MMQ_TILE_Y_K+7],
+                                               (unsigned)y_qs[r*MMQ_TILE_Y_K+8],(unsigned)y_qs[r*MMQ_TILE_Y_K+9],(unsigned)y_qs[r*MMQ_TILE_Y_K+10],(unsigned)y_qs[r*MMQ_TILE_Y_K+11],(unsigned)y_qs[r*MMQ_TILE_Y_K+12],(unsigned)y_qs[r*MMQ_TILE_Y_K+13],(unsigned)y_qs[r*MMQ_TILE_Y_K+14],(unsigned)y_qs[r*MMQ_TILE_Y_K+15],
+                                               (unsigned)y_qs[r*MMQ_TILE_Y_K+16],(unsigned)y_qs[r*MMQ_TILE_Y_K+17],(unsigned)y_qs[r*MMQ_TILE_Y_K+18],(unsigned)y_qs[r*MMQ_TILE_Y_K+19],(unsigned)y_qs[r*MMQ_TILE_Y_K+20],(unsigned)y_qs[r*MMQ_TILE_Y_K+21],(unsigned)y_qs[r*MMQ_TILE_Y_K+22],(unsigned)y_qs[r*MMQ_TILE_Y_K+23],
+                                               (unsigned)y_qs[r*MMQ_TILE_Y_K+24],(unsigned)y_qs[r*MMQ_TILE_Y_K+25],(unsigned)y_qs[r*MMQ_TILE_Y_K+26],(unsigned)y_qs[r*MMQ_TILE_Y_K+27],(unsigned)y_qs[r*MMQ_TILE_Y_K+28],(unsigned)y_qs[r*MMQ_TILE_Y_K+29],(unsigned)y_qs[r*MMQ_TILE_Y_K+30],(unsigned)y_qs[r*MMQ_TILE_Y_K+31],
+                                               (unsigned)y_qs[r*MMQ_TILE_Y_K+32],(unsigned)y_qs[r*MMQ_TILE_Y_K+33],(unsigned)y_qs[r*MMQ_TILE_Y_K+34],(unsigned)y_qs[r*MMQ_TILE_Y_K+35]);
+                                    }
+                                }
+                            }
+                        }
+                    } else if (k0 == 0 && j0 == 0 && l == 0 && blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0 && threadIdx.y == 0) {
+                        // P1B12 (AUDIT14): full staged code words (x rows 0..15 words 0..63, y rows 0..15 words 0..31), first kb0 only
+                        static __device__ unsigned t4q_count;
+                        if (t4q_count < 32) {
+                            for (int r = 0; r < 16; ++r) {
+                                if (false) printf("[t4qx] k0=%d row%d : %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n", (int)k0, r,
+                                   (unsigned)x_qs[r*sram_stride+0],(unsigned)x_qs[r*sram_stride+8],(unsigned)x_qs[r*sram_stride+16],(unsigned)x_qs[r*sram_stride+24],(unsigned)x_qs[r*sram_stride+32],(unsigned)x_qs[r*sram_stride+40],(unsigned)x_qs[r*sram_stride+48],(unsigned)x_qs[r*sram_stride+56],
+                                   (unsigned)x_qs[r*sram_stride+1],(unsigned)x_qs[r*sram_stride+9],(unsigned)x_qs[r*sram_stride+17],(unsigned)x_qs[r*sram_stride+25],(unsigned)x_qs[r*sram_stride+33],(unsigned)x_qs[r*sram_stride+41],(unsigned)x_qs[r*sram_stride+49],(unsigned)x_qs[r*sram_stride+57],
+                                   (unsigned)x_qs[r*sram_stride+2],(unsigned)x_qs[r*sram_stride+10],(unsigned)x_qs[r*sram_stride+18],(unsigned)x_qs[r*sram_stride+26],(unsigned)x_qs[r*sram_stride+34],(unsigned)x_qs[r*sram_stride+42],(unsigned)x_qs[r*sram_stride+50],(unsigned)x_qs[r*sram_stride+58],
+                                   (unsigned)x_qs[r*sram_stride+3],(unsigned)x_qs[r*sram_stride+11],(unsigned)x_qs[r*sram_stride+19],(unsigned)x_qs[r*sram_stride+27],(unsigned)x_qs[r*sram_stride+35],(unsigned)x_qs[r*sram_stride+43],(unsigned)x_qs[r*sram_stride+51],(unsigned)x_qs[r*sram_stride+59],
+                                   (unsigned)x_qs[r*sram_stride+4],(unsigned)x_qs[r*sram_stride+12],(unsigned)x_qs[r*sram_stride+20],(unsigned)x_qs[r*sram_stride+28],(unsigned)x_qs[r*sram_stride+36],(unsigned)x_qs[r*sram_stride+44],(unsigned)x_qs[r*sram_stride+52],(unsigned)x_qs[r*sram_stride+60],
+                                   (unsigned)x_qs[r*sram_stride+5],(unsigned)x_qs[r*sram_stride+13],(unsigned)x_qs[r*sram_stride+21],(unsigned)x_qs[r*sram_stride+29],(unsigned)x_qs[r*sram_stride+37],(unsigned)x_qs[r*sram_stride+45],(unsigned)x_qs[r*sram_stride+53],(unsigned)x_qs[r*sram_stride+61],
+                                   (unsigned)x_qs[r*sram_stride+6],(unsigned)x_qs[r*sram_stride+14],(unsigned)x_qs[r*sram_stride+22],(unsigned)x_qs[r*sram_stride+30],(unsigned)x_qs[r*sram_stride+38],(unsigned)x_qs[r*sram_stride+46],(unsigned)x_qs[r*sram_stride+54],(unsigned)x_qs[r*sram_stride+62],
+                                   (unsigned)x_qs[r*sram_stride+7],(unsigned)x_qs[r*sram_stride+15],(unsigned)x_qs[r*sram_stride+23],(unsigned)x_qs[r*sram_stride+31],(unsigned)x_qs[r*sram_stride+39],(unsigned)x_qs[r*sram_stride+47],(unsigned)x_qs[r*sram_stride+55],(unsigned)x_qs[r*sram_stride+63]);
+                            }
+                            t4q_count += 16;
+                        }
+                        if (t4q_count >= 32 && t4q_count < 64) {
+                            for (int r = 0; r < 16; ++r) {
+                                if (false) printf("[t4qy] k0=%d row%d : %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n", (int)k0, r,
+                                   (unsigned)y_qs[r*MMQ_TILE_Y_K+0],(unsigned)y_qs[r*MMQ_TILE_Y_K+1],(unsigned)y_qs[r*MMQ_TILE_Y_K+2],(unsigned)y_qs[r*MMQ_TILE_Y_K+3],(unsigned)y_qs[r*MMQ_TILE_Y_K+4],(unsigned)y_qs[r*MMQ_TILE_Y_K+5],(unsigned)y_qs[r*MMQ_TILE_Y_K+6],(unsigned)y_qs[r*MMQ_TILE_Y_K+7],
+                                   (unsigned)y_qs[r*MMQ_TILE_Y_K+8],(unsigned)y_qs[r*MMQ_TILE_Y_K+9],(unsigned)y_qs[r*MMQ_TILE_Y_K+10],(unsigned)y_qs[r*MMQ_TILE_Y_K+11],(unsigned)y_qs[r*MMQ_TILE_Y_K+12],(unsigned)y_qs[r*MMQ_TILE_Y_K+13],(unsigned)y_qs[r*MMQ_TILE_Y_K+14],(unsigned)y_qs[r*MMQ_TILE_Y_K+15],
+                                   (unsigned)y_qs[r*MMQ_TILE_Y_K+16],(unsigned)y_qs[r*MMQ_TILE_Y_K+17],(unsigned)y_qs[r*MMQ_TILE_Y_K+18],(unsigned)y_qs[r*MMQ_TILE_Y_K+19],(unsigned)y_qs[r*MMQ_TILE_Y_K+20],(unsigned)y_qs[r*MMQ_TILE_Y_K+21],(unsigned)y_qs[r*MMQ_TILE_Y_K+22],(unsigned)y_qs[r*MMQ_TILE_Y_K+23],
+                                   (unsigned)y_qs[r*MMQ_TILE_Y_K+24],(unsigned)y_qs[r*MMQ_TILE_Y_K+25],(unsigned)y_qs[r*MMQ_TILE_Y_K+26],(unsigned)y_qs[r*MMQ_TILE_Y_K+27],(unsigned)y_qs[r*MMQ_TILE_Y_K+28],(unsigned)y_qs[r*MMQ_TILE_Y_K+29],(unsigned)y_qs[r*MMQ_TILE_Y_K+30],(unsigned)y_qs[r*MMQ_TILE_Y_K+31]);
+                            }
+                            t4q_count += 16;
+                        }
+                    }
+                    if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0 && threadIdx.y == 0 && i == 0 && j == 0 && l == 0 && k0 < 64) {
+                        // P1B10 (AUDIT12): all 16 mma C lanes + full x_dm/y_dm smem words, every iteration
+                        if (false) printf("[t4c] k0=%d C: %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d dmA=%08x dsB=%08x\n",
+                               (int)k0,
+                               (int)C.x[0],(int)C.x[1],(int)C.x[2],(int)C.x[3],(int)C.x[4],(int)C.x[5],(int)C.x[6],(int)C.x[7],
+                               (int)C.x[8],(int)C.x[9],(int)C.x[10],(int)C.x[11],(int)C.x[12],(int)C.x[13],(int)C.x[14],(int)C.x[15],
+                               (unsigned)*(const uint32_t*)&x_dm[i*sram_stride + k0/8],
+                               (unsigned)*(const uint32_t*)&y_dm[j*MMQ_TILE_Y_K + k01/8]);
+                    }
+                    if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0 && threadIdx.y == 0 && i == 0 && j == 0 && l == 0 && (k0 == 0 || k0 == 32)) {
+                        // P1B10: staged code words - all 16 x rows + 16 y rows per call (k0=0 -> x words 0..7, k0=32 -> x words 32..39)
+                        if (k0 == 0) if (false) printf("[t4k] sram_stride=%d tile_yk=%d\n", (int)sram_stride, (int)MMQ_TILE_Y_K);
+                        for (int r = 0; r < 16; ++r) {
+                            if (false) printf("[t4x1] k0=%d row%d : %08x %08x %08x %08x %08x %08x %08x %08x\n", (int)k0, r,
+                                   (unsigned)x_qs[r*sram_stride+k0+0],(unsigned)x_qs[r*sram_stride+k0+1],(unsigned)x_qs[r*sram_stride+k0+2],(unsigned)x_qs[r*sram_stride+k0+3],
+                                   (unsigned)x_qs[r*sram_stride+k0+4],(unsigned)x_qs[r*sram_stride+k0+5],(unsigned)x_qs[r*sram_stride+k0+6],(unsigned)x_qs[r*sram_stride+k0+7]);
+                            if (false) printf("[t4y1] k0=%d row%d : %08x %08x %08x %08x %08x %08x %08x %08x\n", (int)k0, r,
+                                   (unsigned)y_qs[r*MMQ_TILE_Y_K+k01+0],(unsigned)y_qs[r*MMQ_TILE_Y_K+k01+1],(unsigned)y_qs[r*MMQ_TILE_Y_K+k01+2],(unsigned)y_qs[r*MMQ_TILE_Y_K+k01+3],
+                                   (unsigned)y_qs[r*MMQ_TILE_Y_K+k01+4],(unsigned)y_qs[r*MMQ_TILE_Y_K+k01+5],(unsigned)y_qs[r*MMQ_TILE_Y_K+k01+6],(unsigned)y_qs[r*MMQ_TILE_Y_K+k01+7]);
+                        }
+                    }
                     if (threadIdx.x == 0 && threadIdx.y == 0 && i == 0 && j == 0 && k0 < 40) {
-                        printf("[t4r] l=%d bx=%d by=%d i=%d j=%d k0=%d k01=%d dmA=(%04x,%04x) dsB=(%04x,%04x) C0=%d\n",
+                        if (false) printf("[t4r] l=%d bx=%d by=%d i=%d j=%d k0=%d k01=%d dmA=(%04x,%04x) dsB=(%04x,%04x) C0=%d\n",
                                (int)l, (int)blockIdx.x, (int)blockIdx.y, (int)i, (int)j,
                                (int)k0, (int)k01,
                                (unsigned)*(const uint16_t*)&dmA.x, (unsigned)*(const uint16_t*)&dmA.y,
@@ -377,6 +485,15 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
                 }
             }
         }
+#if DBG_T4K
+        if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.y == 0) {
+            const int tid = threadIdx.x;
+            for (int l = 0; l < 8; ++l) {
+                if (false) printf("[t6b] k0=%d t=%d s%d: %.9g\n",
+                       (int)(k00 + k01), (int)tid, l, sum[l]);
+            }
+        }
+#endif
     }
 #else
     typedef tile<16,  8, int> tile_A;
@@ -946,9 +1063,9 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
 
 #if DBG_T4K
                 if (k00 == 0 && k01 == 0 && blockIdx.x == 0 && blockIdx.y == 0 && i == 0 && j == 0 && threadIdx.x == 0 && threadIdx.y == 0) {
-                    printf("[t4k] bx=%d by=%d i=%d j=%d\n", (int)blockIdx.x, (int)blockIdx.y, (int)i, (int)j);
-                    for (int w4 = 0; w4 < 8; w4++) printf("[t4k] v[%d]=%08x u[%d]=%08x\n", w4, (unsigned)x_qs[w4], w4, (unsigned)y_qs[w4]);
-                    printf("[t4k] sc=%02x%02x%02x%02x m=%02x%02x%02x%02x dm=%04x ds8_0=%04x ds8_1=%04x\n",
+                    if (false) printf("[t4k] bx=%d by=%d i=%d j=%d\n", (int)blockIdx.x, (int)blockIdx.y, (int)i, (int)j);
+                    for (int w4 = 0; w4 < 8; w4++) if (false) printf("[t4k] v[%d]=%08x u[%d]=%08x\n", w4, (unsigned)x_qs[w4], w4, (unsigned)y_qs[w4]);
+                    if (false) printf("[t4k] sc=%02x%02x%02x%02x m=%02x%02x%02x%02x dm=%04x ds8_0=%04x ds8_1=%04x\n",
                         sc[0], sc[1], sc[2], sc[3], sc[8], sc[9], sc[10], sc[11],
                         *(const unsigned short*)&x_dm[0], *(const unsigned short*)&y_ds[0], *(const unsigned short*)&y_ds[1]);
                 }
