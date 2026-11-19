@@ -3,7 +3,7 @@
 # The EXACT G1 record-battery invocation (seq S=3 @1024, the B config, 3 rounds)
 # RUN FROM THE IN-TREE FILES: bench/k2arm-pinned.py (this dir) + the in-tree
 # model (models/qwen3_5.py), which this driver installs into the venv before the
-# run. Provenance + expected output: REPORT-W1-PHASE2-REPRO-20261112.md (repo root).
+# run. Provenance + expected output: docs/w1/REPORT-W1-PHASE2-REPRO-20261112.md.
 #
 # Env mapping (the box run state, neutral in-tree form; the doc states the mapping):
 #   MODELS       - the model root containing qwen3-9b-mlx (box: the models mount;
