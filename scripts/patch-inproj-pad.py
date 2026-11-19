@@ -30,9 +30,9 @@ import sys
 from pathlib import Path
 
 ANCHOR = '        if os.environ.get("MLX_ROCM_W1_INBA_FUSE", "0") == "1":\n'
-MARKER = 'MLX_ROCM_INPROJ_PAD'
+MARKER = "MLX_ROCM_INPROJ_PAD"
 
-NEW = '''        if os.environ.get("MLX_ROCM_INPROJ_PAD", "0") == "1":
+NEW = """        if os.environ.get("MLX_ROCM_INPROJ_PAD", "0") == "1":
             # INPROJ-PAD (2026-11-19): in_proj_b/a -> ONE fused GEMM padded
             # to N = next multiple of 128 (num_v_heads=16: 32 -> 128). The
             # padded rows are a zero tensor re-quantized in place, so their
@@ -90,7 +90,7 @@ NEW = '''        if os.environ.get("MLX_ROCM_INPROJ_PAD", "0") == "1":
             ba = fused(inputs)
             b = mx.contiguous(ba[..., : self.num_v_heads])
             a = mx.contiguous(ba[..., self.num_v_heads : 2 * self.num_v_heads])
-'''
+"""
 
 BAK = "qwen3_5.py.bak-inprojpad"
 
