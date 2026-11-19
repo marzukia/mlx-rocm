@@ -1,0 +1,67 @@
+--- a/mlx_lm/models/qwen3_5.py
++++ b/mlx_lm/models/qwen3_5.py
+@@ -261,6 +261,64 @@
+ 
+         qkv = self.in_proj_qkv(inputs)
+         z = self.in_proj_z(inputs).reshape(B, S, self.num_v_heads, self.head_v_dim)
++        if os.environ.get("MLX_ROCM_INPROJ_PAD", "0") == "1":
++            # INPROJ-PAD (2026-11-19): in_proj_b/a -> ONE fused GEMM padded
++            # to N = next multiple of 128 (num_v_heads=16: 32 -> 128). The
++            # padded rows are a zero tensor re-quantized in place, so their
++            # dequant is exactly 0 (weight == zero-point); the output is
++            # sliced back to N = 2 * num_v_heads. Existing kernels only:
++            # the N % 128 == 0 shape dispatches to the stock q4_k mmq /
++            # wmma-dense prefill path. Default OFF = zero behavior change.
++            # Built lazily on the first call (after load() has installed
++            # the real weight/scales/biases); the one-time fill lands in
++            # the warm pass.
++            pad = getattr(self, "_inba_pad", None)
++            if pad is None:
++                ib, ia = self.in_proj_b, self.in_proj_a
++                n = 2 * self.num_v_heads
++                m = 128
++                N = n if n % m == 0 else (n // m + 1) * m
++                if getattr(ib, "scales", None) is not None:  # QuantizedLinear
++                    fused = nn.QuantizedLinear(
++                        self.hidden_size,
++                        N,
++                        bits=ib.bits,
++                        group_size=ib.group_size,
++                        bias=False,
++                    )
++                    zq = mx.quantize(
++                        mx.zeros((N - n, self.hidden_size)),
++                        bits=ib.bits,
++                        group_size=ib.group_size,
++                    )
++                    fused.weight = mx.concatenate(
++                        [ib.weight, ia.weight, zq.weight], axis=0
++                    )
++                    fused.scales = mx.concatenate(
++                        [ib.scales, ia.scales, zq.scales], axis=0
++                    )
++                    fused.biases = mx.concatenate(
++                        [ib.biases, ia.biases, zq.biases], axis=0
++                    )
++                else:  # plain Linear
++                    fused = nn.Linear(self.hidden_size, N, bias=False)
++                    fused.weight = mx.concatenate(
++                        [
++                            ib.weight,
++                            ia.weight,
++                            mx.zeros(
++                                (N - n, self.hidden_size),
++                                dtype=ib.weight.dtype,
++                            ),
++                        ],
++                        axis=0,
++                    )
++                pad = (fused, n)
++                self._inba_pad = pad
++            fused, n = pad
++            ba = fused(inputs)
++            b = mx.contiguous(ba[..., : self.num_v_heads])
++            a = mx.contiguous(ba[..., self.num_v_heads : 2 * self.num_v_heads])
+         if os.environ.get("MLX_ROCM_W1_INBA_FUSE", "0") == "1":
+             fused = getattr(self, "_inba_fused", None)
+             if fused is None:
