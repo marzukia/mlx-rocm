@@ -62,14 +62,21 @@ NEW = """        if os.environ.get("MLX_ROCM_INPROJ_PAD", "0") == "1":
                         bits=ib.bits,
                         group_size=ib.group_size,
                     )
+                    # PAD-FIX (t3208 ARM B, 2026-11-19): mx.quantize in this
+                    # wheel returns a [weight, scales, biases] list (not a
+                    # QuantizedLinear); handle both return shapes.
+                    if isinstance(zq, list):
+                        zqw, zqs, zqb = zq[0], zq[1], zq[2]
+                    else:
+                        zqw, zqs, zqb = zq.weight, zq.scales, zq.biases
                     fused.weight = mx.concatenate(
-                        [ib.weight, ia.weight, zq.weight], axis=0
+                        [ib.weight, ia.weight, zqw], axis=0
                     )
                     fused.scales = mx.concatenate(
-                        [ib.scales, ia.scales, zq.scales], axis=0
+                        [ib.scales, ia.scales, zqs], axis=0
                     )
                     fused.biases = mx.concatenate(
-                        [ib.biases, ia.biases, zq.biases], axis=0
+                        [ib.biases, ia.biases, zqb], axis=0
                     )
                 else:  # plain Linear
                     fused = nn.Linear(self.hidden_size, N, bias=False)
