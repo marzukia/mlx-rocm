@@ -3,20 +3,6 @@
 #include "common.cuh"
 #include "unary.cuh"
 
-// PORT-DP4A-FORCE (2026-11-14): force the dp4a (non-MMA) data layout for this
-// TU. The ported WMMA i32 fragment packing (load_ldmatrix + the two-call
-// wmma_i32_16x16x16_iu8 mma) mispairs K slices for specific (j, k) slots:
-// identity-pattern data passes, random data shows d4 slot swaps
-// (e.g. col 155 seed 6: block 1 contribution replaced by block 19).
-// The dp4a Q8_0 x Q8_1 path (same rdna4 config table, __dp4a dot) is the
-// original port intent and is numerically verified against mx.dequantize.
-// 1b RE-ENABLE (2026-11-15, REV 3.1 lock): the K-slice mispairing was the
-// fragment packing - load_ldmatrix assumed one contiguous 8-i8 run per
-// lane; the gfx12 int8 fragment is two runs of four (probed on-card,
-// wmma_i8_layout_probe.hip). mma.cuh now loads the two runs for T=int.
-// Gate order per REV 3.1: F6 with non-identity (random/real) data BEFORE
-// the 45/55 rate gate - identity data cannot see this class of bug.
-
 #include <climits>
 #include <cstdint>
 
@@ -701,9 +687,9 @@ static constexpr __device__ ggml_cuda_mmq_util_funcs ggml_cuda_mmq_get_util_func
             case GGML_TYPE_Q8_0:
                 return ggml_cuda_mmq_util_funcs(
                     VDR_Q8_0_Q8_1_MMQ,
-                    ggml_cuda_mmq_load_tiles_q8_0<type, J, fallback, has_fusion>,
+                    ggml_cuda_mmq_load_tiles_q8_0<type, J, fallback, false>,
                     ggml_cuda_mmq_vec_dot_q8_0_q8_1_dp4a<type, J, fallback>,
-                    ggml_cuda_mmq_write_back_dp4a<type, J, fallback, prec_src1, has_fusion>);
+                    ggml_cuda_mmq_write_back_dp4a<type, J, fallback, prec_src1>);
 // ---------------------------------------------------------------------------------------------
             case GGML_TYPE_Q2_K:
                 return ggml_cuda_mmq_util_funcs(
@@ -720,21 +706,21 @@ static constexpr __device__ ggml_cuda_mmq_util_funcs ggml_cuda_mmq_get_util_func
             case GGML_TYPE_Q4_K:
                 return ggml_cuda_mmq_util_funcs(
                     VDR_Q4_K_Q8_1_MMQ,
-                    ggml_cuda_mmq_load_tiles_q4_K<type, J, fallback, has_fusion>,
+                    ggml_cuda_mmq_load_tiles_q4_K<type, J, fallback, false>,
                     ggml_cuda_mmq_vec_dot_q4_K_q8_1_dp4a<type, J, fallback>,
-                    ggml_cuda_mmq_write_back_dp4a<type, J, fallback, prec_src1, has_fusion>);
+                    ggml_cuda_mmq_write_back_dp4a<type, J, fallback, prec_src1>);
             case GGML_TYPE_Q5_K:
                 return ggml_cuda_mmq_util_funcs(
                     VDR_Q5_K_Q8_1_MMQ,
-                    ggml_cuda_mmq_load_tiles_q5_K<type, J, fallback, has_fusion>,
+                    ggml_cuda_mmq_load_tiles_q5_K<type, J, fallback, false>,
                     ggml_cuda_mmq_vec_dot_q5_K_q8_1_dp4a<type, J, fallback>,
-                    ggml_cuda_mmq_write_back_dp4a<type, J, fallback, prec_src1, has_fusion>);
+                    ggml_cuda_mmq_write_back_dp4a<type, J, fallback, prec_src1>);
             case GGML_TYPE_Q6_K:
                 return ggml_cuda_mmq_util_funcs(
                     VDR_Q6_K_Q8_1_MMQ,
-                    ggml_cuda_mmq_load_tiles_q6_K<type, J, fallback, has_fusion>,
+                    ggml_cuda_mmq_load_tiles_q6_K<type, J, fallback, false>,
                     ggml_cuda_mmq_vec_dot_q6_K_q8_1_dp4a<type, J, fallback>,
-                    ggml_cuda_mmq_write_back_dp4a<type, J, fallback, prec_src1, has_fusion>);
+                    ggml_cuda_mmq_write_back_dp4a<type, J, fallback, prec_src1>);
 // ---------------------------------------------------------------------------------------------
             case GGML_TYPE_IQ1_S:
                 return ggml_cuda_mmq_util_funcs(
@@ -775,9 +761,9 @@ static constexpr __device__ ggml_cuda_mmq_util_funcs ggml_cuda_mmq_get_util_func
             case GGML_TYPE_IQ4_XS:
                 return ggml_cuda_mmq_util_funcs(
                     VDR_IQ4_XS_Q8_1_MMQ,
-                    ggml_cuda_mmq_load_tiles_iq4_xs<type, J, fallback, has_fusion>,
+                    ggml_cuda_mmq_load_tiles_iq4_xs<type, J, fallback, false>,
                     ggml_cuda_mmq_vec_dot_q8_0_q8_1_dp4a<type, J, fallback>,
-                    ggml_cuda_mmq_write_back_dp4a<type, J, fallback, prec_src1, has_fusion>);
+                    ggml_cuda_mmq_write_back_dp4a<type, J, fallback, prec_src1>);
             case GGML_TYPE_IQ4_NL:
                 return ggml_cuda_mmq_util_funcs(
                     VDR_IQ4_NL_Q8_1_MMQ,
@@ -1013,8 +999,6 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
     constexpr ggml_cuda_mmq_load_tiles_t load_tiles = ggml_cuda_mmq_get_load_tiles<type, J, fallback, prec_src1, has_fusion>();
     constexpr ggml_cuda_mmq_vec_dot_t    vec_dot    = ggml_cuda_mmq_get_vec_dot<type, J, fallback, prec_src1>();
     constexpr ggml_cuda_mmq_write_back_t write_back = ggml_cuda_mmq_get_write_back<type, J, fallback, prec_src1, has_fusion>();
-    // P1B5-B: see the wb_ids block after the tile_x setup (AUDIT6: the []-alias was a separate shared region).
-
 
     extern __shared__ int data_mul_mat_q[];
     int * tile_y = data_mul_mat_q + J;
@@ -1065,21 +1049,12 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
 
         __syncthreads();
 
-
-        if (blockIdx.x == 0 && blockIdx.y == 0 && kb0 < 2 && threadIdx.x == 0 && threadIdx.y == 0) {
-            if (false) printf("[t4y1] kb0=%d %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n", (int)kb0,
-                   (unsigned)tile_y[0],(unsigned)tile_y[1],(unsigned)tile_y[2],(unsigned)tile_y[3],(unsigned)tile_y[4],
-                   (unsigned)tile_y[5],(unsigned)tile_y[6],(unsigned)tile_y[7],(unsigned)tile_y[8],(unsigned)tile_y[9],
-                   (unsigned)tile_y[10],(unsigned)tile_y[11],(unsigned)tile_y[12],(unsigned)tile_y[13],(unsigned)tile_y[14]);
-        }
         vec_dot(tile_x, tile_y, sum, 0);
-
-
 
         __syncthreads();
 
         {
-            const int * by0 = y + ncols_y * ((kb0 * qk / ne_block) * sz + sz); // P1B7: reference-verbatim (AUDIT9)
+            const int * by0 = y + ncols_y * ((kb0 * qk / ne_block) * sz + sz);
 #pragma unroll
             for (int l0 = 0; l0 < J * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
                 int l = l0 + threadIdx.y*warp_size + threadIdx.x;
@@ -1090,37 +1065,11 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
 
         __syncthreads();
 
-        if (blockIdx.x == 0 && blockIdx.y == 0 && kb0 < 2 && threadIdx.x == 0 && threadIdx.y == 0) {
-            if (false) printf("[t4y2] kb0=%d %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n", (int)kb0,
-                   (unsigned)tile_y[0],(unsigned)tile_y[1],(unsigned)tile_y[2],(unsigned)tile_y[3],(unsigned)tile_y[4],
-                   (unsigned)tile_y[5],(unsigned)tile_y[6],(unsigned)tile_y[7],(unsigned)tile_y[8],(unsigned)tile_y[9],
-                   (unsigned)tile_y[10],(unsigned)tile_y[11],(unsigned)tile_y[12],(unsigned)tile_y[13],(unsigned)tile_y[14]);
-        }
         vec_dot(tile_x, tile_y, sum, MMQ_TILE_NE_K);
-        // P1B14 (AUDIT16): per-pass partial sum[] dump - warp 0 (threadIdx.y==0), after each kb pass
-        if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.y == 0) {
-            const int tid = threadIdx.x;
-            const int NS = (int)(sizeof(sum)/sizeof(float));
-            for (int s0 = 0; s0 < NS; s0 += 16) {
-                if (false) printf("[t5p] kb=%d tid=%d s0=%d: %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g\n",
-                       kb0, tid, s0, sum[s0],sum[s0+1],sum[s0+2],sum[s0+3],sum[s0+4],sum[s0+5],sum[s0+6],sum[s0+7],
-                       sum[s0+8],sum[s0+9],sum[s0+10],sum[s0+11],sum[s0+12],sum[s0+13],sum[s0+14],sum[s0+15]);
-            }
-        }
 
         __syncthreads();
     }
 
-    // P1B13 (AUDIT15): full sum[] dump - all 256 threads of block (0,0), after K loop
-    if (blockIdx.x == 0 && blockIdx.y == 0) {
-        const int tid = threadIdx.y*32 + threadIdx.x;
-        const int NS = (int)(sizeof(sum)/sizeof(float));
-        for (int s0 = 0; s0 < NS; s0 += 16) {
-            if (false) printf("[t5s] tid=%d s0=%d: %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g\n",
-                   tid, s0, sum[s0],sum[s0+1],sum[s0+2],sum[s0+3],sum[s0+4],sum[s0+5],sum[s0+6],sum[s0+7],
-                   sum[s0+8],sum[s0+9],sum[s0+10],sum[s0+11],sum[s0+12],sum[s0+13],sum[s0+14],sum[s0+15]);
-        }
-    }
     if (fixup) {
         write_back(sum, wb_ids, tmp_fixup + blockIdx.x*(J*I), y_scale, I, I, J, glu_op, glu_limit, false);
     } else {
@@ -1142,10 +1091,11 @@ static __global__ void mul_mat_q(
         const uint3 sample_ratio, const uint3 nsamples_y, const int stride_sample_x, const int stride_sample_y, const int stride_sample_dst,
         const uint3 ntx, const bool dst_bf16) {
 
-    // PORT-FUSION-DP4A (2026-11-14): the dp4a write-back carries the
-    // has_fusion template (ggml_cuda_mmq_write_back_dp4a) - fusion is
-    // available on this port (the TURING_MMA gate is an NV leftover).
+#ifdef TURING_MMA_AVAILABLE
     constexpr bool fusion_available = true;
+#else
+    constexpr bool fusion_available = false;
+#endif // TURING_MMA_AVAILABLE
 
     // Skip unused template specializations for faster compilation:
     if (ggml_cuda_mmq_get_config(type, J, fallback, prec_src1).type == GGML_TYPE_COUNT || (has_fusion && !fusion_available)) {
@@ -1157,7 +1107,6 @@ static __global__ void mul_mat_q(
     constexpr int nwarps    = ggml_cuda_mmq_get_nthreads(type, J, fallback, prec_src1) / warp_size;
     constexpr int qk        = ggml_cuda_type_traits<type>::qk;
     constexpr int I         = ggml_cuda_mmq_get_I(type, J, fallback, prec_src1);
-
 
     const uint32_t nty = (nrows_x + I - 1) / I; // Number of tiles y
 
@@ -1344,12 +1293,7 @@ static __global__ void mul_mat_q(
 
         constexpr bool fixup = false; // All but (potentially) the last iterations write their data to dst rather than the fixup buffer.
         mul_mat_q_process_tile<type, J, fallback, fixup, prec_src1, false>
-            (x, x_gate, offset_x, // P1B18 (AUDIT20): dst_bf16 - offset_dst is in OUTPUT-ELEMENT units (bf16 = 2B),
-            // dst is float* (4B/step) -> advance by offset_dst/2 (even: jt*J*N + it*I, J=I=128).
-            // Unfixed: every nonzero (jt,it) tile lands at 2x offset - M=256 J-tile1 OOB
-            // (region = stale HBM), M=128 it-odd zero / it-even shifted +128 w-cols, M=512
-            // row-512 OOB corner; block (0,0) offset 0 stayed clean through AUDIT14-19.
-            y + offset_y, ids_dst_shared, dst + (dst_bf16 ? offset_dst/2 : offset_dst), tmp_fixup, y_scale_tile,
+            (x, x_gate, offset_x, y + offset_y, ids_dst_shared, dst + (dst_bf16 ? offset_dst/2 : offset_dst), tmp_fixup, y_scale_tile,
              glu_op, glu_limit, stride_row_x, ncols_y, stride_col_dst,
              tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop, dst_bf16);
 
@@ -1433,12 +1377,7 @@ static __global__ void mul_mat_q(
 
     constexpr bool fixup = true; // Last index writes its data to fixup buffer to avoid data races with other blocks.
     mul_mat_q_process_tile<type, J, fallback, fixup, prec_src1, false>
-        (x, x_gate, offset_x, // P1B18 (AUDIT20): dst_bf16 - offset_dst is in OUTPUT-ELEMENT units (bf16 = 2B),
-            // dst is float* (4B/step) -> advance by offset_dst/2 (even: jt*J*N + it*I, J=I=128).
-            // Unfixed: every nonzero (jt,it) tile lands at 2x offset - M=256 J-tile1 OOB
-            // (region = stale HBM), M=128 it-odd zero / it-even shifted +128 w-cols, M=512
-            // row-512 OOB corner; block (0,0) offset 0 stayed clean through AUDIT14-19.
-            y + offset_y, ids_dst_shared, dst + (dst_bf16 ? offset_dst/2 : offset_dst), tmp_fixup, y_scale_tile,
+        (x, x_gate, offset_x, y + offset_y, ids_dst_shared, dst + (dst_bf16 ? offset_dst/2 : offset_dst), tmp_fixup, y_scale_tile,
          glu_op, glu_limit, stride_row_x, ncols_y, stride_col_dst,
          tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop, dst_bf16);
 }
@@ -1591,7 +1530,7 @@ struct mmq_args {
     int64_t ncols_max;
     int J_best; // Tile width in ne11(dense)/ne12(MoE) direction to use for optimal performance.
     ggml_cuda_mm_fusion_args_device fusion = {}; // gate != nullptr selects the fused gate/up/GLU path
-    bool dst_bf16 = false; // PATCH81: out is bf16 -> GEMM writes bf16 in place (no f32 temp + tcopy)
+    bool dst_bf16 = false; // AB-PORT-ADAPTATION: PATCH81 field (out is bf16 -> GEMM writes bf16 in place)
 };
 
 static size_t mmq_get_nbytes_shared(const ggml_cuda_mmq_config & config, const int cc) {
@@ -1624,13 +1563,9 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
     const int nty  = (args.nrows_x   + I_dst - 1) / I_dst;
     const int ntx  = (args.ncols_max + config.J - 1) / config.J;
     const int ntzw = args.nchannels_y * args.nsamples_y;
-    if (type == GGML_TYPE_Q4_K && std::getenv("MLX_MMQ_CFG") != nullptr) {
-        fprintf(stderr, "[launch4k] cc=%d J=%d fb=%d cfg{I=%d J=%d nthreads=%d K_vram=%d stream_k=%d} nrows_x=%ld ncols_max=%ld ntx=%d nty=%d ntzw=%d smem=%zu\n",
-                cc, J, (int)fallback, config.I, config.J, config.nthreads, config.K_vram, (int)config.stream_k,
-                (long)args.nrows_x, (long)args.ncols_max, ntx, nty, ntzw, (size_t)nbytes_shared);
-    }
     // Column tiles innermost so that the concurrently running blocks share the same tile of x and read it from L2.
     const dim3 block_nums_xy_tiling(ntx, nty, ntzw);
+
     GGML_ASSERT(args.nchannels_y % args.nchannels_x == 0);
     GGML_ASSERT(args.nsamples_y  % args.nsamples_x  == 0);
     const int channel_ratio = args.nchannels_y / args.nchannels_x;

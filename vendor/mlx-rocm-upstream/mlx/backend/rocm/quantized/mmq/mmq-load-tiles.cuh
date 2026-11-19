@@ -1,9 +1,23 @@
-#define DBG_T4K 0 // P1B19: probes off (measurement build, cloudy cross-box data point)  // P1B4-AUDIT2: effective define (load-tiles is last-include)  // PATCH61-TMP disabled for the P1 plan-B measurement build (in-kernel printf stalls the model run)
+#pragma once
 static volatile const char B97T2FIX_CANARY[] = "B97T2FIX-CANARY-20261115";
 static_assert(sizeof(B97T2FIX_CANARY) > 16, "canary");
 static volatile const char B97PROBE_CANARY[] = "B97PROBE-CANARY-20261116";
 static_assert(sizeof(B97PROBE_CANARY) > 24, "probe canary");
-#pragma once
+
+
+// AB-PORT-ADAPTATION (jimmy, source-A/B): ggml_half is a plain uint16_t in this
+// tree (no conversion operator); the 29c720eaf .cuh use direct bxi->d -> float.
+// Decode the IEEE-754 half bit pattern manually (the attport-proven decode; the
+// intrinsics resolve wrong in this build). Only normal + subnormal + zero are
+// needed for the mmq scales.
+static __device__ __forceinline__ float mmq_port_half_bits_to_f32(uint16_t h) {
+    const uint32_t s = ((uint32_t)h & 0x8000u) << 16;
+    const uint32_t e = ((uint32_t)h >> 10) & 0x1Fu;
+    const uint32_t m = (uint32_t)h & 0x3FFu;
+    if (e == 0u) return (float)((double)m * ldexp(1.0, -24)) * (s ? -1.f : 1.f);
+    if (e == 31u) return s ? -INFINITY : INFINITY;
+    return (float)((double)(m + 1024u) * ldexp(1.0, e - 25)) * (s ? -1.f : 1.f);
+}
 
 #include "vecdotq.cuh"
 
@@ -115,9 +129,9 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         const block_q1_0 * bxi = (const block_q1_0 *) x + kbx0 + i*stride + scale_block;
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-        x_df[i*sram_stride                           + ksx] = bxi->d;
+        x_df[i*sram_stride                           + ksx] = mmq_port_half_bits_to_f32(bxi->d);
 #else
-        x_df[i*(2*MMQ_TILE_NE_K/QI8_0) + i/(QI8_0/2) + ksx] = bxi->d;
+        x_df[i*(2*MMQ_TILE_NE_K/QI8_0) + i/(QI8_0/2) + ksx] = mmq_port_half_bits_to_f32(bxi->d);
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
     }
 }
@@ -206,9 +220,9 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         const block_q2_0 * bxi = (const block_q2_0 *) x + kbx0 + i*stride + scale_block;
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-        x_df[i*sram_stride                           + ksx] = bxi->d;
+        x_df[i*sram_stride                           + ksx] = mmq_port_half_bits_to_f32(bxi->d);
 #else
-        x_df[i*(2*MMQ_TILE_NE_K/QI8_0) + i/(QI8_0/2) + ksx] = bxi->d;
+        x_df[i*(2*MMQ_TILE_NE_K/QI8_0) + i/(QI8_0/2) + ksx] = mmq_port_half_bits_to_f32(bxi->d);
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
     }
 }
@@ -271,9 +285,9 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         const block_q4_0 * bxi = (const block_q4_0 *) x + kbx0 + i*stride + kbxd;
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-        x_df[i*sram_stride                     + kbxd] = bxi->d;
+        x_df[i*sram_stride                     + kbxd] = mmq_port_half_bits_to_f32(bxi->d);
 #else
-        x_df[i*(MMQ_TILE_NE_K/QI4_0) + i/QI4_0 + kbxd] = bxi->d;
+        x_df[i*(MMQ_TILE_NE_K/QI4_0) + i/QI4_0 + kbxd] = mmq_port_half_bits_to_f32(bxi->d);
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
     }
 }
@@ -418,9 +432,9 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         const block_q5_0 * bxi = (const block_q5_0 *) x + kbx0 + i*stride + kbxd;
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-        x_df[i*sram_stride                     + kbxd] = bxi->d;
+        x_df[i*sram_stride                     + kbxd] = mmq_port_half_bits_to_f32(bxi->d);
 #else
-        x_df[i*(MMQ_TILE_NE_K/QI5_0) + i/QI5_0 + kbxd] = bxi->d;
+        x_df[i*(MMQ_TILE_NE_K/QI5_0) + i/QI5_0 + kbxd] = mmq_port_half_bits_to_f32(bxi->d);
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE)  || defined(AMD_WMMA_AVAILABLE)
     }
 }
@@ -505,24 +519,6 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
     }
 }
 
-
-// PORT: ggml_half is a plain uint16 here (no conversion operator); decode an
-// IEEE-754 half bit pattern to float manually (the intrinsics in this build
-// resolve to something wrong). Only normal + subnormal + zero needed for the
-// mmq scales; inf/nan are not produced by the quantizers.
-static __device__ __forceinline__ float mmq_port_half_bits_to_f32(uint16_t h) {
-    const uint32_t s = ((uint32_t)h & 0x8000u) << 16;
-    const uint32_t e = ((uint32_t)h >> 10) & 0x1Fu;
-    const uint32_t m = (uint32_t)h & 0x3FFu;
-    if (e == 0u) {
-        return (float)((double)m * ldexp(1.0, -24)) * (s ? -1.f : 1.f);
-    }
-    if (e == 31u) {
-        return s ? -INFINITY : INFINITY;
-    }
-    return (float)((double)(m + 1024u) * ldexp(1.0, e - 25)) * (s ? -1.f : 1.f);
-}
-
 template <ggml_type type, int J, bool fallback, bool has_fusion> static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_q8_0(
         const char * __restrict__ x, const char * __restrict__ x_gate, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
     constexpr int warp_size   = ggml_cuda_get_physical_warp_size();
@@ -580,10 +576,9 @@ template <ggml_type type, int J, bool fallback, bool has_fusion> static __device
         const block_q8_0 * bxi = ggml_cuda_mmq_x_row<block_q8_0, has_fusion>(x, x_gate, kbx0, i, stride) + kbxd;
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-        // PORT: ggml_half is a plain uint16_t here - convert the half bits to float
-        x_df[i*sram_stride                           + kbxd] = mmq_port_half_bits_to_f32(bxi->d);  // PORT
+        x_df[i*sram_stride                           + kbxd] = mmq_port_half_bits_to_f32(bxi->d);
 #else
-        x_df[i*(2*MMQ_TILE_NE_K/QI8_0) + i/(QI8_0/2) + kbxd] = mmq_port_half_bits_to_f32(bxi->d);  // PORT
+        x_df[i*(2*MMQ_TILE_NE_K/QI8_0) + i/(QI8_0/2) + kbxd] = mmq_port_half_bits_to_f32(bxi->d);
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
     }
 }
@@ -731,7 +726,7 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         const int8_t * sc8 = (const int8_t *) &sc;
-        const float d = bxi->d;
+        const float d = mmq_port_half_bits_to_f32(bxi->d);
 
 #pragma unroll
         for (int l = 0; l < int(sizeof(int)); ++l) {
@@ -753,7 +748,7 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
 
         const block_q3_K * bxi = (const block_q3_K *) x + kbx0 + i*stride;
 
-        x_df[i] = bxi->d;
+        x_df[i] = mmq_port_half_bits_to_f32(bxi->d);
     }
 #endif // !(defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE)) || defined(AMD_WMMA_AVAILABLE)
 }
@@ -770,9 +765,6 @@ static __device__ __forceinline__ int unpack_scales_q45_K(const int * scales, co
 
 template <ggml_type type, int J, bool fallback, bool has_fusion> static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_q4_K(
         const char * __restrict__ x, const char * __restrict__ x_gate, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
-    // G1 build-hygiene canary (runtime odr-use: static_assert alone is DCE-d)
-    volatile const char b97t2fix_canary_ref = B97T2FIX_CANARY[0];
-    (void)b97t2fix_canary_ref;
     constexpr int warp_size   = ggml_cuda_get_physical_warp_size();
     constexpr int nwarps      = ggml_cuda_mmq_get_nthreads(type, J, fallback, GGML_PREC_Q8) / warp_size;
     constexpr int I           = ggml_cuda_mmq_get_I(type, J, fallback, GGML_PREC_Q8);
@@ -804,53 +796,10 @@ template <ggml_type type, int J, bool fallback, bool has_fusion> static __device
         const int qs0 = get_int_b4(bxi->qs, txi);
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-        // P1B4-C (2026-11-17): REFERENCE-VERBATIM staging (29c720eaf
-        // ggml-cuda/mmq-load-tiles.cuh, load_tiles_q4_K AMD branch). The mma
-        // D1 word pattern is natural K (word w = elements 4w..4w+3); this
-        // two-line gather unpermutes the CANONICAL q4_K qs layout (the
-        // P1B4-STDQS repack emits exactly quantize_row_q4_K_ref order) to
-        // that order - the reference's own combination, D1 battery-verified
-        // on this box (clear2 500x 3683 t/s). B97 raw-byte-stream (permuted
-        // on canonical input: p97p on-card) and candidate B (stride-2
-        // mispair: AUDIT3 RELERR 1.9, FITC c=-0.004) both measured wrong.
         x_qs[i*sram_stride + 16*(txi/8) + txi % 8 + 0] = (qs0 >> 0) & 0x0F0F0F0F;
         x_qs[i*sram_stride + 16*(txi/8) + txi % 8 + 8] = (qs0 >> 4) & 0x0F0F0F0F;
 #else
-        // PORT-INTERLEAVE-Q4K-DP4A (PATCH58, 2026-11-15): the dp4a q4_K dot
-        // (vec_dot_q4_K_q8_1_impl_mmq) pairs tile word m (g=m/8, j=m%8),
-        // byte b: low = w elem 64g+4j+b (subblock 2g), high = w elem
-        // 64g+32+4j+b (subblock 2g+1), against the in-order x codes.
-        // The stock raw-qs copy mispairs every k>0 (CPU sim rel err
-        // 27-388% vs 1e-15 with this interleave; GPU one-hot M=32: only
-        // k=0 correct pre-patch).
-        const int g4 = txi / 8, j4 = txi % 8;
-        const uint16_t al = *(const uint16_t *)(bxi->qs + 32*g4 + 2*j4);
-        const uint16_t ah = *(const uint16_t *)(bxi->qs + 32*g4 + 2*j4 + 2);
-        const uint32_t a4 = (uint32_t)al | ((uint32_t)ah << 16);
-        const uint16_t bl = *(const uint16_t *)(bxi->qs + 32*g4 + 16 + 2*j4);
-        const uint16_t bh = *(const uint16_t *)(bxi->qs + 32*g4 + 16 + 2*j4 + 2);
-        const uint32_t b4 = (uint32_t)bl | ((uint32_t)bh << 16);
-        uint32_t ww4 = 0;
-#pragma unroll
-        for (int b4i = 0; b4i < 4; ++b4i)
-            ww4 |= (uint32_t)(((a4 >> (4*b4i)) & 0xF) | (((b4 >> (4*b4i)) & 0xF) << 4)) << (8*b4i);
-        x_qs[i*(MMQ_TILE_NE_K + 1) + txi] = (int)ww4;
-        if (blockIdx.x < 0) printf("T4L-MARKER-72\n");
-#if DBG_T4K
-        if ((i == 0 && blockIdx.x == 0 && blockIdx.y == 0 && txi < 4 && threadIdx.y == 0) || (i == 5 && blockIdx.x == 0 && blockIdx.y == 3 && txi < 32 && threadIdx.y == 0)) {
-            if (txi == 0) {
-                for (int rb = 0; rb < 16; rb++) printf("[t4l] qs[%d]=%02x ", rb, bxi->qs[rb]);
-                printf("\n");
-                if (i == 5) {
-                    for (int rb = 0; rb < 32; rb++) printf("[t4l5] xq[%d]=%08x ", rb, (unsigned)x_qs[rb]);
-                    printf("\n");
-                    for (int rs = 0; rs < 4; rs++) printf("[t4l5] xsc[%d]=%08x ", rs, (unsigned)x_sc[5*4 + 0 + rs]);
-                    printf(" xdm=%04x\n", (unsigned)*(const uint16_t*)&x_dm[5]);
-                }
-            }
-            printf("[t4l] i=%d kbx0=%d txi=%d a4=%04x b4=%04x ww=%08x\n", i, kbx0, txi, (unsigned)a4, (unsigned)b4, (unsigned)ww4);
-        }
-#endif
+        x_qs[i*(MMQ_TILE_NE_K + 1) + txi] = qs0;
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
     }
 
@@ -883,21 +832,11 @@ template <ggml_type type, int J, bool fallback, bool has_fusion> static __device
             const uint8_t * sc8 = (const uint8_t *) &sc32;
             const uint8_t *  m8 = (const uint8_t *)  &m32;
 
-            const half2 dm = bxi->dm * make_half2(1.0f, -1.0f); // P1B9: flip restored (kq identity v = d1*q - m1)
+            const half2 dm = bxi->dm * make_half2(1.0f, -1.0f);
 
-#if DBG_T4K
-            if (i == 0 && blockIdx.x == 0 && kbx0 == 0 && threadIdx.x < 2) {
-                printf("[t4w] i=%d by=%d kbx0=%d tid=%d ksc=%d dm=%04x sc32=%08x m32=%08x\n", (int)i, (int)blockIdx.y, (int)kbx0, (int)threadIdx.x, (int)ksc, (unsigned)*(const uint16_t*)&dm, (unsigned)sc32, (unsigned)m32);
-            }
-#endif
     #pragma unroll
             for (int l = 0; l < int(sizeof(int)); ++l) {
                 x_dm[i*sram_stride + sizeof(int)*ksc + l] = dm*make_half2(sc8[l], m8[l]);
-#if DBG_T4K
-                if (i == 0 && blockIdx.x == 0 && kbx0 == 0 && threadIdx.x < 2) {
-                    printf("[t4w] ksc=%d tid=%d slot=%d val=%04x\n", (int)ksc, (int)threadIdx.x, (int)(sizeof(int)*ksc + l), (unsigned)*(const uint16_t*)&(x_dm[sram_stride + sizeof(int)*ksc + l]));
-                }
-#endif
             }
         }
     }
@@ -1122,9 +1061,9 @@ template <ggml_type type, int J, bool fallback, bool has_fusion> static __device
         const block_q6_K * bxi = ggml_cuda_mmq_x_row<block_q6_K, has_fusion>(x, x_gate, kbx0, i, stride);
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-        x_df[i*sram_stride]                     = bxi->d;
+        x_df[i*sram_stride]                     = mmq_port_half_bits_to_f32(bxi->d);
 #else
-        x_df[i*(MMQ_TILE_NE_K/QI6_K) + i/QI6_K] = bxi->d;
+        x_df[i*(MMQ_TILE_NE_K/QI6_K) + i/QI6_K] = mmq_port_half_bits_to_f32(bxi->d);
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
     }
 
@@ -1202,7 +1141,7 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         }
 
-        const float  d1q   = __half2float(bxi->d) * (((qh >> 11) & 0x0E) + 1);
+        const float  d1q   = mmq_port_half_bits_to_f32(bxi->d) * (((qh >> 11) & 0x0E) + 1);
         const float  delta = -1.0f + IQ1S_DELTA - (qh & 0x8000) * (2.0f*IQ1S_DELTA/0x8000);
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
@@ -1270,7 +1209,7 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         }
 
         const int ls = aux32 >> 27 | 1; // (scale * 2 + 1)
-        const float d = bxi->d;
+        const float d = mmq_port_half_bits_to_f32(bxi->d);
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         x_df[i*sram_stride             + kqsx] = d * ls / 8; // (d * scale + d / 2) / 4
 #else
@@ -1335,7 +1274,7 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         }
 
         const int ls = bxi->scales[kqsx];
-        const float d = bxi->d;
+        const float d = mmq_port_half_bits_to_f32(bxi->d);
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         x_df[i*sram_stride                             + 2*kqsx+0] = ((ls &  0x0F)*d + d/2)/4;
         x_df[i*sram_stride                             + 2*kqsx+1] = ((ls >>    4)*d + d/2)/4;
@@ -1405,7 +1344,7 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         }
 
         const int ls = bxi->scales[kqsx];
-        const float d = bxi->d;
+        const float d = mmq_port_half_bits_to_f32(bxi->d);
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         x_df[i*sram_stride                             + 2*kqsx+0] = ((ls &  0x0F)*d + d/2)/4;
         x_df[i*sram_stride                             + 2*kqsx+1] = ((ls >>    4)*d + d/2)/4;
@@ -1473,7 +1412,7 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         }
 
         const int ls = aux32 >> 28;
-        const float d = bxi->d;
+        const float d = mmq_port_half_bits_to_f32(bxi->d);
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         x_df[i*sram_stride             + kqsx] = (ls*d + d/2)/2;
 #else
@@ -1544,7 +1483,7 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         }
 
         const int ls = 1 + 2*((bxi->scales[kqsx/2] >> (((2*kqsx) << 1) & 0x04)) & 0x0F);
-        const float d = bxi->d;
+        const float d = mmq_port_half_bits_to_f32(bxi->d);
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         x_df[i*sram_stride             + kqsx] = ls*d;
 #else
@@ -1607,7 +1546,7 @@ template <ggml_type type, int J, bool fallback, bool has_fusion> static __device
 
         const block_iq4_xs * bxi = ggml_cuda_mmq_x_row<block_iq4_xs, has_fusion>(x, x_gate, kbx0, i, stride);
 
-        const float d = __half2float(bxi->d);
+        const float d = mmq_port_half_bits_to_f32(bxi->d);
 
         const int ls = ((bxi->scales_l[(threadIdx.x % 8)/2] >> (4*(threadIdx.x % 2))) & 0x0F)
             | (((bxi->scales_h >> (2*(threadIdx.x % 8))) & 0x03) << 4);
@@ -1682,9 +1621,9 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         const block_iq4_nl * bxi = (const block_iq4_nl *) x + kbx0 + i*stride + kbxd;
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-        x_df[i*sram_stride                       + kbxd] = __half2float(bxi->d);
+        x_df[i*sram_stride                       + kbxd] = mmq_port_half_bits_to_f32(bxi->d);
 #else
-        x_df[i*(MMQ_TILE_NE_K/QI4_NL) + i/QI4_NL + kbxd] = __half2float(bxi->d);
+        x_df[i*(MMQ_TILE_NE_K/QI4_NL) + i/QI4_NL + kbxd] = mmq_port_half_bits_to_f32(bxi->d);
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
     }
 }

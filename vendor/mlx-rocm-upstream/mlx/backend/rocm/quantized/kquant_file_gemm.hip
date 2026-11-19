@@ -701,6 +701,40 @@ bool launch_gemm(const XT* x,
   return true;
 }
 
+// ---- GEMM-1 3b-2' A/B hook entry (R1 shim, jimmy 2026-11-19) ----
+// plan-c-slice launch_gemm is f32-output only (no OutT template): the
+// bfile-orientation A/B call site (mmq.hip:1165) is env-gated and NOT active
+// in the R1 session; f32-dst is exact, bf16-dst returns false (the caller
+// falls back to the mmq path). Symbol + canary satisfy the k2arm import.
+extern "C" bool kqfg_ab_gemm(const void* x,
+                             bool x_bf16,
+                             const uint8_t* w,
+                             void* out,
+                             bool dst_f32,
+                             int M,
+                             int K,
+                             int NBS,
+                             hipStream_t stream) {
+  const int bb = 144;   // Q4_K
+  const int ktype = 12, mode = 0, axis = 0, group = 0, keep_ends = 0, pairs = 0;
+  if (!dst_f32) return false;
+  if (x_bf16) {
+    return launch_gemm<__hip_bfloat16>(
+        (const __hip_bfloat16*)x, w, (float*)out, M, K, NBS, bb, ktype,
+        mode, axis, group, keep_ends, pairs, stream, 1);
+  }
+  return launch_gemm<float>(
+      (const float*)x, w, (float*)out, M, K, NBS, bb, ktype, mode, axis,
+      group, keep_ends, pairs, stream, 1);
+}
+
+static volatile char KQFG_AB_CANARY[] = "KQFG-AB3-20261119-KQFILE-HOOK";
+extern "C" const volatile char* mlx_rocm_kqfg_ab_canary() {
+  return KQFG_AB_CANARY;
+}
+
+
+
 template <typename OutT>
 void launch_gather(const int32_t* idx,
                    const uint8_t* wp,

@@ -52,6 +52,22 @@ std::pair<std::vector<array>, std::vector<int>> Custom::vmap(
   return {outputs, out_axes};
 }
 
+// Plan-C (2026-11-18): fast-primitive mirror of the plan_c_act_bf16
+// gate (ops.cpp). Active iff the env value is exactly "1" ("1" = active;
+// unset or any other value = bit-identical to legacy). Off by default.
+static bool plan_c_act_bf16() {
+  static const bool g = [] {
+    const char* e = std::getenv("MLX_ROCM_ACT_BF16");
+    return e && e[0] == '1' && e[1] == '\0';
+  }();
+  return g;
+}
+static volatile char PLANC_ACTBF16_FAST_CANARY[] = "PLANC-ACTBF16-20261118";
+extern "C" __attribute__((visibility("default"))) const volatile char*
+    mlx_rocm_plan_c_act_bf16_fast_canary() {
+  return PLANC_ACTBF16_FAST_CANARY;
+}
+
 array rms_norm(
     const array& x,
     const std::optional<array>& weight,
@@ -86,6 +102,11 @@ array rms_norm(
     std::ostringstream msg;
     msg << "[rms_norm] Received unsupported type " << out_type << ".";
     throw std::invalid_argument(msg.str());
+  }
+  // Plan-C (2026-11-18): the rms_norm class (see the plan_c_act_bf16
+  // semantics in ops.cpp): f32 output -> bf16 under the gate.
+  if (out_type == float32 && plan_c_act_bf16()) {
+    out_type = bfloat16;
   }
 
   auto s = to_stream(s_);
@@ -150,6 +171,11 @@ array rms_norm_residual(
     std::ostringstream msg;
     msg << "[rms_norm_residual] Received unsupported type " << out_type << ".";
     throw std::invalid_argument(msg.str());
+  }
+  // Plan-C (2026-11-18): the residual class (see the plan_c_act_bf16
+  // semantics in ops.cpp): f32 output -> bf16 under the gate.
+  if (out_type == float32 && plan_c_act_bf16()) {
+    out_type = bfloat16;
   }
 
   auto s = to_stream(s_);
@@ -914,6 +940,28 @@ bool RoPE::is_equivalent(const Primitive& other) const {
       forward_ == a_other.forward_);
 }
 
+/** Plan-C (2026-11-18): the KV-f16 gate (MLX_ROCM_KV_F16). Active iff the
+/** env value is exactly "1" ("1" = active; unset or any other value =
+/** bit-identical to legacy). When active, the SDPA q/k/v (the KV class
+/** at the attention kernel boundary) compute in float16 instead of the
+/** promoted type. Off by default.
+/** */
+static bool plan_c_kv_f16() {
+  static const bool g = [] {
+    const char* e = std::getenv("MLX_ROCM_KV_F16");
+    return e && e[0] == '1' && e[1] == '\0';
+  }();
+  return g;
+}
+static volatile char PLANC_KVF16_CANARY[] = "PLANC-KVF16-20261118";
+extern "C" __attribute__((visibility("default"))) const volatile char*
+    mlx_rocm_plan_c_kv_f16_canary() {
+  return PLANC_KVF16_CANARY;
+}
+extern "C" __attribute__((visibility("default"))) int
+    mlx_rocm_plan_c_kv_f16_active() {
+  return plan_c_kv_f16() ? 1 : 0;
+}
 /** Computes: O = softmax(Q @ K.T) @ V **/
 array scaled_dot_product_attention(
     const array& queries,
@@ -1013,6 +1061,16 @@ array scaled_dot_product_attention(
     msg << "[scaled_dot_product_attention] Received unsupported type "
         << final_type << ".";
     throw std::invalid_argument(msg.str());
+  }
+  // Plan-C (2026-11-18): MLX_ROCM_KV_F16=1 holds the SDPA q/k/v (the KV
+  // class at the attention kernel boundary) in float16 (see the
+  // plan_c_kv_f16 semantics above). The attention output takes the
+  // same dtype. Unset / != 1 = unchanged. Note: the mlx_lm KVCache
+  // storage array is allocated by the Python cache class (outside the
+  // wheel); the gate changes the KV precision class consumed by the
+  // attention kernel (the class the part-d dtype check proves).
+  if (plan_c_kv_f16()) {
+    final_type = float16;
   }
   bool has_sinks = sinks.has_value();
 

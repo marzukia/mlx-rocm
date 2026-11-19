@@ -415,3 +415,5 @@ target_compile_definitions(mlx PRIVATE __HIP_PLATFORM_AMD__=1)
 # Route safetensors host reads through a pinned hipMemcpy bounce buffer. Without
 # this the CPU walks BAR-mapped VRAM at ~30 MB/s (see host_stage.cpp).
 target_compile_definitions(mlx PRIVATE MLX_ROCM_HOST_STAGE=1)
+# R3 (their build context, 2026-11-19): GGML_HIP_NO_VMM=ON (active on mmq TU via GGML_USE_HIP); GGML_HIP_MMQ_MFMA=ON parity = NO_MMQ_MFMA left undefined (CDNA-gated, inert on gfx1201)
+target_compile_definitions(mlx PRIVATE GGML_HIP_NO_VMM)
