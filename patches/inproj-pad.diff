@@ -1,6 +1,6 @@
 --- a/mlx_lm/models/qwen3_5.py
 +++ b/mlx_lm/models/qwen3_5.py
-@@ -261,6 +261,72 @@
+@@ -261,6 +261,71 @@
  
          qkv = self.in_proj_qkv(inputs)
          z = self.in_proj_z(inputs).reshape(B, S, self.num_v_heads, self.head_v_dim)
