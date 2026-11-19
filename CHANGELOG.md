@@ -2,8 +2,25 @@
 
 All notable changes to `mlx-rocm` are documented here.
 
+## [3.7K PP lane merge] - 2026-11-19
+
+Post-0.2.0-alpha lane work: the 3.7K PP prefill lane, merged by op call
+(#36 consolidated ONE-PR + #37 qmm-pad e2e, 2026-11-19).
+
+### Added
+
+- **Consolidated lane stack (#36)**: vendor-sync + the S1 SDPA Q-staging fix + hbmfix diagnostics + the Q4_K mmq port (the PATCH81 in-place bf16 store chain: the 4-byte-into-2-byte store-width defect) + the P1B4 scratch fix + the attention port (RDNA WMMA mma-f16 flash attention, gated behind MLX_SDPA_FATTN) + plan-D (staging-retention cap, logits-bf16 gate, per-shape repack caps).
+- **qmm-pad e2e (#37)**: MLX_ROCM_INPROJ_PAD (default OFF): GDN in_proj_b/a via one fused GEMM padded to N=128 (existing kernels only). e2e unmeasured at merge (the pad-branch python fix + the e2e re-run land post-merge) - no win claimed at the default.
+- **Repack byte-cap suffix parse**: MLX_ROCM_MMQ_REPACK_MAX_BYTES now accepts case-insensitive SI (1000-base) k/m/g suffixes (the t3171 F1-medium fix).
+
+### Record (measured, x3 median, full gate set, 2026-11-19)
+
+- Adopted record **3084.9 t/s @4K** (the f2c zero-mode axis; the FLAG-OFF record state; record vehicle lib 070122d8), second axis **2861.4 t/s** (the pcm bench class). Bar **3683.1 t/s** = the external 500x sustained stream. Gates: argmax=89 all 6 runs, faults 0, sclk boost class, SoT restore verified. The fixed record protocol (22:2xZ) never changes.
+- Flag states: MLX_SDPA_FATTN ON-by-default in the merged tree (op letter (a) = ADOPT); the flag-ON vs flag-OFF boost A/B rides the parity re-stamp. MLX_ROCM_INPROJ_PAD default OFF (e2e unmeasured, no win claimed).
+- Merge-gate status: the parity re-stamp on the merged tree + the 3683.1 verdict letter pending (like-for-like = the working judge per the 2026-11-19 parity ruling).
+
 Provenance for the 0.2.0-alpha numbers: the in-repo
-`REPORT-W1-PHASE1-20261112.md` and `REPORT-W1-PHASE2-REPRO-20261112.md`.
+docs/w1/`REPORT-W1-PHASE1-20261112.md` and docs/w1/`REPORT-W1-PHASE2-REPRO-20261112.md`.
 
 ## [0.2.0-alpha] - 2026-11-13
 
@@ -37,8 +54,8 @@ gfx1201 guest (ROCm 10.1).
   values pre-launch; the deterministic 2nd-capture launch fault fixed.
 - **Bench harness + record battery**: `bench/k2arm-pinned.py` (the
   K=1..K=3 MTP probe with the record config), `bench/gdn_seq1024_repro.sh`
-  (the 108 number repro driver), `REPORT-W1-PHASE1-20261112.md` +
-  `REPORT-W1-PHASE2-REPRO-20261112.md`.
+  (the 108 number repro driver), docs/w1/`REPORT-W1-PHASE1-20261112.md` +
+  docs/w1/`REPORT-W1-PHASE2-REPRO-20261112.md`.
 - **The 0.1.1/0.1.2 cycle**: non-GEMM fusion (k2, #2 — 9B neutral, 0.6B
   +17-18%, adopted), the GDN port (k3, #3) + the chunked-copy segfault
   fix, K1 QMV int8-activation fix (N=12288), the PR3-HYBRID fused wheel

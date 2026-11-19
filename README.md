@@ -17,6 +17,15 @@ alpha-cut condition (decode close to the card ceiling) is unmet — 0.2.0
 stands at the 107.56 t/s @1024 certified record, 84.8% of the same-GPU
 126.9 t/s reference (in-tree repro: `bench/gdn_seq1024_repro.sh`).
 
+Lane state (2026-11-19): the **3.7K PP prefill lane** is the active
+campaign - #36 consolidated + #37 pad merged by op call. Adopted record
+**3084.9 t/s @4K** (the f2c zero-mode axis, x3, the FLAG-OFF record state;
+record vehicle lib 070122d8), second axis **2861.4 t/s** (the pcm bench
+class). Bar **3683.1 t/s** = the external 500x sustained stream; the fixed
+record protocol (22:2xZ) never changes. The parity merge-gate (measured
+like-for-like at/above the bar) is pending. The W1 decode record (107.56
+t/s @1024, #30) remains the decode-axis record.
+
 Verified toolchain: ROCm 10.1 userland on the validated guest (core at
 `/opt/rocm/core-10.1`; 6.4 was the early probe validation and 7.7 the original
 target — neither is the verified version).
@@ -108,9 +117,9 @@ check, tar transfer, ROCm build, GPU GEMM + fp8 probe. Results land in
 | Qwen3-0.6B | 8-bit (affine) | validated — benched 207.6–214.3 tok/s (`k2-non-gemm-fusion`) |
 | Qwen3-0.6B | bf16 | Phase 0 smoke target (`scripts/smoke.py` ladder) |
 | 9B-class dense Qwen3 | 4-bit (affine qmm) | validated — benched 55.9–57.8 tok/s A/B (`k2-non-gemm-fusion`), 63.8 tok/s with a 16-token warmup (`opt-gauntlet-areaA`) |
-| 9B hybrid (GDN + FA) | 4-bit (affine) | supported — the main workload: AR 97.52 t/s @1024, MTP K=2 107.56 t/s @1024 certified (W1, #30; 84.8% of the same-GPU 126.9 t/s reference); the ~120 target in flight |
+| 9B hybrid (GDN + FA) | 4-bit (affine) | supported - the main workload: AR 97.52 t/s @1024, MTP K=2 107.56 t/s @1024 certified (W1, #30; the decode-axis record); the 3.7K PP prefill lane is the active campaign (record 3084.9 t/s @4K) |
 | 27B dense / MoE | — | not validated (a 27B load was in flight on the guest, unvalidated) |
-| MTP spec decode | 4-bit | K=2 supported, lossless (merged, #26); 107.56 t/s @1024 certified — leads AR (97.52); the ~120 target in flight |
+| MTP spec decode | 4-bit | K=2 supported, lossless (merged, #26); 107.56 t/s @1024 certified - leads AR (97.52); the W1 decode-axis record |
 | non-gfx1201 archs | — | not validated (only gfx1201 is validated in this repo) |
 
 Details, in-flight items, and caveats: `docs/limitations.md`.
@@ -138,7 +147,8 @@ mxfp4 kernel yet.
 
 | Lane | What | Branch |
 |---|---|---|
-| W1 (sequential GDN) | merged (#30) — the current record (107.56 t/s @1024 certified) | — |
+| W1 (sequential GDN) | merged (#30) - the current record (107.56 t/s @1024 certified) | — |
+| 3.7K PP (prefill) | the active lane - #36 consolidated + #37 pad merged 2026-11-19 (op call); adopted record 3084.9 t/s @4K (f2c zero-mode) / 2861.4 (pcm axis); bar 3683.1 (external 500x sustained stream); parity merge-gate pending | main (merged) |
 | K1 (QMV/GEMV bandwidth) | int8-activation QMV fix (N=12288) — the kernel + fix are in the committed vendor tree | — |
 | K2 (non-GEMM fusion) | merged (#2) | — |
 | K3 (GDN port) | merged (#3) | — |
