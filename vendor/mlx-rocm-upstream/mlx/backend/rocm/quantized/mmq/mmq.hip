@@ -939,8 +939,31 @@ static size_t mmq_repack_max_bytes() {
     if (!e) {
       return static_cast<size_t>(0);
     }
-    long v = std::atol(e);
-    return v > 0 ? static_cast<size_t>(v) : static_cast<size_t>(0);
+    // F1 fix (t3171 review): plain atol only accepted a bare integer; add
+    // case-insensitive SI (1000-base) k/m/g suffixes so production arms can
+    // use a suffixed byte cap (8g = 8*1000^3, 500M = 500*1000^2). Unknown
+    // suffix or non-numeric = 0 (the legacy default path).
+    char* endp = nullptr;
+    unsigned long val = std::strtoul(e, &endp, 10);
+    if (endp != nullptr && *endp != '\0') {
+      switch (*endp) {
+        case 'k':
+        case 'K':
+          val *= 1000UL;
+          break;
+        case 'm':
+        case 'M':
+          val *= 1000UL * 1000UL;
+          break;
+        case 'g':
+        case 'G':
+          val *= 1000UL * 1000UL * 1000UL;
+          break;
+        default:
+          return static_cast<size_t>(0);
+      }
+    }
+    return val > 0 ? static_cast<size_t>(val) : static_cast<size_t>(0);
   }();
   return v;
 }
@@ -1137,7 +1160,11 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
       // KQFG-AB-DUMP (v4/TRIO): one-time bfile byte dump per 6-class
       // representative (S2 input) for CPU verification of the
       // transpose-requant kernel.
-      if (std::getenv("KQFG_AB_DUMP") != nullptr && mmq_ab_class(N, K)) {
+      // Curation (persona scrub): the dump dir is env-var-driven - the
+      // KQFG_AB_DUMP value is the dir when path-like ("/" or "."-relative),
+      // the CWD otherwise (value = 1 or any bare token arms it).
+      const char* kqdump_env = std::getenv("KQFG_AB_DUMP");
+      if (kqdump_env != nullptr && mmq_ab_class(N, K)) {
         static bool bfdumped[6] = {false, false, false, false, false, false};
         int ci = mmq_ab_class_idx(N, K);
         if (ci >= 0 && !bfdumped[ci]) {
@@ -1146,9 +1173,9 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
           if (hipMallocHost(&hd, need_bf) == hipSuccess && hd) {
             hipMemcpyAsync(hd, bfile, need_bf, hipMemcpyDeviceToHost, stream);
             if (hipStreamSynchronize(stream) == hipSuccess) {
-              char fn[160];
-              snprintf(fn, sizeof(fn),
-                       "/home/andryo/gemm1-leg2/bfiledump-N%dk%d.bin", N, K);
+              char fn[256];
+              const char* dump_dir = (kqdump_env[0] == '/' || kqdump_env[0] == '.') ? kqdump_env : ".";
+              snprintf(fn, sizeof(fn), "%s/bfiledump-N%dk%d.bin", dump_dir, N, K);
               FILE* f = fopen(fn, "wb");
               if (f) {
                 fwrite(hd, 1, need_bf, f);
@@ -1245,7 +1272,10 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
   // GEMM-1 3b-2' TRIO: one-time wq4 byte dump per 6-class representative
   // (MMQ_AB_DUMP=1) = S1 input for the standalone trio. Dump after the
   // repack stage: the buffer is content-valid (fresh or cache-hit).
-  if (std::getenv("MMQ_AB_DUMP") != nullptr && mmq_ab_class(N, K)) {
+  // Curation (persona scrub): the dump dir is env-var-driven (see the
+  // KQFG_AB_DUMP block above for the value semantics).
+  const char* wdump_env = std::getenv("MMQ_AB_DUMP");
+  if (wdump_env != nullptr && mmq_ab_class(N, K)) {
     static bool wdumped[6] = {false, false, false, false, false, false};
     int ci = mmq_ab_class_idx(N, K);
     if (ci >= 0 && !wdumped[ci]) {
@@ -1254,9 +1284,9 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
       if (hipMallocHost(&hd, need_wq4) == hipSuccess && hd) {
         hipMemcpyAsync(hd, wq4, need_wq4, hipMemcpyDeviceToHost, stream);
         if (hipStreamSynchronize(stream) == hipSuccess) {
-          char fn[160];
-          snprintf(fn, sizeof(fn),
-                   "/home/andryo/gemm1-leg2/wq4dump-N%dk%d.bin", N, K);
+          char fn[256];
+          const char* dump_dir = (wdump_env[0] == '/' || wdump_env[0] == '.') ? wdump_env : ".";
+          snprintf(fn, sizeof(fn), "%s/wq4dump-N%dk%d.bin", dump_dir, N, K);
           FILE* f = fopen(fn, "wb");
           if (f) {
             fwrite(hd, 1, need_wq4, f);

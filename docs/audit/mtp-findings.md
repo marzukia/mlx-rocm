@@ -36,8 +36,8 @@ Status: numpy reference BUILT but NOT validated. E3/E4 ground-truth experiments 
 - D: L0 GDN r-divergence (item 4) - real kernel bug or probe bug (ipz shape!)
 
 ## Assets
-- np-rca-np.py: numpy trunk+MTP (modes: track/e1/mtp/e3/e4), bf16 shards, f32 math, layer-by-layer < 12GB
-- np-rca-mlx-l0.py / -norms.py / -perlayer.py / -mtpnorms.py / -normconv.py: mlx-side probes
+- docs/w1/np-rca-np.py: numpy trunk+MTP (modes: track/e1/mtp/e3/e4), bf16 shards, f32 math, layer-by-layer < 12GB
+- docs/w1/np-rca-mlx-l0.py / -norms.py / -perlayer.py / -mtpnorms.py / -normconv.py: mlx-side probes
 - Guest: ssh -o BatchMode=yes -J operator@<tailnet-ip> guest-a@<guest-ip>
   (scripts also live in /tmp on the guest; HF shards /models/hf-qwen3-9b/, mlx venv /models/venv-a,
   4bit model /models/qwen3-9b-mlx, mtp file model-mtp.safetensors 973MB f32)

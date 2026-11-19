@@ -24,7 +24,7 @@ uploaded 2026-10-30; `docs/quickstart.md`), the wheel build is
 sha-verified and fail-loud (`scripts/build-wheel.sh` + `vendor.json`, the
 pin re-pinned 2026-11-13 to a sha resolvable in the public fork), the
 numbers are on `main` (`docs/audit/README.md` stack-of-record table,
-`pins/`, the root `REPORT-W1-*` files), and the GPU validation is recorded
+`pins/`, the `docs/w1/REPORT-W1-*` files), and the GPU validation is recorded
 (107.56 t/s @1024 certified, #30 merged, CI green 2026-11-12).
 
 ---
@@ -79,7 +79,7 @@ numbers are on `main` (`docs/audit/README.md` stack-of-record table,
 
 | Item | Status | Evidence | Effort |
 |---|---|---|---|
-| Published numbers | **DONE** | Numbers are on `main`: `docs/audit/README.md` (the stack-of-record table — superseded-by marker to the W1 record), `pins/` (the 69.43 and 92.23 wheels), the root `REPORT-W1-PHASE1/PHASE2-20261112.md` (the 107.56 t/s @1024 certified record, 84.8% of the 126.9 reference). No `reports/README.md`-style index (the audit README is de facto the index). | 0.25 pd (a one-line index pointer) |
+| Published numbers | **DONE** | Numbers are on `main`: `docs/audit/README.md` (the stack-of-record table — superseded-by marker to the W1 record), `pins/` (the 69.43 and 92.23 wheels), the `docs/w1/REPORT-W1-PHASE1/PHASE2-20261112.md` (the 107.56 t/s @1024 certified record, 84.8% of the 126.9 reference). No `reports/README.md`-style index (the audit README is de facto the index). | 0.25 pd (a one-line index pointer) |
 | Method | **PARTIAL** | Protocols are in the audit docs; no canonical "how we benchmark" page on `main`. | 0.5 pd (promote the protocol to a `main` doc) |
 
 ## 8. Known limitations
@@ -111,7 +111,7 @@ retired (NO-GO), K1 closed as shipped, the publish state real (PyPI
 2. **Installable: DONE** (PyPI `0.0.0` + `0.1.2`, the quickstart, the
    conversion recipe, the model-files-needed section).
 3. **Numbers on `main`: DONE** (the audit index, `pins/`, the root
-   `REPORT-W1-*` files, the 107.56 record).
+   `docs/w1/REPORT-W1-*` files, the 107.56 record).
 4. **Vendor re-pin + reproducible build: DONE at the gate** (the pin
    resolvable in the public fork, the sha-verified fail-loud gate, the
    committed tree documented as the partial reference); the empirical
