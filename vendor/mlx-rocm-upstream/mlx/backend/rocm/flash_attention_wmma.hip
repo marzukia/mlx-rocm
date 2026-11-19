@@ -163,6 +163,22 @@ __global__ void __launch_bounds__(256)
                       + q_start * params.Q_strides[2];
   const int q_valid = min(BLOCK_M, params.qL - q_start);
 
+  // Q is staged per D-chunk inside the S loop below: all chunks share
+  // one DW-wide LDS region, so a hoisted multi-chunk stage would leave only
+  // the last chunk resident (D=256: chunk 1 overwrites chunk 0 before the
+  // S MMA reads it). The finalize section reuses Q_sh as its temp AFTER
+  // the loop.
+
+  // acc-fragment layout on gfx1201 (rocWMMA 16x16x16, f32 accumulator),
+  // verified by probe (wmma_probe.hip, 2026-11-16): element e of lane L holds
+  // row = e + 8*(L>>4), col = L&15. Each row's 16 cols live in 16 consecutive
+  // lanes of one 16-lane half; a lane's 8 elements span 8 distinct rows.
+  constexpr float LOG2E = 1.4426950408889634f;
+#if defined(__gfx1201__)
+  const int acc_half = lane >> 4; // 0 or 1
+  const int acc_col0 = lane & 15;
+#endif
+
   // ---- K/V block loop ----
   for (int k_start = 0; k_start < params.kL; k_start += BLOCK_N) {
 
@@ -180,13 +196,12 @@ __global__ void __launch_bounds__(256)
                         + k_start * params.K_strides[2];
 
     // ---- S = Q @ K^T via WMMA, accumulated over the head dim in DW slices ----
-    // Each wave computes S[wave*16 : (wave+1)*16, 0:BLOCK_N]. For D>DW the Q/K
-    // slices are staged and consumed one DW-wide chunk at a time so LDS stays
-    // bounded; s_acc carries the partial dot products across chunks.
-    {
-      frag_acc s_acc[N_TILES];
-      for (int n = 0; n < N_TILES; n++)
-        rocwmma::fill_fragment(s_acc[n], 0.0f);
+    // K is staged one DW-wide chunk at a time into KV_sh and consumed
+    // immediately, so the LDS footprint stays bounded for D>128. s_acc carries
+    // the partial dot products across chunks.
+    frag_acc s_acc[N_TILES];
+    for (int n = 0; n < N_TILES; n++)
+      rocwmma::fill_fragment(s_acc[n], 0.0f);
 
       for (int dc = 0; dc < N_DCHUNKS; dc++) {
         const int d0 = dc * DW;
@@ -195,8 +210,8 @@ __global__ void __launch_bounds__(256)
             Q_sh, Q_base + d0, params.Q_strides[2], BLOCK_M, dwid, q_valid, tid,
             NTHREADS);
         load_tile<T, KV_PAD>(
-            KV_sh, K_base + d0, params.K_strides[2], BLOCK_N, dwid, k_valid, tid,
-            NTHREADS);
+            KV_sh, K_base + d0, params.K_strides[2], BLOCK_N, dwid, k_valid,
+            tid, NTHREADS);
         __syncthreads();
 
         for (int d = 0; d < DW_TILES; d++) {
@@ -215,6 +230,115 @@ __global__ void __launch_bounds__(256)
         __syncthreads();
       }
 
+#if defined(__gfx1201__)
+      // ---- gfx1201: register-resident online softmax ----
+      // No S f32 LDS round-trip: scores stay in s_acc registers, the tile max
+      // and per-row sums reduce via shfl, the O rescale multiplies o_acc
+      // registers in place, and P is written bf16 straight into KV_sh.
+      // The tile max over the whole 16x64 block is a valid per-row upper
+      // bound for the running max (FA2 only needs SOME upper bound; the
+      // normalization cancels it exactly).
+      for (int n = 0; n < N_TILES; n++)
+        for (int e = 0; e < 8; e++)
+          s_acc[n].x[e] *= params.scale;
+
+      // Tile max over valid keys only (masked scores would widen the bound).
+      float tmax = -1e30f;
+      #pragma unroll
+      for (int n = 0; n < N_TILES; n++) {
+        int c0 = n * WT;
+        #pragma unroll
+        for (int e = 0; e < 8; e++) {
+          int r_local = e + 8 * acc_half; // wave-local query row
+          int q_idx = q_start + wave * WT + r_local;
+          bool use = q_idx < params.qL && (c0 + acc_col0) < k_valid;
+          if constexpr (do_causal)
+            use = use &&
+                (k_start + c0 + acc_col0 <= params.kL - params.qL + q_idx);
+          if (use)
+            tmax = fmaxf(tmax, s_acc[n].x[e]);
+        }
+      }
+      tmax = fmaxf(tmax, __shfl_xor(tmax, 1));
+      tmax = fmaxf(tmax, __shfl_xor(tmax, 2));
+      tmax = fmaxf(tmax, __shfl_xor(tmax, 4));
+      tmax = fmaxf(tmax, __shfl_xor(tmax, 8));
+      tmax = fmaxf(tmax, __shfl_xor(tmax, 16));
+
+      // Per-row running max / normalization state (rows of this half).
+      float old_m[8], new_m[8], scale_row[8];
+      #pragma unroll
+      for (int e = 0; e < 8; e++) {
+        int row = wave * WT + e + 8 * acc_half;
+        old_m[e] = m_arr[row];
+        new_m[e] = fmaxf(old_m[e], tmax);
+        scale_row[e] = (old_m[e] > -1e29f) ?
+                           exp2f((old_m[e] - new_m[e]) * LOG2E) :
+                           0.0f;
+      }
+
+      // Fused P store + row-sum: p is computed once per element, written
+      // bf16 straight into KV_sh (K is fully consumed; the shared barrier
+      // before P@V covers the scalar->WMMA-load visibility), and the f32
+      // value feeds the per-row sum. Row sums reduce over the 16 lanes of
+      // the half: a lane's element e of every tile n is the same row
+      // (e + 8*acc_half), and the 64 cols partition exactly over them.
+      float psum[8];
+      #pragma unroll
+      for (int e = 0; e < 8; e++)
+        psum[e] = 0.0f;
+      #pragma unroll
+      for (int n = 0; n < N_TILES; n++) {
+        int c0 = n * WT;
+        #pragma unroll
+        for (int e = 0; e < 8; e++) {
+          int r_local = e + 8 * acc_half;
+          int q_idx = q_start + wave * WT + r_local;
+          bool use = q_idx < params.qL && (c0 + acc_col0) < k_valid;
+          if constexpr (do_causal)
+            use = use &&
+                (k_start + c0 + acc_col0 <= params.kL - params.qL + q_idx);
+          float p = use ?
+              exp2f((s_acc[n].x[e] - new_m[e]) * LOG2E) :
+              0.0f;
+          KV_sh[(wave * WT + r_local) * P_PAD + c0 + acc_col0] =
+              static_cast<T>(p);
+          psum[e] += p;
+        }
+      }
+      float rowsum[8];
+      #pragma unroll
+      for (int e = 0; e < 8; e++) {
+        float u = psum[e];
+        u += __shfl_xor(u, 1);
+        u += __shfl_xor(u, 2);
+        u += __shfl_xor(u, 4);
+        u += __shfl_xor(u, 8);
+        rowsum[e] = u;
+      }
+
+      // One lane per half publishes the row state (rows are disjoint).
+      if (acc_col0 == 0) {
+        #pragma unroll
+        for (int e = 0; e < 8; e++) {
+          int row = wave * WT + e + 8 * acc_half;
+          m_arr[row] = new_m[e];
+          l_arr[row] = l_arr[row] * scale_row[e] + rowsum[e];
+        }
+      }
+
+      // Rescale O accumulators IN REGISTERS: element e of every D tile is the
+      // same row (e + 8*acc_half) as the acc-fragment layout dictates, so one
+      // 8-wide scale vector covers all D_TILES. No LDS, no barriers.
+      #pragma unroll
+      for (int d = 0; d < D_TILES; d++)
+        #pragma unroll
+        for (int e = 0; e < 8; e++)
+          o_acc[d].x[e] *= scale_row[e];
+#else
+      // ---- Legacy (non-gfx1201): S f32 via LDS, two-pass row softmax, ----
+      // ---- LDS O-rescale, separate P convert. Kept for other targets.  ----
+
       // Scale and store S to shared memory
       for (int n = 0; n < N_TILES; n++) {
         for (int e = 0; e < s_acc[n].num_elements; e++)
@@ -223,7 +347,6 @@ __global__ void __launch_bounds__(256)
             S_sh + wave * WT * S_PAD + n * WT, s_acc[n], S_PAD,
             rocwmma::mem_row_major);
       }
-    }
     // rocWMMA store_matrix_sync to LDS does NOT guarantee visibility to other
     // waves (or even to scalar loads) with a plain __syncthreads(). Flush the
     // matrix-unit LDS traffic before the online-softmax scalar readers run.
@@ -235,24 +358,14 @@ __global__ void __launch_bounds__(256)
     rocwmma::synchronize_workgroup();
 
     // ---- Online softmax: each wave processes its own 16 query rows ----
-    // Dynamic smem slot for per-row scale_old (avoids static/dynamic LDS aliasing).
-    // Cooperative wave-32 online softmax.
-    // All 32 lanes of the wave cooperate on each of the 16 rows owned by this
-    // wave, instead of one lane serially scanning all BLOCK_N keys per row.
-    // BLOCK_N=64 / 32 lanes = 2 vals/lane; max and sum reduce via __shfl_xor
-    // butterfly (1+2+4+8+16). Rows are processed sequentially within the wave.
-    // exp2f + LOG2E fold is used instead of expf (maps to a native RDNA SFU
-    // instruction and is the standard FlashAttention-2 optimization).
     float* wave_scale = reinterpret_cast<float*>(
         reinterpret_cast<char*>(S_sh) + BLOCK_M * S_PAD * sizeof(float));
-    constexpr float LOG2E = 1.4426950408889634f;
     constexpr int VALS_PER_LANE = BLOCK_N / 32; // 2 for BLOCK_N=64
     #pragma unroll 1
     for (int r_local = 0; r_local < WT; ++r_local) {
       int row = wave * WT + r_local;
       int q_idx = q_start + row;
       bool valid = q_idx < params.qL;
-      // Per-lane local max over VALS_PER_LANE columns.
       float local_max = -1e30f;
       #pragma unroll
       for (int k = 0; k < VALS_PER_LANE; ++k) {
@@ -263,7 +376,6 @@ __global__ void __launch_bounds__(256)
         if (use)
           local_max = fmaxf(local_max, S_sh[row * S_PAD + j]);
       }
-      // Wave butterfly max.
       local_max = fmaxf(local_max, __shfl_xor(local_max, 1));
       local_max = fmaxf(local_max, __shfl_xor(local_max, 2));
       local_max = fmaxf(local_max, __shfl_xor(local_max, 4));
@@ -276,7 +388,6 @@ __global__ void __launch_bounds__(256)
       float scale_old =
           (old_m > -1e29f) ? exp2f((old_m - new_m) * LOG2E) : 0.0f;
 
-      // Per-lane local sum-of-exp (writes exp back to LDS for P@V).
       float local_sum = 0.0f;
       #pragma unroll
       for (int k = 0; k < VALS_PER_LANE; ++k) {
@@ -292,7 +403,6 @@ __global__ void __launch_bounds__(256)
           S_sh[row * S_PAD + j] = 0.0f;
         }
       }
-      // Wave butterfly sum.
       local_sum += __shfl_xor(local_sum, 1);
       local_sum += __shfl_xor(local_sum, 2);
       local_sum += __shfl_xor(local_sum, 4);
@@ -307,11 +417,8 @@ __global__ void __launch_bounds__(256)
     }
     __syncthreads();
 
-    // ---- Rescale O accumulators by scale_old ----
-    // Each wave rescales its 16-row O tiles.
-    // Since fragment layout is opaque, store→scale→reload via shared memory.
+    // ---- Rescale O accumulators by scale_old via shared memory ----
     {
-      // Use KV_sh area as f32 temp (it held K which we no longer need)
       float* o_tmp = reinterpret_cast<float*>(KV_sh);
       constexpr int OT_PAD = WT + 4;
 
@@ -319,11 +426,8 @@ __global__ void __launch_bounds__(256)
         rocwmma::store_matrix_sync(
             o_tmp + wave * WT * OT_PAD, o_acc[d], OT_PAD,
             rocwmma::mem_row_major);
-        // Flush WMMA→LDS before scalar row scale (same-wave, but required by
-        // rocWMMA LDS semantics; also keeps multi-arch behavior consistent).
         rocwmma::synchronize_workgroup();
 
-        // Scale rows (only 16 threads needed per wave)
         if (lane < WT) {
           int row = wave * WT + lane;
           float s = wave_scale[row];
@@ -351,7 +455,6 @@ __global__ void __launch_bounds__(256)
           KV_sh[r * P_PAD + c] = static_cast<T>(S_sh[r * S_PAD + c]);
         }
       }
-      // Zero padding
       int pad_total = BLOCK_M * 4;
       int pad_per_t = (pad_total + NTHREADS - 1) / NTHREADS;
       for (int i = 0; i < pad_per_t; i++) {
@@ -360,12 +463,13 @@ __global__ void __launch_bounds__(256)
           KV_sh[(idx / 4) * P_PAD + BLOCK_N + (idx % 4)] = static_cast<T>(0.0f);
       }
     }
+#endif
     __syncthreads();
 
     // ---- O += P @ V via WMMA, output head dim tiled in DW slices ----
     // P (bf16) stays resident in KV_sh; V is streamed one DW-wide slice into
-    // S_sh (the f32 scores are no longer needed) and consumed immediately, so
-    // a full D=256 V tile never has to coexist with P in LDS.
+    // S_sh (free on gfx1201; the f32 scores on legacy) and consumed
+    // immediately, so a full D=256 V tile never has to coexist with P in LDS.
     {
       T* P_sh = KV_sh;
       T* V_sh = reinterpret_cast<T*>(S_sh);
@@ -381,24 +485,27 @@ __global__ void __launch_bounds__(256)
             NTHREADS);
         __syncthreads();
 
+        // P fragments are D-independent: load once per dc, not per dl.
+        frag_a p_frags[N_TILES];
+        for (int n = 0; n < N_TILES; n++)
+          rocwmma::load_matrix_sync(
+              p_frags[n], P_sh + wave * WT * P_PAD + n * WT, P_PAD);
+
         for (int dl = 0; dl < DW_TILES; dl++) {
           const int dglobal = dc * DW_TILES + dl;
           if (dglobal >= D_TILES)
             break;
           for (int n = 0; n < N_TILES; n++) {
-            frag_a p_frag;
             frag_b_row v_frag;
             rocwmma::load_matrix_sync(
-                p_frag, P_sh + wave * WT * P_PAD + n * WT, P_PAD);
-            rocwmma::load_matrix_sync(
                 v_frag, V_sh + n * WT * KV_PAD + dl * WT, KV_PAD);
-            rocwmma::mma_sync(o_acc[dglobal], p_frag, v_frag, o_acc[dglobal]);
+            rocwmma::mma_sync(o_acc[dglobal], p_frags[n], v_frag,
+                              o_acc[dglobal]);
           }
         }
         __syncthreads();
       }
     }
-    __syncthreads();
   } // end K/V loop
 
   // ---- Finalize: normalize O and write to global ----

@@ -8,6 +8,7 @@
 #include "mlx/backend/rocm/allocator.h"
 #include "mlx/backend/rocm/device.h"
 #include "mlx/backend/rocm/utils.h"
+#include "mlx/backend/rocm/w1probe.h"
 #include "mlx/device.h"
 #include "mlx/memory.h"
 #include "mlx/utils.h"
@@ -18,10 +19,93 @@
 
 #include <atomic>
 #include <cassert>
+#include <map>
+#include <mutex>
+#include <vector>
+
+// B97-HBMFIX diagnostics: live-buffer size histogram (debug only).
+static std::map<size_t, long> g_live_hist;
+static std::mutex g_live_mu;
+static inline void dbg_live_add(size_t size, long delta) {
+  if (!getenv("MLX_WORKER_DEBUG"))
+    return;
+  std::lock_guard<std::mutex> g(g_live_mu);
+  auto& v = g_live_hist[size];
+  v += delta;
+  if (v <= 0)
+    g_live_hist.erase(size);
+}
+static inline void dbg_live_dump(const char* tag) {
+  if (!getenv("MLX_WORKER_DEBUG"))
+    return;
+  std::lock_guard<std::mutex> g(g_live_mu);
+  long total = 0;
+  std::vector<std::pair<size_t, long>> e;
+  for (auto& [sz, b] : g_live_hist) {
+    if (b >= 16 * 1024 * 1024)
+      e.push_back({sz, b});
+    total += b;
+  }
+  std::sort(e.begin(), e.end(),
+            [](auto& a, auto& b) { return a.second > b.second; });
+  fprintf(stderr, "[worker] LIVE-DUMP %s total=%ld big=%ld\n", tag, total,
+          e.empty() ? 0 : e[0].second);
+  for (auto& [sz, b] : e)
+    fprintf(stderr, "  size=%zu bytes=%ld count=%ld\n", sz, b,
+            sz ? b / (long)sz : 0);
+}
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
+#include <algorithm>
+
+// Plan-D (2026-11-18, 3.7K lane): bounded staging/arena retention budget.
+// MLX_ROCM_STAGING_RETAIN_CAP = byte budget (plain bytes or a k/m/g
+// suffix; 0 = unlimited; unset = disabled = legacy unbounded retention)
+// on the retained (freed-but-held) device memory: the buffer-cache
+// freelist + graph-deferred frees + the decode-arena capacity. When the
+// retained bytes exceed the budget the excess is released to the pool
+// (release_cached_buffers -> hipFree/hipFreeAsync), bounding the steady
+// post-clear_cache retention floor (P1B24: 0.94GB-class runtime
+// retention; the b97-hbmfix reclaim/fallback/arena surface is the cap
+// surface).
+static size_t retain_cap_bytes() {
+  static const size_t cap = [] {
+    const char* e = std::getenv("MLX_ROCM_STAGING_RETAIN_CAP");
+    if (!e) {
+      return static_cast<size_t>(0);
+    }
+    char* end = nullptr;
+    unsigned long long v = std::strtoull(e, &end, 10);
+    if (end && *end != '\0') {
+      size_t mult = 1;
+      switch (*end) {
+        case 'k':
+        case 'K':
+          mult = 1024;
+          break;
+        case 'm':
+        case 'M':
+          mult = 1024 * 1024;
+          break;
+        case 'g':
+        case 'G':
+          mult = 1024ULL * 1024 * 1024;
+          break;
+        default:
+          return static_cast<size_t>(0);
+      }
+      return static_cast<size_t>(v) * mult;
+    }
+    return static_cast<size_t>(v);
+  }();
+  return cap;
+}
+static volatile char PLAN_D_RETAINCAP_CANARY[] = "PLAND-RETAINCAP-20261118";
+extern "C" const volatile char* mlx_rocm_plan_d_retaincap_canary() {
+  return PLAN_D_RETAINCAP_CANARY;
+}
 #include <sstream>
 #include <string>
 #include <vector>
@@ -269,6 +353,7 @@ RocmBuffer* SmallSizePool::malloc() {
   b->buf.size = small_block_size;
   b->buf.device = -1;
   b->buf.is_managed = data_managed_;
+  b->buf.host_backed = !data_managed_;
   b->buf.host_shadow = nullptr;
   b->buf.host_dirty = false;
   b->buf.alloc_stream = nullptr;
@@ -396,6 +481,18 @@ void RocmAllocator::free_async(RocmBuffer& buf, void* stream_v) {
   if (!buf.data) {
     return;
   }
+  if (buf.sync_alloc) {
+    // B97-HBMFIX: synchronous hipMalloc buffer (not pool memory):
+    // immediate hipFree is the only valid free.
+    if (getenv("MLX_WORKER_DEBUG")) {
+      fprintf(stderr, "[worker] FREE-SYNCALLOC ptr=%p size=%zu\n",
+              buf.data, buf.size);
+    }
+    hipError_t fs = hipFree(buf.data);
+    g1_check_hip("hipFree (sync_alloc)", fs, "worker");
+    buf.data = nullptr;
+    return;
+  }
   if (buf.device == -1) {
     unified_free(buf.data, buf.is_managed);
   } else if (
@@ -432,6 +529,7 @@ void RocmAllocator::free_async(RocmBuffer& buf, void* stream_v) {
                 buf.data, buf.size);
       }
       hipError_t ff = hipFree(buf.data);
+      w1probe::note_free(buf.data, buf.size);
       g1_check_hip("hipFree (free_async, worker thread)", ff, "worker");
     }
   } else {
@@ -523,6 +621,8 @@ Buffer RocmAllocator::malloc_async(size_t size, int device, void* stream_v) {
   // Find available buffer from cache.
   std::unique_lock lock(mutex_);
   RocmBuffer* buf = buffer_cache_.reuse_from_cache(size);
+  if (buf)
+    w1probe::note_reuse(size, buf->data);
   if (!buf) {
     // Scalar pool first (CUDA).
     if (size <= static_cast<size_t>(small_block_size)) {
@@ -539,8 +639,17 @@ Buffer RocmAllocator::malloc_async(size_t size, int device, void* stream_v) {
         } catch (...) {
           return nullptr;
         }
+        // unified fallback to hipHostMalloc (is_managed == false) is
+        // host-pinned: host_backed.
         return new RocmBuffer{
-            data, size, is_managed, /*device=*/-1, nullptr, false, nullptr};
+            data,
+            size,
+            is_managed,
+            /*device=*/-1,
+            nullptr,
+            false,
+            nullptr,
+            !is_managed};
       }
       (void)hipSetDevice(device);
       hipError_t err = hipMallocAsync(&data, size, stream);
@@ -573,6 +682,30 @@ Buffer RocmAllocator::malloc_async(size_t size, int device, void* stream_v) {
         int64_t over = static_cast<int64_t>(get_active_memory()) +
             static_cast<int64_t>(get_cache_memory()) +
             static_cast<int64_t>(need) - static_cast<int64_t>(hbm_cap);
+        // Plan-D: retention-cap pressure (in addition to the 85% HBM
+        // cap); the excess is released to the pool by the existing
+        // release_cached_buffers path below.
+        const size_t rcap = retain_cap_bytes();
+        if (rcap) {
+          size_t retained = get_cache_memory() + graph_deferred_bytes() +
+              (decode_arena_.active ? decode_arena_.capacity : 0);
+          if (retained > rcap) {
+            int64_t o2 =
+                static_cast<int64_t>(retained) - static_cast<int64_t>(rcap);
+            if (o2 > over) {
+              over = o2;
+            }
+          }
+        }
+        if (getenv("MLX_WORKER_DEBUG")) {
+          size_t _ff = 0, _tt = 0;
+          (void)hipMemGetInfo(&_ff, &_tt);
+          fprintf(stderr,
+              "[worker] RECLAIM over=%ld cache=%zu active=%zu peak=%zu "
+              "hbm_free=%zu hbm_total=%zu arena=%zu\n",
+              (long)over, get_cache_memory(), get_active_memory(),
+              peak_memory_, _ff, _tt, decode_arena_.capacity);
+        }
         if (over > 0 && get_cache_memory() > 0) {
           // free_ callback → free_rocm_buffer → hipFreeAsync when pool path.
           if (getenv("MLX_WORKER_DEBUG")) {
@@ -603,6 +736,38 @@ Buffer RocmAllocator::malloc_async(size_t size, int device, void* stream_v) {
           buf = try_device_alloc();
         }
         if (!buf) {
+          // B97-HBMFIX: the HSA async pool (memory pool) can fail to extend
+          // even with HBM physically free (BlockAllocator::alloc failed);
+          // fall back to synchronous hipMalloc (regular driver path).
+          void* sdata = nullptr;
+          hipError_t se = hipMalloc(&sdata, size);
+          if (getenv("MLX_WORKER_DEBUG")) {
+            size_t _ff = 0, _tt = 0;
+            (void)hipMemGetInfo(&_ff, &_tt);
+            fprintf(stderr,
+                "[worker] SYNCFALLBACK size=%zu se=%d (%s) "
+                "hbm_free=%zu hbm_total=%zu active=%zu cache=%zu "
+                "arena=%zu peak=%zu\n",
+                size, (int)se, hipGetErrorString(se), _ff, _tt,
+                get_active_memory(), get_cache_memory(),
+                decode_arena_.capacity, peak_memory_);
+          }
+          (void)hipGetLastError();
+          if (se == hipSuccess && sdata) {
+            buf = new RocmBuffer{
+                sdata,
+                size,
+                /*is_managed=*/false,
+                device,
+                nullptr,
+                false,
+                nullptr,
+                false,
+                true /*sync_alloc*/};
+          }
+        }
+        if (!buf) {
+          dbg_live_dump("THROW");
           throw std::runtime_error(
               "[malloc_async] Unable to allocate " + std::to_string(size) +
               " bytes (HBM full after cache reclaim).");
@@ -619,6 +784,7 @@ Buffer RocmAllocator::malloc_async(size_t size, int device, void* stream_v) {
       lock.unlock();
       data = unified_malloc(buf->size, is_managed);
       hipError_t mc = hipMemcpy(data, buf->data, buf->size, hipMemcpyDeviceToDevice);
+      w1probe::api_log("hipMemcpy(retag_d2d)", data, buf->data, buf->size, (int)mc);
       g1_check_hip("hipMemcpy D2D (try_device_alloc retag)", mc);
       free_async(*buf);
       buf->data = data;
@@ -632,6 +798,7 @@ Buffer RocmAllocator::malloc_async(size_t size, int device, void* stream_v) {
   }
 
   active_memory_ += buf->size;
+  dbg_live_add(buf->size, +1);
   peak_memory_ = std::max(active_memory_, peak_memory_);
   // No eager max_pool_size_ trim here — that was the free/alloc storm.
   // clear_cache() / set_cache_limit() still shrink explicitly.
@@ -741,8 +908,10 @@ void RocmAllocator::free(Buffer buffer, bool force) {
   // Alien sentinel (make_buffer): shell only.
   if (buf->alloc_stream == reinterpret_cast<void*>(static_cast<uintptr_t>(1))) {
     std::lock_guard lock(mutex_);
-    if (active_memory_ >= buf->size)
+    if (active_memory_ >= buf->size) {
       active_memory_ -= buf->size;
+      dbg_live_add(buf->size, -1);
+    }
     delete buf;
     return;
   }
@@ -757,6 +926,7 @@ void RocmAllocator::free(Buffer buffer, bool force) {
 
   std::unique_lock lock(mutex_);
   active_memory_ -= buf->size;
+  dbg_live_add(buf->size, -1);
   // Always recycle; never hipFree on the free() path.
   //
   // rocprof: 90–500 ms GPU idle gaps right before fused_adamw were almost
@@ -765,7 +935,21 @@ void RocmAllocator::free(Buffer buffer, bool force) {
   // same-sized activations that the *next* step needs, and hipFree is a
   // blocking drain. Bound HBM only from malloc_async (memory_limit_ pressure
   // + max_pool_size_ trim there), where a miss already has to wait.
+  w1probe::note_recycle(buf->size, buf->data);
   buffer_cache_.recycle_to_cache(buf);
+  // Plan-D: bounded retention - after this buffer lands in the freelist,
+  // release the excess (over the cap) to the pool (lock is held).
+  // Deferred/arena bytes count into the budget but are not released here
+  // (the deferred path retires by generation; the arena resets per step).
+  const size_t rcap = retain_cap_bytes();
+  if (rcap) {
+    size_t retained = buffer_cache_.cache_size() + graph_deferred_bytes() +
+        (decode_arena_.active ? decode_arena_.capacity : 0);
+    if (retained > rcap && buffer_cache_.cache_size() > 0) {
+      buffer_cache_.release_cached_buffers(
+          std::min(retained - rcap, buffer_cache_.cache_size()));
+    }
+  }
 }
 
 Buffer RocmAllocator::make_buffer(void* ptr, size_t size) {
@@ -793,8 +977,10 @@ void RocmAllocator::release(Buffer buffer) {
   }
   {
     std::lock_guard lock(mutex_);
-    if (active_memory_ >= buf->size)
+    if (active_memory_ >= buf->size) {
       active_memory_ -= buf->size;
+      dbg_live_add(buf->size, -1);
+    }
   }
   const bool alien =
       buf->alloc_stream == reinterpret_cast<void*>(static_cast<uintptr_t>(1));
@@ -846,11 +1032,33 @@ RocmBuffer* RocmAllocator::arena_alloc(size_t size) {
   rb->size = size;
   rb->is_managed = true;
   rb->device = -1;
+  rb->host_backed = a.base_host;
   rb->host_shadow = nullptr;
   rb->host_dirty = false;
   rb->alloc_stream = nullptr;
   a.offset += aligned;
   a.high_water = std::max(a.high_water, a.offset);
+  // Cross-key boundary guard (multi-class decode arena): this step's class
+  // (current_key) may reclaim only its own prefix; growing past the next
+  // class' live prefix floor means the arena is too small for this class
+  // (mark overflowed: the pilot grows the arena and re-captures the step
+  // instead of clobbering the other class' prefix, whose VAs that class'
+  // exec baked in). The floors are chained (each key's floor is the
+  // previous key's prefix end, at capture time), so the next class' floor
+  // is exactly this class' prefix bound.
+  if (a.current_key >= 0 && a.key_floor_frozen[a.current_key]) {
+    size_t bound = a.capacity;
+    for (int k = 0; k < DecodeArena::kNumKeys; ++k) {
+      if (k != a.current_key && a.key_floor_frozen[k] &&
+          a.key_floor[k] > a.key_floor[a.current_key] &&
+          a.key_floor[k] < bound) {
+        bound = a.key_floor[k];
+      }
+    }
+    if (a.offset > bound) {
+      a.overflowed = true;
+    }
+  }
   return rb;
 }
 
@@ -861,6 +1069,7 @@ bool RocmAllocator::decode_arena_begin(
   (void)device;
   (void)stream;
   std::lock_guard lock(mutex_);
+  bool base_reallocated = false;
   if (!decode_arena_.base || decode_arena_.capacity < capacity) {
     if (decode_arena_.base) {
       hipError_t af = hipFree(decode_arena_.base);
@@ -882,24 +1091,61 @@ bool RocmAllocator::decode_arena_begin(
     }
     decode_arena_.base = p;
     decode_arena_.capacity = capacity;
+    decode_arena_.base_host = !arena_managed;
     active_memory_ += capacity;
     peak_memory_ = std::max(active_memory_, peak_memory_);
+    base_reallocated = true;
   }
-  decode_arena_.offset = 0;
-  decode_arena_.next_wrapper = 0;
-  decode_arena_.overflowed = false;
-  decode_arena_.high_water = 0;
+  decode_arena_session_reset(base_reallocated);
   decode_arena_.active = true;
-  decode_slot3_cursor_ = 0;
   return true;
+}
+
+// A new arena session (begin without a reallocation after a deferred
+// teardown, or a full reset): the slot wrappers are reclaimed with the
+// reset; their pinned host buffers are freed so the next session's slots
+// re-allocate fresh (the previous session's exec was destroyed by the
+// teardown, so a re-use of the stale host buffers buys nothing - the next
+// capture re-records the slot H2D anyway). The per-key prefix floors
+// survive a non-reallocation reset (the base is the same, so the recorded
+// floor VAs are still valid for the next session's same-class steps); a
+// reallocated base invalidates them (the new base has no prefixes).
+void RocmAllocator::decode_arena_session_reset(bool base_reallocated) {
+  // The caller holds the lock.
+  auto& a = decode_arena_;
+  a.offset = 0;
+  a.next_wrapper = 0;
+  a.overflowed = false;
+  a.high_water = 0;
+  a.slots_allocated = false;
+  a.current_key = -1;
+  decode_slot3_cursor_ = 0;
+  for (auto& st : decode_value_slot_state_) {
+    if (st.host) {
+      (void)hipFree(st.host);
+      st = DecodeValueSlotState{};
+    }
+  }
+  decode_zero_state_ = DecodeValueSlotState{};
+  decode_token_state_ = DecodeValueSlotState{};
+  if (base_reallocated) {
+    for (int k = 0; k < DecodeArena::kNumKeys; ++k) {
+      a.key_floor[k] = 0;
+      a.key_floor_wrapper[k] = 0;
+      a.key_floor_frozen[k] = false;
+    }
+  }
 }
 
 void RocmAllocator::decode_arena_reset() {
   std::lock_guard lock(mutex_);
-  decode_arena_.offset = 0;
-  decode_arena_.next_wrapper = 0;
-  decode_arena_.overflowed = false;
-  decode_slot3_cursor_ = 0;
+  decode_arena_session_reset(false);
+  // GD-idx (R4-fix): the in-step gather ordinal resets with the arena so
+  // capture and replay steps map gather k -> staging buffer k. The slot arm
+  // is NOT cleared here: it is set by the token Load in the previous step's
+  // tail (BEFORE this step's prepare) and must survive to the step's first
+  // single-row gather, which consumes it.
+  decode_idx_stage_seq_ = 0;
 }
 
 void RocmAllocator::decode_arena_freeze_floor() {
@@ -913,6 +1159,58 @@ void RocmAllocator::decode_arena_reset_to_floor() {
   decode_arena_.offset = decode_arena_.floor_offset;
   decode_arena_.next_wrapper = decode_arena_.floor_wrapper;
   decode_arena_.overflowed = false;
+}
+
+void RocmAllocator::decode_arena_reset_to_floor(int key) {
+  std::lock_guard lock(mutex_);
+  auto& a = decode_arena_;
+  if (key < 0 || key >= DecodeArena::kNumKeys || !a.key_floor_frozen[key]) {
+    return;
+  }
+  a.offset = a.key_floor[key];
+  a.next_wrapper = a.key_floor_wrapper[key];
+  a.overflowed = false;
+}
+
+void RocmAllocator::decode_arena_freeze_floor(int key) {
+  std::lock_guard lock(mutex_);
+  auto& a = decode_arena_;
+  if (key < 0 || key >= DecodeArena::kNumKeys) {
+    return;
+  }
+  a.key_floor[key] = a.offset;
+  a.key_floor_wrapper[key] = a.next_wrapper;
+  a.key_floor_frozen[key] = true;
+}
+
+bool RocmAllocator::decode_arena_floor_frozen(int key) const {
+  if (key < 0 || key >= DecodeArena::kNumKeys) {
+    return false;
+  }
+  return decode_arena_.key_floor_frozen[key];
+}
+
+void RocmAllocator::decode_arena_set_current_key(int key) {
+  std::lock_guard lock(mutex_);
+  decode_arena_.current_key = key;
+}
+
+void RocmAllocator::decode_arena_offset_to_high_water() {
+  std::lock_guard lock(mutex_);
+  auto& a = decode_arena_;
+  // Start an unfrozen key's first capture above everything live: the shared
+  // slot region (6 wrappers, when allocated) and the other keys' live
+  // prefixes (which end at the arena high water when this key captures
+  // first after them in the session). The prefix then takes fresh wrappers
+  // (a new RocmBuffer each) so the other keys' live prefix buffers are not
+  // overwritten.
+  size_t start = a.high_water;
+  if (a.slots_allocated && 6 * 4096 > start) {
+    start = 6 * 4096;
+  }
+  a.offset = start;
+  a.next_wrapper = a.wrappers.size();
+  a.overflowed = false;
 }
 
 void RocmAllocator::decode_arena_end() {
@@ -954,6 +1252,7 @@ RocmAllocator::decode_value_slot(int index) {
     st.data = b->data;
     st.host = host;
     st.base = decode_arena_.base;
+    decode_arena_.slots_allocated = true;
   }
   return {st.buf, st.host, st.data};
 }
@@ -1000,10 +1299,170 @@ RocmAllocator::decode_zero_slot() {
     }
     st.buf = Buffer{b};
     st.data = b->data;
-    st.host = reinterpret_cast<int64_t*>(1);  // sentinel: allocated
+    st.host = reinterpret_cast<int64_t*>(1);  // sentinel: allocated (no pinned host buffer)
     st.base = decode_arena_.base;
+    decode_arena_.slots_allocated = true;
   }
   return {st.buf, st.host, st.data};
+}
+
+// The per-step token-id slot for the S>1 verify subgraph: a 4 KB stable arena wrapper + a pinned host buffer (up to 64 x int64 token ids). The verify gather's eval fills the pinned buffer each step (a CPU side effect) and H2Ds it to the fixed VA before the launch; the captured graph's gather reads the fixed VA (the recorded H2D node is neutralized at end_record and re-delivered pre-launch with the fresh ids).
+RocmAllocator::DecodeValueSlot
+RocmAllocator::decode_token_slot() {
+  std::lock_guard lock(mutex_);
+  if (!decode_arena_.active) {
+    return {Buffer{nullptr}, nullptr, nullptr};
+  }
+  DecodeValueSlotState& st = decode_token_state_;
+  if (st.host && st.base != decode_arena_.base) {
+    (void)hipFree(st.host);
+    st = DecodeValueSlotState{};
+  }
+  if (!st.host) {
+    RocmBuffer* b = arena_alloc(4096);
+    if (!b) {
+      return {Buffer{nullptr}, nullptr, nullptr};
+    }
+    void* host = nullptr;
+    if (hipHostMalloc(&host, 64 * sizeof(int64_t)) != hipSuccess) {
+      (void)hipGetLastError();
+      return {Buffer{nullptr}, nullptr, nullptr};
+    }
+    st.buf = Buffer{b};
+    st.data = b->data;
+    st.host = reinterpret_cast<int64_t*>(host);
+    st.base = decode_arena_.base;
+    decode_arena_.slots_allocated = true;
+  }
+  return {st.buf, st.host, st.data};
+}
+
+RocmAllocator::DecodeValueSlot
+RocmAllocator::decode_idx_slot() {
+  std::lock_guard lock(mutex_);
+  DecodeIdxSlotState& st = decode_idx_state_;
+  if (!st.host) {
+    decode_idx_slot_locked_materialize();
+  }
+  return {st.buf, st.host, st.data};
+}
+
+// (internal) materialize the 4 KB slot buffer pair; caller holds mutex_
+// and is OUTSIDE any capture window (checked by the public accessors).
+bool RocmAllocator::decode_idx_slot_locked_materialize() {
+  if (decode_idx_state_.data != nullptr) {
+    return true;
+  }
+  void* dev = nullptr;
+  void* host = nullptr;
+  hipError_t me1 = hipMalloc(&dev, 4096);
+  if (me1 != hipSuccess || dev == nullptr) {
+    fprintf(stderr, "[gdidx] slot mat FAIL hipMalloc=%d dev=%p\n",
+            (int)me1, dev);
+    (void)hipGetLastError();
+    return false;
+  }
+  hipError_t me2 = hipHostMalloc(&host, 4096, hipHostMallocDefault);
+  if (me2 != hipSuccess || host == nullptr) {
+    fprintf(stderr, "[gdidx] slot mat FAIL hipHostMalloc=%d host=%p\n",
+            (int)me2, host);
+    (void)hipGetLastError();
+    (void)hipFree(dev);
+    return false;
+  }
+  fprintf(stderr, "[gdidx] slot mat OK dev=%p host=%p\n", dev, host);
+  // Shell-only Buffer (the alien sentinel, exactly as make_buffer builds it;
+  // make_buffer itself takes mutex_ and cannot be called here): free()
+  // deletes the shell and never hipFrees the 4 KB device buffer, which must
+  // stay mapped for the lifetime of the process (the graph bakes its VA).
+  auto* rb = new RocmBuffer{
+      dev,
+      16,
+      /*is_managed=*/true,
+      /*device=*/-1,
+      nullptr,
+      false,
+      reinterpret_cast<void*>(static_cast<uintptr_t>(1))};
+  decode_idx_state_.buf = Buffer{rb};
+  decode_idx_state_.data = dev;
+  decode_idx_state_.host = static_cast<int64_t*>(host);
+  decode_idx_ptrs_init_locked();
+  return true;
+}
+
+void RocmAllocator::decode_idx_ptrs_init_locked() {
+  // The 4 per-gather pointer pairs live in words 1..4 of the persistent
+  // 4 KB device buffer and its 4 KB pinned host twin (word 0 is the token
+  // slot/shadow). They are fixed offsets into the persistent buffers —
+  // nothing to allocate; the device slots are NEVER freed (their VAs are
+  // baked into every graph exec that references them).
+}
+
+void RocmAllocator::decode_idx_ptrs_materialize() {
+  std::lock_guard lock(mutex_);
+  // The arm and the prepare call this BEFORE the capture window; a hip*
+  // during a capture window would invalidate the exec on ROCm 10.1.
+  if (capture_stream() != nullptr) {
+    return;
+  }
+  decode_idx_slot_locked_materialize();
+}
+
+void* RocmAllocator::decode_idx_ptr_slot(int i) {
+  std::lock_guard lock(mutex_);
+  if (i < 0 || i >= 4) {
+    return nullptr;
+  }
+  if (decode_idx_state_.data == nullptr) {
+    // Lazy materialization is safe only OUTSIDE a capture window (a hip*
+    // during a capture invalidates it on ROCm 10.1); inside the window the
+    // caller's gather falls back to the direct per-step idx read.
+    if (capture_stream() != nullptr) {
+      return nullptr;
+    }
+    decode_idx_slot_locked_materialize();
+  }
+  return static_cast<int64_t*>(decode_idx_state_.data) + 1 + i;
+}
+
+uint64_t* RocmAllocator::decode_idx_ptr_host(int i) {
+  std::lock_guard lock(mutex_);
+  if (i < 0 || i >= 4) {
+    return nullptr;
+  }
+  if (decode_idx_state_.host == nullptr) {
+    if (capture_stream() != nullptr) {
+      return nullptr;
+    }
+    decode_idx_slot_locked_materialize();
+  }
+  return reinterpret_cast<uint64_t*>(decode_idx_state_.host + 1 + i);
+}
+
+void RocmAllocator::decode_idx_slot_arm() {
+  std::lock_guard lock(mutex_);
+  idx_slot_armed_ = true;
+}
+
+bool RocmAllocator::decode_idx_slot_take() {
+  std::lock_guard lock(mutex_);
+  bool v = idx_slot_armed_;
+  idx_slot_armed_ = false;
+  return v;
+}
+
+int RocmAllocator::decode_idx_stage_next() {
+  std::lock_guard lock(mutex_);
+  return decode_idx_stage_seq_++;
+}
+
+bool RocmAllocator::is_persistent_staging_host(const void* p) const {
+  for (int i = 0; i < 4; ++i) {
+    if (decode_value_slot_state_[i].host == p) {
+      return true;
+    }
+  }
+  return decode_idx_state_.host == p;
 }
 
 size_t RocmAllocator::decode_value_slot3_cursor(size_t size) {
@@ -1037,10 +1496,30 @@ static size_t host_shadow_chunk_bytes() {
 // run-461-class segfault fix: the run-460 design also DESTROYED the per-chunk stream (hipStreamDestroy). On gfx1201 the KFD completion event of an async copy is not retired promptly; destroying the per-chunk stream while that event is still pending races the runtime stream/event bookkeeping and segfaults in this function (run-506: core x4 in the GDN bf16 D2H, backtrace at the chunked-copy region). The stream is therefore intentionally NOT destroyed: one small bounded leak per chunk per shadow copy (a 1.2 GB copy leaks 12 streams; negligible for a server process) in exchange for no stream-lifecycle race.
 static hipError_t shadow_chunked_copy(void* dst, const void* src, size_t size,
                                      hipMemcpyKind kind) {
+  // GD-idx (R4): while a graph capture is in progress a blocking hipMemcpy
+  // (the small-copy path, or the per-chunk hipStreamSynchronize below)
+  // 906s inside the window and taints the stream — the R4 re-capture
+  // crash. Pinned->device flushes are instead RECORDED as a single async
+  // memcpy on the capture stream (hipMemcpyAsync on a capturing stream is
+  // captured and re-executes at every graph launch, reading the pinned
+  // source at launch time). Only H2D is gated: an in-window D2H readback
+  // would hand the host stale bytes if not actually executed, so D2H
+  // keeps the blocking path (callers in-window defer readbacks via the
+  // worker).
+  if (kind == hipMemcpyHostToDevice && stream_capturing()) {
+    hipStream_t cs = capture_stream();
+    if (cs != nullptr) {
+      hipError_t err = hipMemcpyAsync(dst, src, size, kind, cs);
+      g1_check_hip("hipMemcpyAsync H2D (flush, recorded)", err);
+      return err;
+    }
+  }
   const size_t chunk = host_shadow_chunk_bytes();
   // run-517: small copies use the legacy single-shot sync hipMemcpy (no stream, no leak). The run-444/run-454/run-458 hang was size-dependent (>=300 MB single copies in kfd_wait_on_events); the pre-K3 wheel ran 9B loads (1856 small flushes) on plain hipMemcpy with no hang. Large copies keep the run-460 chunked fresh-stream path (hang-avoidance) with the run-515 no-destroy (bounded leak: a few streams per large copy, not per small flush).
   if (size <= chunk) {
-    return hipMemcpy(dst, src, size, kind);
+    hipError_t w1rc = hipMemcpy(dst, src, size, kind);
+    w1probe::api_log("hipMemcpy(cache_copy)", dst, src, size, (int)w1rc);
+    return w1rc;
   }
   size_t off = 0;
   int g1_streams_created = 0;
@@ -1055,6 +1534,7 @@ static hipError_t shadow_chunked_copy(void* dst, const void* src, size_t size,
       // Fallback: sync hipMemcpy (the legacy path) if stream creation fails.
       err = hipMemcpy(static_cast<char*>(dst) + off,
                      static_cast<const char*>(src) + off, n, kind);
+      w1probe::api_log("hipMemcpy(cache_chunk)", dst, src, n, (int)err);
       if (err != hipSuccess) {
         return err;
       }
@@ -1110,9 +1590,22 @@ void RocmAllocator::flush_host_shadow(RocmBuffer& buf) {
   if (buf.host_shadow == nullptr || !buf.host_dirty) {
     return;
   }
-  hipError_t mc = shadow_chunked_copy(buf.data, buf.host_shadow, buf.size,
-                                     hipMemcpyHostToDevice);
-  g1_check_hip("shadow_chunked_copy H2D (flush_host_shadow)", mc);
+  hipStream_t cs = rocm::capture_stream();
+  if (g_decode_capturing.load(std::memory_order_relaxed) && cs) {
+    // In-capture: the blocking legacy hipMemcpy 906s (the legacy stream
+    // cannot depend on a capturing stream) and a failed flush is silent -
+    // the kernel would read a stale shadow. Record the H2D on the capture
+    // stream instead: the node is captured, neutralized at end_record, and
+    // re-delivered from the pinned shadow before every launch (the slot
+    // re-delivery pattern) - the value reaches VRAM at launch time.
+    hipError_t mc = hipMemcpyAsync(buf.data, buf.host_shadow, buf.size,
+                                  hipMemcpyHostToDevice, cs);
+    g1_check_hip("hipMemcpyAsync H2D (flush_host_shadow in-capture)", mc);
+  } else {
+    hipError_t mc = shadow_chunked_copy(buf.data, buf.host_shadow, buf.size,
+                                       hipMemcpyHostToDevice);
+    g1_check_hip("shadow_chunked_copy H2D (flush_host_shadow)", mc);
+  }
   buf.host_dirty = false;
 }
 
@@ -1209,26 +1702,84 @@ void* Buffer::raw_ptr() {
     return cbuf.data;
   }
 
+  const bool in_cap =
+      rocm::g_decode_capturing.load(std::memory_order_relaxed);
+  // CPU-visible without a copy: pinned host (hipHostMalloc: device == -1,
+  // is_managed == false) or a host-backed arena wrapper.
+  const bool host_visible =
+      (cbuf.device == -1 && !cbuf.is_managed) || cbuf.host_backed;
+
+  if (in_cap && host_visible) {
+    // S>1 fix (S=3/4 capture 906 hang): the legacy-stream D2H in
+    // ensure_host_shadow 906s during capture ("operation would make the
+    // legacy stream depend on a capturing blocking stream"); the throw
+    // propagates to the eval error path whose synchronize() on the open
+    // capture stream hangs forever. A host-visible buffer needs no copy
+    // and no sync: during capture there is no in-flight non-recorded GPU
+    // work (the step was drained before BeginCapture).
+    return cbuf.data;
+  }
+
+  if (in_cap) {
+    // VRAM during capture: the single-shot legacy hipMemcpy 906s for the
+    // same reason. Stage through a private NON-BLOCKING stream (no implicit
+    // dependency on the capture stream: no 906, no hang). The read is a
+    // snapshot of the pre-capture contents (captured kernels have not run
+    // yet) - exactly what an in-capture host read (host-written
+    // idx/token-id arrays) needs. No stream destroy (run-515 policy:
+    // bounded leak).
+    void* shadow = nullptr;
+    hipError_t err = hipHostMalloc(&shadow, cbuf.size, hipHostMallocDefault);
+    if (err != hipSuccess) {
+      (void)hipGetLastError();
+      err = hipErrorOutOfMemory;
+    }
+    bool ok = false;
+    if (err == hipSuccess && shadow) {
+      hipStream_t ps = nullptr;
+      if (hipStreamCreateWithFlags(&ps, hipStreamNonBlocking) == hipSuccess &&
+          ps) {
+        err = hipMemcpyAsync(shadow, cbuf.data, cbuf.size,
+                            hipMemcpyDeviceToHost, ps);
+        if (err == hipSuccess)
+          err = G1_HL_SYNC("hipStreamSynchronize (raw_ptr in-cap)",
+                          hipStreamSynchronize(ps), "raw_ptr");
+        ok = (err == hipSuccess);
+      } else {
+        (void)hipGetLastError();
+      }
+    }
+    if (ok) {
+      cbuf.host_shadow = shadow;
+      cbuf.host_dirty = true;
+      rocm::allocator().mark_dirty_shadow(&cbuf);
+      return shadow;
+    }
+    (void)hipGetLastError();
+    std::ostringstream oss;
+    oss << "host read of a VRAM buffer during capture failed: "
+        << hipGetErrorString(err) << ".";
+    throw std::runtime_error(oss.str());
+  }
+
   // run-584: wait for all pending GPU work before ANY host read. The model
   // stream is non-blocking (hipStreamNonBlocking) and is NOT ordered with
   // the default (nullptr) stream; the previous default-stream-only sync
-  // let host reads race pending kernels — the token-ID read raced the
+  // let host reads race pending kernels - the token-ID read raced the
   // argmax/logits work on the model stream and returned stale values
   // (run-583: non-deterministic first token across runs, degenerate decode).
   // hipDeviceSynchronize covers every writer stream (the same call the
   // device>=0 branch already made) and is a no-op when the GPU is idle.
   G1_HL_SYNC("hipDeviceSynchronize (raw_ptr)", hipDeviceSynchronize(), "raw_ptr");
 
-  // Pinned host (hipHostMalloc, e.g. SmallSizePool scalars):
-  // is_managed == false, device == -1. CPU-accessible directly.
-  if (cbuf.device == -1 && !cbuf.is_managed) {
+  if (host_visible) {
     return cbuf.data;
   }
 
   // VRAM (hipMalloc device==-1, or hipMallocAsync device>=0):
   // CPU-inaccessible on discrete GPUs. Stage through host_shadow:
-  // allocate a pinned host buffer, hipMemcpy VRAM→host, return host ptr.
-  // The dirty flag ensures the next GPU access flushes host→VRAM.
+  // allocate a pinned host buffer, hipMemcpy VRAM->host, return host ptr.
+  // The dirty flag ensures the next GPU access flushes host->VRAM.
   rocm::allocator().ensure_host_shadow(cbuf);
   cbuf.host_dirty = true;
   rocm::allocator().mark_dirty_shadow(&cbuf);
@@ -1296,3 +1847,151 @@ bool decode_arena_overflowed() {
 }
 
 } // namespace mlx::core
+
+
+// ---------------------------------------------------------------------------
+// w1probe implementation (step 1b; env-gated, default off)
+// ---------------------------------------------------------------------------
+namespace w1probe {
+
+namespace {
+struct RingEv {
+  uint64_t seq;
+  int kind; // 0 alloc, 1 reuse, 2 recycle, 3 free, 4 api
+  size_t size;
+  void* ptr;
+};
+bool on = [] {
+  const char* e = std::getenv("MLX_W1_INBA_ALLOC_PROBE");
+  return e && e[0] == '1';
+}();
+std::mutex mx;
+std::unordered_set<void*> live;
+std::deque<RingEv> ring;
+uint64_t n_seq = 0;
+unsigned long n_alloc = 0, n_reuse = 0, n_recycle = 0, n_free = 0,
+             n_api = 0, n_api_err = 0;
+bool atexit_reg = false;
+
+void log_locked(const char* what, int kind, size_t size, void* ptr) {
+  if (!on)
+    return;
+  ring.push_back({++n_seq, kind, size, ptr});
+  if (ring.size() > 16384)
+    ring.pop_front();
+  fprintf(stderr, "[w1inba-pool] %s kind=%d size=%zu ptr=%p\n", what, kind,
+          size, ptr);
+}
+
+void finish_locked() {
+  if (!on)
+    return;
+  const char* tag = std::getenv("W1_PROBE_TAG");
+  char path[300];
+  snprintf(path, sizeof(path), "/tmp/w1inba_ap_%s_pool.txt", tag ? tag : "x");
+  FILE* f = fopen(path, "wb");
+  if (!f)
+    return;
+  fprintf(f, "w1probe pool log (MLX_W1_INBA_ALLOC_PROBE)\n");
+  fprintf(f, "counts: alloc=%lu reuse=%lu recycle=%lu free=%lu api=%lu api_err=%lu live=%zu ring=%zu\n",
+          n_alloc, n_reuse, n_recycle, n_free, n_api, n_api_err, live.size(),
+          ring.size());
+  for (auto& e : ring) {
+    fprintf(f, "%llu kind=%d size=%zu ptr=%p\n", (unsigned long long)e.seq,
+            e.kind, e.size, e.ptr);
+  }
+  fclose(f);
+  fprintf(stderr, "[w1inba-pool] wrote %s\n", path);
+}
+} // namespace
+
+bool enabled() {
+  return on;
+}
+
+void note_alloc(void* ptr, size_t size) {
+  std::lock_guard<std::mutex> lk(mx);
+  if (!on)
+    return;
+  live.insert(ptr);
+  n_alloc++;
+  log_locked("alloc", 0, size, ptr);
+  if (!atexit_reg) {
+    std::atexit([] {
+      std::lock_guard<std::mutex> l2(mx);
+      finish_locked();
+    });
+    atexit_reg = true;
+  }
+}
+
+void note_reuse(size_t size, void* ptr) {
+  std::lock_guard<std::mutex> lk(mx);
+  if (!on)
+    return;
+  live.insert(ptr);
+  n_reuse++;
+  log_locked("reuse", 1, size, ptr);
+}
+
+void note_recycle(size_t size, void* ptr) {
+  std::lock_guard<std::mutex> lk(mx);
+  if (!on)
+    return;
+  live.erase(ptr);
+  n_recycle++;
+  log_locked("recycle", 2, size, ptr);
+}
+
+void note_free(void* ptr, size_t size) {
+  std::lock_guard<std::mutex> lk(mx);
+  if (!on)
+    return;
+  live.erase(ptr);
+  n_free++;
+  log_locked("free", 3, size, ptr);
+}
+
+void api_log(const char* name, const void* p1, const void* p2, size_t n,
+             int rc) {
+  if (!on)
+    return;
+  std::lock_guard<std::mutex> lk(mx);
+  bool in_pool = (p1 != nullptr && live.find(const_cast<void*>(p1)) != live.end()) ||
+                 (p2 != nullptr && live.find(const_cast<void*>(p2)) != live.end());
+  if (!in_pool && rc == 0)
+    return;
+  n_api++;
+  if (rc != 0)
+    n_api_err++;
+  ring.push_back({++n_seq, 4, n, const_cast<void*>(p1)});
+  if (ring.size() > 16384)
+    ring.pop_front();
+  fprintf(stderr, "[w1inba-poolapi] %s p1=%p p2=%p n=%zu rc=%d pool=%d\n",
+          name, p1, p2, n, rc, (int)in_pool);
+}
+
+int read_buf(const void* ptr, size_t n, std::vector<unsigned char>& out,
+             hipStream_t stream) {
+  if (ptr == nullptr || n == 0)
+    return 0;
+  out.assign(n, 0);
+  hipPointerAttribute_t pa;
+  hipError_t pa_e = hipPointerGetAttributes(&pa, ptr);
+  if (pa_e == hipSuccess && pa.type == hipMemoryTypeDevice) {
+    hipError_t e1 = hipMemcpyAsync(out.data(), ptr, n, hipMemcpyDeviceToHost,
+                                   stream);
+    hipError_t e2 = hipStreamSynchronize(stream);
+    return (e1 == hipSuccess && e2 == hipSuccess) ? 0 : 1;
+  }
+  // host-pinned / managed / unregistered: plain host read (v6 finding)
+  memcpy(out.data(), ptr, n);
+  return 0;
+}
+
+void finish() {
+  std::lock_guard<std::mutex> lk(mx);
+  finish_locked();
+}
+
+} // namespace w1probe

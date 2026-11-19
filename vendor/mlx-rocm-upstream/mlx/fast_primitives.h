@@ -588,6 +588,70 @@ class GdnFusedStepTape : public Custom {
   float eps_;
   float norm_eps_;
 };
+
+// GdnFusedStepSlot: Phase B (the re-forward remover). The same fused verify
+// step as GdnFusedStepTape, but the per-row snapshot outputs cover only the
+// COMMIT ROWS 0..T-2 (row T-1 is state_new): state_slot [T-1, Hv, 128, 128]
+// f32 + conv_slot [T-1, 3, conv_dim] bf16, row-indexed like the tape (row t =
+// the state/conv-window AFTER row t, so a reject at accepted prefix krow
+// rebinds to slot row krow - the bench commit() code is unchanged). Row 0
+// (the state after the trunk row) is included: in our spec flow the trunk is
+// row 0 of the verify batch, so '0 drafts accepted' needs the post-row-0
+// state, unlike the llama draft-only batch (where slot 0 = pre-verify).
+// Gated by MLX_ROCM_GDN_SLOT=1 (DEFAULT OFF); T >= 2 (a T=1 step has no
+// commit rows). The tape op is untouched (it passes n_slots = TMAX).
+class GdnFusedStepSlot : public Custom {
+ public:
+  GdnFusedStepSlot(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback,
+      float inv_scale,
+      float eps,
+      float norm_eps)
+      : Custom(stream, std::move(fallback)),
+        inv_scale_(inv_scale),
+        eps_(eps),
+        norm_eps_(norm_eps) {}
+
+  static bool use_fallback(
+      int B,
+      int T,
+      int Dk,
+      int Dv,
+      int Hv,
+      int Hk,
+      int kernel_size,
+      Stream s);
+
+  DEFINE_DEFAULT_IS_EQUIVALENT()
+
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    int T = (int)inputs[9].shape(1);
+    int Hv = (int)inputs[9].shape(2);
+    int key_dim = (int)inputs[0].shape(2);
+    int value_dim = (int)inputs[2].shape(2);
+    int conv_dim = 2 * key_dim + value_dim;
+    return {inputs[9].shape(),
+            inputs[10].shape(),
+            {T - 1, Hv, 128, 128},
+            {T - 1, 3, conv_dim}};
+  }
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(GdnFusedStepSlot);
+
+ private:
+  float inv_scale_;
+  float eps_;
+  float norm_eps_;
+};
 // GdnFusedStepSlot2: R1b (the fused sequential slot design). The slot op
 // (per-row state snapshots for the commit rows 0..T-2; row T-1 is
 // state_new) running the NON-UNROLLED slot2 kernel (one per-row phase for
@@ -708,6 +772,38 @@ class GdnFusedStepSeq : public Custom {
   float inv_scale_;
   float eps_;
   float norm_eps_;
+};
+// MmulQGlu: the GLU-fused quantized GEMM (R6 recipe item 1, the llama mmq
+// dp4a has_fusion port, 2026-11-14): out[m, n] = up * silu(gate) with
+// up = x @ W_up^T, gate = x @ W_gate^T; W_up/W_gate are mlx 4-bit affine G64
+// (raw nibbles + scales + biases, group 64). The weights convert to Q8_0
+// (32-group, d half) into the x slot (two buffers), the activations convert
+// to the Q8_1-mmq layout into the y slot; the dp4a kernel loads 8-row
+// up/gate alternating weight tiles and the fused write_back writes the GLU.
+// Gated by MLX_GLU_MMQ=1 (DEFAULT OFF). Defined in
+// backend/rocm/quantized/mmq/mmq.hip.
+class MmulQGlu : public Custom {
+ public:
+  MmulQGlu(Stream stream,
+           std::function<std::vector<array>(std::vector<array>)> fallback)
+      : Custom(stream, std::move(fallback)) {}
+
+  static bool use_fallback(int M, int N, int K, Stream s);
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(MmulQGlu);
+
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    int M = (int)inputs[0].shape(-2);
+    int N = (int)inputs[1].shape(0);
+    return {Shape{M, N}};
+  }
 };
 // LMHeadInt2: int2 g128-asymmetric dequant GEMV (M=1) + in-kernel per-64-column top-8 candidate emission (see backend/rocm/lm_head_int2.hip). Inputs: x [M, K] bf16, wq [N, K/4] u8, scale [N, NG] f32 (per-group s), zs [N, NG] f32 (z*s), sx [NG] f32 (sum of x per 128-group). Outputs: logits [N] f32, cand_val [N/64, 8] f32, cand_col [N/64, 8] i32.
 class LMHeadInt2 : public Custom {
@@ -875,6 +971,31 @@ class Quantize : public Custom {
   int bits_;
   QuantizationMode mode_;
   bool dequantize_;
+};
+
+class KQuantDequantize : public Custom {
+ public:
+  explicit KQuantDequantize(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback,
+      int ktype)
+      : Custom(stream, std::move(fallback)), ktype_(ktype) {}
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("KQuantDequantize only runs on GPU.");
+  }
+
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(KQuantDequantize);
+  bool is_equivalent(const Primitive& other) const override;
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override;
+  auto state() const { return std::make_tuple(nullptr, ktype_); }
+
+ private:
+  int ktype_;
 };
 
 using ScalarArg = std::variant<bool, int, float>;

@@ -37,8 +37,8 @@ sequential GDN kernel engaged, 1024 tokens per round, validated on gfx1201
   int-index take -> the slice rebind (K3 path only): S4 -10.11 ms/step
   in-session, lossless 5/5.
 - **The bench harness + record battery**: `bench/gdn_seq1024_repro.sh`
-  (the 108 number repro driver) + `REPORT-W1-PHASE1-20261112.md` +
-  `REPORT-W1-PHASE2-REPRO-20261112.md`.
+  (the 108 number repro driver) + docs/w1/`REPORT-W1-PHASE1-20261112.md` +
+  docs/w1/`REPORT-W1-PHASE2-REPRO-20261112.md`.
 
 ## The number, reproducible in-tree
 
@@ -46,7 +46,7 @@ The record is 107.56 t/s @1024 (record config, 3/3 lossless, stream
 `64b1b6da`). The in-tree repro is `bash bench/gdn_seq1024_repro.sh` (the
 exact record-battery invocation run from the in-tree files; identity
 clauses + same-session relative rate clause, the in-tree run recorded in
-`REPORT-W1-PHASE2-REPRO-20261112.md`).
+docs/w1/`REPORT-W1-PHASE2-REPRO-20261112.md`).
 
 ## Not in 0.2.0 (in flight)
 
@@ -118,7 +118,7 @@ recipe is this path.
 
 ## Provenance
 
-The in-repo `REPORT-W1-PHASE1-20261112.md` (the format-change battery) and
-`REPORT-W1-PHASE2-REPRO-20261112.md` (the 108 number, the in-tree repro,
+The in-repo docs/w1/`REPORT-W1-PHASE1-20261112.md` (the format-change battery) and
+docs/w1/`REPORT-W1-PHASE2-REPRO-20261112.md` (the 108 number, the in-tree repro,
 the record-battery driver). `docs/limitations.md` for the full what-works /
 in-flight / not-supported list.

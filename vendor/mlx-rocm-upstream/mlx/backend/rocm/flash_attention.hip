@@ -451,8 +451,27 @@ void sdpa_flash(
     sl = rocm::allocator().decode_value_slot(0);
   }
   int64_t* kL_dev = sl.data ? static_cast<int64_t*>(sl.data) : nullptr;
+  if (std::getenv("MLX_G1_SDPA_DBG")) {
+    static int n0 = 0;
+    if (n0 < 40) {
+      fprintf(stderr, "[g1sd] eval kL=%lld mode=%d devgpu=%d sl.data=%p sl.host=%p\n",
+              (long long)kL, (int)rocm::graph_decode_mode(),
+              (int)(s.device == Device::gpu), (void*)sl.data, (void*)sl.host);
+      fflush(stderr);
+      ++n0;
+    }
+  }
   if (kL_dev) {
     *sl.host = kL;
+    if (std::getenv("MLX_G1_SDPA_DBG")) {
+      static int n1 = 0;
+      if (n1 < 60) {
+        fprintf(stderr, "[g1sd] slayer kL=%lld host=%p hostval=%lld\n",
+                (long long)kL, (void*)sl.host, (long long)*sl.host);
+        fflush(stderr);
+        ++n1;
+      }
+    }
     encoder.launch_kernel(
         [kL_dev, host = sl.host](hipStream_t st) {
           hipError_t e = hipMemcpyAsync(

@@ -3,6 +3,7 @@
 #include <numeric>
 
 #include "mlx/backend/gpu/copy.h"
+#include "mlx/backend/rocm/quantized/kquants.h"
 #include "mlx/fast.h"
 #include "mlx/fast_primitives.h"
 #include "mlx/ops.h"
@@ -51,6 +52,22 @@ std::pair<std::vector<array>, std::vector<int>> Custom::vmap(
   return {outputs, out_axes};
 }
 
+// Plan-C (2026-11-18): fast-primitive mirror of the plan_c_act_bf16
+// gate (ops.cpp). Active iff the env value is exactly "1" ("1" = active;
+// unset or any other value = bit-identical to legacy). Off by default.
+static bool plan_c_act_bf16() {
+  static const bool g = [] {
+    const char* e = std::getenv("MLX_ROCM_ACT_BF16");
+    return e && e[0] == '1' && e[1] == '\0';
+  }();
+  return g;
+}
+static volatile char PLANC_ACTBF16_FAST_CANARY[] = "PLANC-ACTBF16-20261118";
+extern "C" __attribute__((visibility("default"))) const volatile char*
+    mlx_rocm_plan_c_act_bf16_fast_canary() {
+  return PLANC_ACTBF16_FAST_CANARY;
+}
+
 array rms_norm(
     const array& x,
     const std::optional<array>& weight,
@@ -85,6 +102,11 @@ array rms_norm(
     std::ostringstream msg;
     msg << "[rms_norm] Received unsupported type " << out_type << ".";
     throw std::invalid_argument(msg.str());
+  }
+  // Plan-C (2026-11-18): the rms_norm class (see the plan_c_act_bf16
+  // semantics in ops.cpp): f32 output -> bf16 under the gate.
+  if (out_type == float32 && plan_c_act_bf16()) {
+    out_type = bfloat16;
   }
 
   auto s = to_stream(s_);
@@ -149,6 +171,11 @@ array rms_norm_residual(
     std::ostringstream msg;
     msg << "[rms_norm_residual] Received unsupported type " << out_type << ".";
     throw std::invalid_argument(msg.str());
+  }
+  // Plan-C (2026-11-18): the residual class (see the plan_c_act_bf16
+  // semantics in ops.cpp): f32 output -> bf16 under the gate.
+  if (out_type == float32 && plan_c_act_bf16()) {
+    out_type = bfloat16;
   }
 
   auto s = to_stream(s_);
@@ -913,6 +940,28 @@ bool RoPE::is_equivalent(const Primitive& other) const {
       forward_ == a_other.forward_);
 }
 
+/** Plan-C (2026-11-18): the KV-f16 gate (MLX_ROCM_KV_F16). Active iff the
+/** env value is exactly "1" ("1" = active; unset or any other value =
+/** bit-identical to legacy). When active, the SDPA q/k/v (the KV class
+/** at the attention kernel boundary) compute in float16 instead of the
+/** promoted type. Off by default.
+/** */
+static bool plan_c_kv_f16() {
+  static const bool g = [] {
+    const char* e = std::getenv("MLX_ROCM_KV_F16");
+    return e && e[0] == '1' && e[1] == '\0';
+  }();
+  return g;
+}
+static volatile char PLANC_KVF16_CANARY[] = "PLANC-KVF16-20261118";
+extern "C" __attribute__((visibility("default"))) const volatile char*
+    mlx_rocm_plan_c_kv_f16_canary() {
+  return PLANC_KVF16_CANARY;
+}
+extern "C" __attribute__((visibility("default"))) int
+    mlx_rocm_plan_c_kv_f16_active() {
+  return plan_c_kv_f16() ? 1 : 0;
+}
 /** Computes: O = softmax(Q @ K.T) @ V **/
 array scaled_dot_product_attention(
     const array& queries,
@@ -1012,6 +1061,16 @@ array scaled_dot_product_attention(
     msg << "[scaled_dot_product_attention] Received unsupported type "
         << final_type << ".";
     throw std::invalid_argument(msg.str());
+  }
+  // Plan-C (2026-11-18): MLX_ROCM_KV_F16=1 holds the SDPA q/k/v (the KV
+  // class at the attention kernel boundary) in float16 (see the
+  // plan_c_kv_f16 semantics above). The attention output takes the
+  // same dtype. Unset / != 1 = unchanged. Note: the mlx_lm KVCache
+  // storage array is allocated by the Python cache class (outside the
+  // wheel); the gate changes the KV precision class consumed by the
+  // attention kernel (the class the part-d dtype check proves).
+  if (plan_c_kv_f16()) {
+    final_type = float16;
   }
   bool has_sinks = sinks.has_value();
 
@@ -1505,6 +1564,119 @@ std::vector<array> gdn_fused_step_tape(
       "state tapes are emitted by the fused recurrence kernel only)");
 }
 
+// gdn_fused_step_slot: Phase B (the re-forward remover). Same shape gate as
+// gdn_fused_step_tape, gated by MLX_ROCM_GDN_SLOT=1 (DEFAULT OFF) and T >= 2
+// (a T=1 step has no commit rows). Outputs: (output, state_new,
+// state_slot [T-1, Hv, 128, 128] f32, conv_slot [T-1, 3, conv_dim] bf16).
+
+bool GdnFusedStepSlot::use_fallback(
+    int B,
+    int T,
+    int Dk,
+    int Dv,
+    int Hv,
+    int Hk,
+    int kernel_size,
+    Stream s) {
+  // MLX_ROCM_GDN_SLOT=1 (DEFAULT OFF: the op is unreachable without it, so MLX_ROCM_GDN_SLOT=0/unset is a zero-behavior-change path). Same shape gate as GdnFusedStepTape plus T >= 2 (no commit rows at T=1).
+  if (s.device == Device::cpu) {
+    return true;
+  }
+  const char* e = std::getenv("MLX_ROCM_GDN_SLOT");
+  if (e == nullptr || e[0] != '1') {
+    return true;
+  }
+  if (B != 1 || T < 2 || T > 4) {
+    return true;
+  }
+  // T=3 (S=3, K=2 spec-decode verify) is admitted only under MLX_ROCM_GDN_T3=1 (same gate as GdnFusedStepTape; default OFF -> T=3 throws the clear error below).
+  if (T == 3) {
+    const char* t3 = std::getenv("MLX_ROCM_GDN_T3");
+    if (t3 == nullptr || t3[0] != '1') {
+      return true;
+    }
+  }
+  if (Dk != 128 || Dv != 128) {
+    return true;
+  }
+  if (Hv % Hk != 0) {
+    return true;
+  }
+  if (kernel_size != 4) {
+    return true;
+  }
+  return false;
+}
+
+std::vector<array> gdn_fused_step_slot(
+    const array& q_raw,
+    const array& k_raw,
+    const array& v_raw,
+    const array& b,
+    const array& a,
+    const array& A_log,
+    const array& dt_bias,
+    const array& conv_state,
+    const array& conv_weight,
+    const array& z_raw,
+    const array& state_raw,
+    const array& norm_weight,
+    float inv_scale,
+    float prep_eps,
+    float norm_eps,
+    StreamOrDevice s_ /* = {} */) {
+  auto s = to_stream(s_);
+
+  auto q = gdnf_make_row_contiguous(astype(q_raw, bfloat16, s), s);
+  auto k = gdnf_make_row_contiguous(astype(k_raw, bfloat16, s), s);
+  auto v = gdnf_make_row_contiguous(astype(v_raw, bfloat16, s), s);
+  auto bb = gdnf_make_row_contiguous(astype(b, bfloat16, s), s);
+  auto aa = gdnf_make_row_contiguous(astype(a, bfloat16, s), s);
+  auto al = gdnf_make_row_contiguous(astype(A_log, float32, s), s);
+  auto db = gdnf_make_row_contiguous(astype(dt_bias, float32, s), s);
+  auto cs = gdnf_make_row_contiguous(astype(conv_state, bfloat16, s), s);
+  auto cw = gdnf_make_row_contiguous(astype(conv_weight, bfloat16, s), s);
+  auto zg = gdnf_make_row_contiguous(astype(z_raw, bfloat16, s), s);
+  auto st = gdnf_make_row_contiguous(astype(state_raw, float32, s), s);
+  auto nw = gdnf_make_row_contiguous(astype(norm_weight, bfloat16, s), s);
+
+  int B = (int)q.shape(0);
+  int T = (int)q.shape(1);
+  int Hk = (int)q.shape(2) / 128;
+  int Hv = (int)v.shape(2) / 128;
+  int kernel_size = (int)cw.shape(1);
+
+  auto fallback = [](std::vector<array> inputs) -> std::vector<array> {
+    // There is NO chain fallback: the per-row state slots are emitted by the fused recurrence kernel only. The use_fallback gate (env + shape) makes the op unreachable when the slot is off/disabled, so this only fires on a direct call with the gate bypassed.
+    throw std::runtime_error(
+        "gdn_fused_step_slot: no fallback (the 4-op chain emits no "
+        "per-row state slots); require MLX_ROCM_GDN_SLOT=1 on the ROCm "
+        "GPU with B=1, 2<=T<=4, Dk=Dv=128, kernel_size=4");
+  };
+
+  if (!GdnFusedStepSlot::use_fallback(B, T, 128, 128, Hv, Hk, kernel_size, s)) {
+    auto inputs = std::vector<array>{
+        q, k, v, bb, aa, al, db, cs, cw, zg, st, nw};
+    int conv_dim = 2 * (int)q.shape(2) + (int)v.shape(2);
+    return array::make_arrays(
+        std::vector<Shape>{
+            zg.shape(),
+            st.shape(),
+            {T - 1, Hv, 128, 128},
+            {T - 1, 3, conv_dim}},
+        std::vector<Dtype>{bfloat16, float32, float32, bfloat16},
+        std::make_shared<GdnFusedStepSlot>(
+            s, fallback, inv_scale, prep_eps, norm_eps),
+        inputs);
+  }
+  throw std::invalid_argument(
+      "gdn_fused_step_slot: slot unavailable for this shape (require "
+      "MLX_ROCM_GDN_SLOT=1 on the ROCm GPU with B=1, 2<=T<=4, Dk=Dv=128, "
+      "kernel_size=4); the slot has no 4-op-chain fallback (per-row "
+      "state slots are emitted by the fused recurrence kernel only)");
+}
+
+
 // gdn_fused_step_slot2: R1b (the fused sequential slot design). The slot
 // op (per-row state slots for the commit rows 0..T-2; row T-1 is
 // state_new) on the NON-UNROLLED slot2 kernel (one per-row phase for all
@@ -1743,7 +1915,128 @@ std::vector<array> gdn_fused_step_seq(
       "4-op-chain fallback (per-row state slots + the post-pass conv state "
       "are emitted by the fused seq kernels only)");
 }
+// mmul_q_glu: the GLU-fused quantized GEMM (R6 recipe item 1, the llama
+// mmq dp4a has_fusion port): out = up * silu(gate), up = x @ W_up^T, gate =
+// x @ W_gate^T; W is mlx 4-bit affine G64. Gated by MLX_GLU_MMQ=1 (DEFAULT
+// OFF: the fallback dequantize + matmul + silu chain). See MmulQGlu.
+array mmul_q_glu(
+    const array& x_raw,
+    const array& w_up,
+    const array& ws_up,
+    const array& wb_up,
+    const array& w_gate,
+    const array& ws_gate,
+    const array& wb_gate,
+    StreamOrDevice s_ /* = {} */) {
+  auto s = to_stream(s_);
 
+  auto x = astype(x_raw, float32, s);
+  int M = (int)x.shape(-2);
+  int K = (int)x.shape(-1);
+  int N = (int)w_up.shape(0);
+
+  if (!MmulQGlu::use_fallback(M, N, K, s)) {
+    auto fallback = [](std::vector<array> inputs) -> std::vector<array> {
+      throw std::runtime_error(
+          "mmul_q_glu: no fallback once the fused path is selected (require "
+          "MLX_GLU_MMQ=0 for the dequantize + matmul + silu chain)");
+    };
+    auto inputs = std::vector<array>{x, w_up, ws_up, wb_up, w_gate, ws_gate,
+                                     wb_gate};
+    auto r = array::make_arrays(
+        std::vector<Shape>{Shape{M, N}},
+        std::vector<Dtype>{float32},
+        std::make_shared<MmulQGlu>(s, std::move(fallback)), inputs);
+    return r[0];
+  }
+
+  // Fallback chain (the default state): dequantize + matmul + silu in f32.
+  auto deq = [](const array& w, const array& sc, const array& b, Stream s) {
+    return dequantize(w, sc, b, 64, 4, "affine", std::nullopt, std::nullopt, s);
+  };
+  auto gate = matmul(x, transpose(deq(w_gate, ws_gate, wb_gate, s), s), s);
+  auto up = matmul(x, transpose(deq(w_up, ws_up, wb_up, s), s), s);
+  return multiply(up, gate / (1.0f + exp(negative(gate), s)), s);
+}
+
+
+// gdn_fused_step_tape_t1: the TMAX=1 variant of the per-row state-tape
+// update (MTP6_CF_TMAX1=1, selected by the model dispatch for the F fused
+// path). Materializes the per-row tape states via T sequential T=1 launches
+// of the TMAX=1 tape kernel (each launch = the exact S=1 step-kernel
+// numerics, h reloaded from the previous launch's materialized state)
+// instead of ONE TMAX=4 launch. The TMAX=4 instantiation's unrolled
+// conv-window ternaries drift 1e-5..2e-4 vs the TMAX=1 straight-line
+// windows (t2108 P6), which F amplifies into a token divergence at commit;
+// the TMAX=1 rows are bit-identical to the S=1 step path, so the F commit
+// rebinds to tape row 0 exactly as the control's S=1 re-forward computes
+// it. The conv window for row t>0 is the previous row's conv_state_tape
+// (a pure index selection in the kernel, no math). Cost vs the TMAX=4
+// launch: T-1 extra state round trips through global memory + T-1 extra
+// launches (h is reloaded instead of register-resident) - the price of the
+// falsifier; a fused TMAX=4 kernel with TMAX=1 per-row codegen is the
+// optimization if this restores token match. Requires the tape op's env
+// gate (MLX_ROCM_GDN_TAPE=1) for the per-row calls.
+std::vector<array> gdn_fused_step_tape_t1(
+    const array& q_raw,
+    const array& k_raw,
+    const array& v_raw,
+    const array& b,
+    const array& a,
+    const array& A_log,
+    const array& dt_bias,
+    const array& conv_state,
+    const array& conv_weight,
+    const array& z,
+    const array& state,
+    const array& norm_weight,
+    float inv_scale,
+    float prep_eps,
+    float norm_eps,
+    StreamOrDevice s_ /* = {} */) {
+  auto s = to_stream(s_);
+
+  int B = (int)q_raw.shape(0);
+  int T = (int)q_raw.shape(1);
+  int Hk = (int)q_raw.shape(2) / 128;
+  int Hv = (int)v_raw.shape(2) / 128;
+  int kernel_size = (int)conv_weight.shape(1);
+  bool shape_ok = (s.device == Device::gpu) && (B == 1) && (T >= 1)
+      && (T <= 4) && (Hk >= 1) && (Hv >= Hk) && (Hv % Hk == 0)
+      && ((int)q_raw.shape(2) == Hk * 128)
+      && ((int)v_raw.shape(2) == Hv * 128) && (kernel_size == 4);
+  if (!shape_ok) {
+    throw std::invalid_argument(
+        "gdn_fused_step_tape_t1: unsupported shape (require the ROCm GPU "
+        "with B=1, 1<=T<=4, Dk=Dv=128, Hv%Hk==0, kernel_size=4); the "
+        "per-row TMAX=1 tape sequence has no chain fallback");
+  }
+
+  std::vector<array> outs;
+  std::vector<array> st_tapes;
+  std::vector<array> cs_tapes;
+  auto cs = conv_state;  // row 0: [3, conv_dim] layout (3 rows x conv_dim)
+  auto st = state;
+  for (int t = 0; t < T; ++t) {
+    // One TMAX=1 launch for row t: the exact S=1 step-kernel numerics.
+    auto q_t = slice(q_raw, {0, t, 0}, {1, t + 1, (int)q_raw.shape(2)});
+    auto k_t = slice(k_raw, {0, t, 0}, {1, t + 1, (int)k_raw.shape(2)});
+    auto v_t = slice(v_raw, {0, t, 0}, {1, t + 1, (int)v_raw.shape(2)});
+    auto b_t = slice(b, {0, t, 0}, {1, t + 1, (int)b.shape(2)});
+    auto a_t = slice(a, {0, t, 0}, {1, t + 1, (int)a.shape(2)});
+    auto z_t = slice(z, {0, t, 0, 0}, {1, t + 1, (int)z.shape(2), (int)z.shape(3)});
+    auto r = gdn_fused_step_tape(
+        q_t, k_t, v_t, b_t, a_t, A_log, dt_bias, cs, conv_weight, z_t, st,
+        norm_weight, inv_scale, prep_eps, norm_eps, s);
+    outs.push_back(r[0]);
+    st = r[1];
+    st_tapes.push_back(reshape(r[2], {(int)r[2].shape(1), 128, 128}, s));
+    cs_tapes.push_back(reshape(r[3], {3, (int)r[3].shape(2)}, s));
+    cs = reshape(r[3], {3, (int)r[3].shape(2)}, s);  // [1,3,cd] -> [3,cd] input layout
+  }
+  return std::vector<array>{
+      stack(outs, 1, s), st, stack(st_tapes, 0, s), stack(cs_tapes, 0, s)};
+}
 
 bool LMHeadInt2::use_fallback(Stream s) {
   // The int2 packed weights only exist on the caller side (the MTP draft bench quantizes the bf16 head itself); there is no chain fallback. GPU-only by construction; CPU throws.
@@ -2146,6 +2439,38 @@ void CrossEntropy::eval_gpu(
 
 bool CrossEntropy::use_fallback(Stream /*s*/) {
   return true; // always use fallback on ROCm
+}
+
+array kquant_dequantize(const array& x, int ktype, StreamOrDevice s_) {
+  if (x.dtype() != uint8) {
+    throw std::invalid_argument(
+        "[kquant_dequantize] input must be uint8 (compressed bytes).");
+  }
+  auto g = rocm::kq_block_geometry(ktype);
+  if (g.first < 0) {
+    throw std::invalid_argument(
+        "[kquant_dequantize] ktype must be 8 (Q8_0), 10 (Q2_K), 13 (Q5_K) "
+        "or 14 (Q6_K).");
+  }
+  if (x.size() % (size_t)g.first != 0) {
+    throw std::invalid_argument(
+        "[kquant_dequantize] byte count is not a multiple of the block "
+        "size.");
+  }
+  auto s = to_stream(s_);
+  auto fallback = [ktype](const std::vector<array>& /*inputs*/)
+      -> std::vector<array> {
+    throw std::runtime_error(
+        "kquant_dequantize is GPU-only (ROCm build); it is not supported "
+        "on the CPU stream.");
+  };
+  size_t nblocks = x.size() / (size_t)g.first;
+  auto out_shape = Shape{static_cast<int>(nblocks * (size_t)g.second)};
+  return array(
+      out_shape,
+      float32,
+      std::make_shared<KQuantDequantize>(s, fallback, ktype),
+      {x});
 }
 
 } // namespace mlx::core::fast

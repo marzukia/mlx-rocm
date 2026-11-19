@@ -51,7 +51,7 @@ real mlx MTP path on the fixed file) gives rank 0** — the mlx trunk hidden sta
 
 ### RC-2 (work order A/D): numpy reference GDN state update was elementwise, not outer product
 
-- `np-rca-np.py:184` (before fix):
+- docs/w1/`np-rca-np.py:184` (before fix):
   `state = state + k[:, t, :, None, :] * delta[:, :, None, :]`
   `delta` is [B,H,Dv]; `delta[:, :, None, :]` is [B,H,1,Dv] — the Dv axis lands
   last, so the product with [B,H,1,Dk] is elementwise (Dk=Dv=128), updating only
@@ -82,7 +82,7 @@ real mlx MTP path on the fixed file) gives rank 0** — the mlx trunk hidden sta
    conversion recipe that generates `model-mtp.safetensors` must emit norms in
    the `w` convention (same as trunk norms) — pin this in the conversion PR so
    the file is not regenerated broken.
-2. **`np-rca-np.py:184`** — DONE (this commit).
+2. docs/w1/ **`np-rca-np.py:184`** — DONE (this commit).
    `delta[:, :, None, :]` -> `delta[:, :, :, None]`. Verified: E1 (t1=271,
    t2=8160, h1 cos 0.9956), E3, E4, E5 all pass.
 3. No kernel changes required. `vendor/mlx-rocm-upstream/mlx/backend/rocm/`
@@ -101,7 +101,7 @@ real mlx MTP path on the fixed file) gives rank 0** — the mlx trunk hidden sta
 
 ## Assets
 
-- np-rca-np.py (fixed, this commit): numpy trunk+MTP (track/e1/l0/e3/e4), bf16 shards, f32 math.
+- docs/w1/np-rca-np.py (fixed, this commit): numpy trunk+MTP (track/e1/l0/e3/e4), bf16 shards, f32 math.
 - Guest /tmp: np-rca-*.py probes; np-rca-e1.npz / np-rca-e2.npz /
   np-rca-e3.npz / np-rca-e4.npz (logits, h1, e1, ranks); np-rca-gdn-*.npz
   (GDN isolation).

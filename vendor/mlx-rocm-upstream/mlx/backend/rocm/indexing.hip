@@ -110,6 +110,28 @@ __global__ void gather_general_kernel(
 // copy, with the source-row base computed once (no per-element index math).
 // Covers the common axis-0 gather of a row-contiguous source (e.g. the MoE
 // token reorder), which the general kernel does per-element with mod/div loops.
+__global__ void stage_slot16_kernel(
+    int64_t* dst,
+    const int64_t* src,
+    int nbytes) {
+  int i = threadIdx.x;
+  int off = i * 8;
+  if (off >= nbytes) {
+    dst[i] = 0;
+    return;
+  }
+  // Copy the remaining n bytes (little-endian low bytes of word i) and
+  // zero-fill the rest of the 16 B slot: an n-byte token must not leave
+  // stale high bytes (the reader may be wider than the token).
+  uint64_t w = 0;
+  const uint8_t* sb = reinterpret_cast<const uint8_t*>(src) + off;
+  int n = nbytes - off;
+  for (int b = 0; b < n; ++b) {
+    w |= (uint64_t)sb[b] << (8 * b);
+  }
+  dst[i] = static_cast<int64_t>(w);
+}
+
 template <typename T, typename IdxT>
 __global__ void gather_rows_kernel(
     const T* src,
@@ -122,6 +144,36 @@ __global__ void gather_rows_kernel(
   if (row >= n_rows) {
     return;
   }
+  int64_t r = static_cast<int64_t>(idx[row]);
+  if (r < 0) {
+    r += src_dim0;
+  }
+  const T* srow = src + r * static_cast<int64_t>(row_size);
+  T* orow = out + row * static_cast<int64_t>(row_size);
+  for (uint32_t e = threadIdx.x; e < row_size; e += blockDim.x) {
+    orow[e] = srow[e];
+  }
+}
+
+// GD-idx (R4-fix v2): the indirect-idx gather. The per-step idx buffer's
+// device VA arrives at a PERSISTENT 8 B pointer slot (dind holds the
+// IdxT* of the live per-step idx buffer); the kernel dereferences it, so
+// the recorded kernel bakes only the STABLE slot VA — never the per-step
+// idx buffer VA (the R3/R4 264 attractor: a node re-reading a freed
+// per-step buffer on every replay).
+template <typename T, typename IdxT>
+__global__ void gather_rows_ind_kernel(
+    const T* src,
+    const void* dind,  // device: 8 B holding the IdxT* of the live idx buffer
+    T* out,
+    int64_t n_rows,
+    uint32_t row_size,
+    int32_t src_dim0) {
+  int64_t row = blockIdx.x;
+  if (row >= n_rows) {
+    return;
+  }
+  const IdxT* idx = *reinterpret_cast<const IdxT* const*>(dind);
   int64_t r = static_cast<int64_t>(idx[row]);
   if (r < 0) {
     r += src_dim0;
@@ -616,6 +668,30 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& s = stream();
   auto& encoder = rocm::get_command_encoder(s);
 
+// G1_IDXDBG (DEFAULT OFF): for a decode (single-index) gather in graph
+  // decode mode, print the host idx value, the idx buffer VA, and the
+  // device idx value (post-flush, pre-kernel) so a replay step's idx
+  // delivery can be checked against the step's actual token.
+  if (rocm::graph_decode_mode() &&
+      rocm::get_command_encoder(s).decode_replay_suppress() &&
+      std::getenv("MLX_G1_IDXDBG") != nullptr && inputs.size() > 1 &&
+      inputs[1].size() == 1) {
+    static int nidx_dbg = 0;
+    if (nidx_dbg++ < 16) {
+      const auto& idx = inputs[1];
+      void* dev = nullptr;
+      int32_t dv = -1;
+      const int32_t* dp = gpu_ptr<int32_t>(idx);
+      dev = const_cast<void*>(reinterpret_cast<const void*>(dp));
+      if (dev) {
+        (void)hipMemcpy(&dv, dev, 4, hipMemcpyDeviceToHost);
+      }
+      bool arena = dev ? rocm::allocator().in_decode_arena(dev) : false;
+      fprintf(stderr,
+              "[g1x] gather idx dev=%d va=%p arena=%d outn=%zu\n",
+              dv, dev, (int)arena, out.nbytes());
+    }
+  }
   // K3 (t1082): in graph decode mode, a small gather out goes to the
   // persistent 4 KB value slot 3, each row at a distinct 256 B offset (a per-step cursor, reset with the arena): rows do not clobber each other in-graph (a decode step has several fast_rows gathers), and no row overflows into an adjacent wrapper. Out > 4 KB keeps the stable-address arena buffer (the row fits its own block there).
   // MLX_GD_K3OFF=1 disables this (and the idx redirect below) for the t1099 on/off A/B.
@@ -705,14 +781,157 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   {
     if (fast_rows) {
-      // K3 (graph decode): read the index from the zero slot — zero-cleared before every launch (g1_prelaunch_slot_h2d), so the graph reads the cleared buffer. Pairs with the small-out routing above: only there is the idx chunk clobbered by a >256B row. >4KB rows keep the stable-address arena out (row fits its own block), so the per-step idx buffer is left untouched. MLX_GD_K3OFF=1 or MLX_GD_K3IDXOFF=1 disables this redirect (t1099 A/B: the original idx buffer is read instead).
+      // GD-idx (R4-fix v2): per-gather indirect-idx delivery. The bench
+      // makes a FRESH per-step idx array (a plain-malloc buffer; its
+      // device VA is never stable across steps, and the Load path does
+      // not see it in MTP=0 decode — the per-step idx is a plain
+      // mx.array, not a Load), so the per-step idx buffer's VA can be
+      // baked into neither the gather kernel nor any recorded node source
+      // (the R3/R4 264 attractor: a re-run node re-read the freed
+      // per-step buffer on every replay). Instead: the current per-step
+      // idx buffer's device VA is written IN PLACE into this gather's
+      // own 8 B pinned host buffer (per-gather pair k; the in-step
+      // ordinal resets with the arena so capture and replay steps map
+      // identically — the second in-window gather takes its OWN pair,
+      // there is no shared staging flag and no shared source, so it
+      // cannot hit a blocking copy or a neighbor's value), streamed to a
+      // persistent 8 B device pointer slot by an async H2D (pinned
+      // source, no allocation, NO blocking copy — the R4 first-capture
+      // crash class is out by construction; a recorded node only ever
+      // reads a STABLE VA). When recorded, the H2D re-executes at every
+      // graph launch re-reading the CURRENT pinned host contents (the
+      // persistent re-delivery pattern), so at replay the slot holds
+      // THIS step's idx buffer VA and the indirect kernel dereferences
+      // it to read the live per-step idx buffer. >4 in-step single-row
+      // gathers fall through to the direct per-step idx read (MLX_GD_K3OFF=1
+      // or MLX_GD_K3IDXOFF=1 restores the original idx buffer read for
+      // the whole fast_rows path).
       int64_t n_rows = total / (int64_t)slice_size;
-      // Only idx[0] is zero-cleared (the per-launch memset clears one
-      // element); an n_rows>1 fast_rows gather (an eager T>1 step in a session with an active arena) would read idx[1..] from the never-cleared part of the 4 KB zero-slot wrapper (garbage index -> off-range src row read). Keep the original idx buffer then.
+      bool gd_launched = false;
       if (rocm::graph_decode_mode() && !rocm::gd_k3_off() && !rocm::gd_k3_idxoff() &&
-          out.nbytes() <= 4096 && n_rows == 1) {
-        h_indices[0] = rocm::allocator().decode_zero_slot().data;
+          n_rows == 1) {
+        const int k = rocm::allocator().decode_idx_stage_next();
+        void* dind = (k < 4) ? rocm::allocator().decode_idx_ptr_slot(k)
+                            : nullptr;
+        uint64_t* hptr = (k < 4) ? rocm::allocator().decode_idx_ptr_host(k)
+                                : nullptr;
+        if (dind != nullptr && hptr != nullptr) {
+          // Write the current per-step idx buffer's device VA (the
+          // gpu_ptr flush is a no-op here: the per-step array's H2D ran
+          // eagerly in the previous step's tail; when it does flush it is
+          // stream-ordered on the encoder, never blocking in-window).
+          *hptr = (uint64_t)gpu_ptr<void>(inputs[1]);
+          (void)hipMemcpyAsync(
+              dind, hptr, 8, hipMemcpyHostToDevice, encoder.stream());
+          if (std::getenv("MLX_G1Y_DEBUG") != nullptr) {
+            int32_t ival = -1;
+            // The D2H read is blocking: it may only run OUTSIDE a capture
+            // window (a blocking hipMemcpy in-window is the 906 class).
+            if (rocm::capture_stream() == nullptr &&
+                inputs[1].nbytes() >= 4) {
+              (void)hipMemcpy(&ival, gpu_ptr<void>(inputs[1]), 4,
+                             hipMemcpyDeviceToHost);
+            }
+            fprintf(stderr,
+                    "[gdidx] gather: k=%d ind slot=%p host=%p va=%p "
+                    "inwin=%d idxval=%d\n",
+                    k, dind, hptr, (void*)(uint64_t)gpu_ptr<void>(inputs[1]),
+                    (int)(rocm::capture_stream() != nullptr), ival);
+          }
+          dim3 gind((unsigned int)n_rows);
+          dim3 bind(256);
+          Dtype it = inputs[1].dtype();
+          int32_t src_dim0 = (int32_t)src.shape(0);
+          #define LAUNCH_ROWIND(T, IdxT) \
+            encoder.add_kernel_node((&rocm::gather_rows_ind_kernel<T, IdxT>), gind, bind, 0, \
+                gpu_ptr<T>(src), \
+                dind, gpu_ptr<T>(out), \
+                n_rows, slice_size, src_dim0)
+          #define ROWIND_BY_T(IdxT) \
+            switch (out.dtype()) { \
+              case float32: LAUNCH_ROWIND(float, IdxT); break; \
+              case float16: LAUNCH_ROWIND(__half, IdxT); break; \
+              case bfloat16: LAUNCH_ROWIND(hip_bfloat16, IdxT); break; \
+              case int32: LAUNCH_ROWIND(int32_t, IdxT); break; \
+              case int64: LAUNCH_ROWIND(int64_t, IdxT); break; \
+              case uint32: LAUNCH_ROWIND(uint32_t, IdxT); break; \
+              case uint64: LAUNCH_ROWIND(uint64_t, IdxT); break; \
+              case int8: LAUNCH_ROWIND(int8_t, IdxT); break; \
+              case int16: LAUNCH_ROWIND(int16_t, IdxT); break; \
+              case uint8: LAUNCH_ROWIND(uint8_t, IdxT); break; \
+              case uint16: LAUNCH_ROWIND(uint16_t, IdxT); break; \
+              case bool_: LAUNCH_ROWIND(bool, IdxT); break; \
+              default: throw std::runtime_error("Unsupported dtype for Gather"); \
+            }
+          if (it == int32 || it == uint32) {
+            ROWIND_BY_T(int32_t);
+          } else {
+            ROWIND_BY_T(int64_t);
+          }
+          #undef ROWIND_BY_T
+          #undef LAUNCH_ROWIND
+          gd_launched = true;
+        }
       }
+      // The S>1 verify subgraph (batch S rows): the [1, S] token ids
+      // arrive as a host array whose H2D (flush_host_shadow, enqueued on
+      // the capture stream) is a CAPTURED memcpy — on replay it
+      // re-delivers the captured (stale) host value, because the
+      // kernel's pointers are recorded by value (the 2nd-capture RCA
+      // line: per-step inputs must arrive at a FIXED device VA, not via
+      // a captured memcpy). Instead: read the ids from the host NOW (a
+      // CPU side effect of this step's eval), stage them in the token
+      // slot's pinned buffer, and point the kernel at the slot's fixed
+      // VA (the pre-launch H2D delivers the fresh ids before every
+      // launch; the recorded idx H2D is neutralized at end_record and
+      // re-delivers the stale value into a buffer nobody reads).
+      // Requires a host int64 idx array (the MTP sampling path); a
+      // device idx keeps the original pointer (replay-safe when its
+      // buffer is arena-stable).
+      // A python-sourced idx array (mx.array) is a LEAF node: no
+      // primitive, data buffer wrapping the host bytes (alien or pinned).
+      // Only probe primitive().device() when a primitive exists.
+      const bool idx_on_host = !inputs[1].has_primitive() ||
+          inputs[1].primitive().device() == Device::cpu;
+      if (!gd_launched && n_rows > 1 && n_rows <= 64 &&
+          rocm::graph_decode_mode() &&
+          (inputs[1].dtype() == int64 || inputs[1].dtype() == int32) &&
+          idx_on_host) {
+        const int tsz = (inputs[1].dtype() == int64) ? 8 : 4;
+        auto dssp = inputs[1].data_shared_ptr();
+        auto ts = rocm::allocator().decode_token_slot();
+        if (getenv("MLX_G1_DEBUG")) {
+          fprintf(stderr,
+                  "[g1d] tokslot n=%ld tsz=%d dssp=%p ts.host=%p ts.data=%p "
+                  "buf=%p\n",
+                  (long)n_rows, tsz, (const void*)dssp.get(),
+                  (const void*)ts.host, (const void*)ts.data,
+                  dssp ? (const void*)dssp->buffer.ptr() : nullptr);
+          fflush(stderr);
+        }
+        if (dssp && ts.host && ts.data && (long)n_rows * tsz <= 512) {
+          // Read the buffer's data DIRECTLY — NOT via raw_ptr(): raw_ptr()
+          // does a hipDeviceSynchronize (the run-584 token-read race guard),
+          // and a whole-device sync inside the S>1 capture window deadlocks
+          // (the capture stream cannot go idle while capturing). The idx
+          // is a host-sourced constant (the gate above): the buffer is
+          // alien / pinned-host / UVM-managed, and the bytes were written
+          // by the host moments ago, so a direct host read is safe.
+          auto* b = static_cast<rocm::RocmBuffer*>(dssp->buffer.ptr());
+          if (b && b->data) {
+            std::memcpy(ts.host,
+                       static_cast<const char*>(b->data) +
+                           inputs[1].offset(),
+                       (size_t)n_rows * tsz);
+          rocm::g1_token_ids_n.store(
+              (int)n_rows, std::memory_order_relaxed);
+          rocm::g1_token_ids_sz.store(
+              tsz, std::memory_order_relaxed);
+            h_indices[0] = ts.data;
+          }
+        }
+      }
+      if (!gd_launched) {
       dim3 grid((unsigned int)n_rows);
       dim3 blk(256);
       Dtype it = inputs[1].dtype();
@@ -745,6 +964,7 @@ void Gather::eval_gpu(const std::vector<array>& inputs, array& out) {
       }
       #undef ROWS_BY_T
       #undef LAUNCH_ROWS
+      }
       return;
     }
     // Dispatch based on dtype and number of indices

@@ -84,6 +84,10 @@ extend-exclude = [
     # W1 PR #30 as-run evidence (box-verbatim, md5 identity is the record): models/qwen3_5.py = the G1-verified venv-p2seq model (303b245b); bench/k2arm-pinned.py = the K3 arm bench (post-P3.2b-gather-fix box state + one named scrub delta). Reformatting would break the as-run identity; excluded from lint + format.
     "models/qwen3_5.py",
     "bench/k2arm-pinned.py",
+    # vendor/mlx-rocm-upstream/ = the vendored box SoT tree (PR #34 catch-up sync,
+    # state dcd1c69): byte-verbatim with the box, not lane code — out of the lane's
+    # lint/format scope (CI ruff gates must not see the 256 synced box files).
+    "vendor/mlx-rocm-upstream",
 ]
 
 [tool.ruff.lint]

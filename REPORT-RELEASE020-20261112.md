@@ -45,7 +45,7 @@ bit-identical, 84.8% of the 126.9 t/s same-GPU reference); slot2 (2<=S<=4,
 default-off) + on-device token passing; the `MLX_ROCM_SDPA_S4VA` S=4
 verify-attention dispatch (default-off, bit-identical with the env unset);
 GDN fused T=4 (#7); graph decode (#2/#3); the bench harness + record battery
-(`bench/k2arm-pinned.py`, `bench/gdn_seq1024_repro.sh`, the REPORT-W1-* docs);
+(`bench/k2arm-pinned.py`, `bench/gdn_seq1024_repro.sh`, the docs/w1/ REPORT-W1-* docs);
 the 0.1.1/0.1.2 cycle items. Fixed: the gather-slice commit fix (P3.2b,
 K3-path-only, S4 -10.11 ms/step in-session, lossless 5/5); the `gdn_prep`
 fault; the `copy_general_general` segfault; the MTP full-state restore +
@@ -55,7 +55,7 @@ state 11766c82 class; no fill/streaming code in `models/qwen3_5.py`); the W1
 M=3 slot interior A/B/C (issues #27/#28/#29, open); 27B+/MoE (Phase 2), the
 native mxfp4 kernel, non-gfx1201 archs. Plus a one-paragraph 0.1.2/0.1.1/0.1.0
 summary pointing at the git tags. Public-safe numbers only (rate + config
-class; provenance = the in-repo REPORT-W1-* files, no box paths).
+class; provenance = the in-repo docs/w1/ REPORT-W1-* files, no box paths).
 
 ## 3. Release notes (new, `docs/release-notes-0.2.0.md`)
 
@@ -88,11 +88,11 @@ results below.
   --check .` PASS (103 files already formatted); `uv run pytest -m 'not gpu'`
   25 passed + 1 skipped; `uv run python scripts/size_ratchet.py --base
   origin/main` OK (4 ratcheted).
-- **P (persona-leak): PASS.** 8-pattern battery over the diff's added lines:
-  marzuki-* hostnames 0; 100.64.0.0/10 0; andryo 0; neonvm@ 0;
-  192.168.122.x 0; /mnt/models 0; *.junkyard.sh 0; @ag.mrzk.io in tree
-  content 0 (the git author lines are the exempt mandated fleet identity);
-  full-tree: 1 pre-existing self-referential pattern-list line in
+- **P (persona-leak): PASS.** 8-pattern battery over the diff's added lines
+  (box-hostname prefix, tailnet IPv4 block, box-user identity, guest-identity
+  prefix, LAN IPv4 block, model-mount path, personal-domain suffixes,
+  fleet-mail suffix): all 0; git author lines exempt (mandated fleet
+  identity). Full-tree: 1 pre-existing self-referential pattern-list line in
   `REPORT.md` (the battery's own description text), not in this diff.
 - **W (line-wrap): PASS.** `scripts/line_wrap_check.py` is ABSENT at main
   (verified) — the manual equivalent detector (an indented continuation after

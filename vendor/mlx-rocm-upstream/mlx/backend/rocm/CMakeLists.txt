@@ -177,9 +177,14 @@ set(HIP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/gemms/gemv.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/gemms/naive_gemm.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/quantized/affine_quantize.hip
+    ${CMAKE_CURRENT_SOURCE_DIR}/quantized/kquants.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/quantized/fp_quantize.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/quantized/convert_fp8.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/quantized/qmm.hip
+    ${CMAKE_CURRENT_SOURCE_DIR}/quantized/mmq/mmq.hip
+    ${CMAKE_CURRENT_SOURCE_DIR}/quantized/mmq/mmq-host.hip
+    ${CMAKE_CURRENT_SOURCE_DIR}/quantized/kquant_q4k.hip
+    ${CMAKE_CURRENT_SOURCE_DIR}/quantized/kquant_file_gemm.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/quantized/qmv_tiled_kernel.hip
     ${CMAKE_CURRENT_SOURCE_DIR}/conv/gemm_conv.hip)
 
@@ -187,6 +192,10 @@ if(MLX_HAS_ROCM_WMMA)
   list(APPEND HIP_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/flash_attention_wmma.hip)
   list(APPEND HIP_SOURCES
        ${CMAKE_CURRENT_SOURCE_DIR}/flash_attention_bwd_wmma.hip)
+  # Ported fattn kernel (attention port, v3 card 35ce5495): RDNA WMMA mma-f16
+  # path from ggml b12062, instance <256,256,16,4>. Device code in
+  # flash_attention_fattn_device.cuh (included by this TU).
+  list(APPEND HIP_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/flash_attention_fattn.hip)
 endif()
 
 # Create output directory for compiled objects
@@ -406,3 +415,5 @@ target_compile_definitions(mlx PRIVATE __HIP_PLATFORM_AMD__=1)
 # Route safetensors host reads through a pinned hipMemcpy bounce buffer. Without
 # this the CPU walks BAR-mapped VRAM at ~30 MB/s (see host_stage.cpp).
 target_compile_definitions(mlx PRIVATE MLX_ROCM_HOST_STAGE=1)
+# R3 (their build context, 2026-11-19): GGML_HIP_NO_VMM=ON (active on mmq TU via GGML_USE_HIP); GGML_HIP_MMQ_MFMA=ON parity = NO_MMQ_MFMA left undefined (CDNA-gated, inert on gfx1201)
+target_compile_definitions(mlx PRIVATE GGML_HIP_NO_VMM)

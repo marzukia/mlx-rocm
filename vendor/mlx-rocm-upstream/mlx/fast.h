@@ -127,6 +127,30 @@ MLX_API std::vector<array> gdn_fused_step_tape(
     float prep_eps,
     float norm_eps,
     StreamOrDevice s = {});
+// gdn_fused_step_slot: Phase B (the re-forward remover). The fused GDN
+// verify step (MLX_ROCM_GDN_SLOT=1, default off) emitting per-row state
+// slots for the commit rows 0..T-2 (row T-1 is state_new). Same shape gate
+// as gdn_fused_step_tape plus T >= 2. Returns {output [1, T, Hv, Dv],
+// state_new [Hv, Dv, Dk], state_slot [T-1, Hv, Dk, Dv] f32, conv_slot
+// [T-1, 3, conv_dim] bf16}; slot row t = the state AFTER row t (row-indexed
+// like the tape; reject at accepted prefix krow rebinds to slot row krow).
+MLX_API std::vector<array> gdn_fused_step_slot(
+    const array& q_raw,
+    const array& k_raw,
+    const array& v_raw,
+    const array& b,
+    const array& a,
+    const array& A_log,
+    const array& dt_bias,
+    const array& conv_state,
+    const array& conv_weight,
+    const array& z,
+    const array& state,
+    const array& norm_weight,
+    float inv_scale,
+    float prep_eps,
+    float norm_eps,
+    StreamOrDevice s = {});
 // gdn_fused_step_slot2: R1b (the fused sequential slot design). The slot
 // op (per-row state slots for the commit rows 0..T-2; row T-1 is
 // state_new) on the NON-UNROLLED slot2 kernel (one per-row phase for all
@@ -161,7 +185,37 @@ MLX_API std::vector<array> gdn_fused_step_slot2(
     float norm_eps,
     StreamOrDevice s = {});
     // gdn_fused_step_seq: Phase 2 (W1 sequential, the llama.cpp GDN design port). The slot op (per-row state slots for the commit rows 0..T-2; row T-1 is state_new) + the conv_state_new output (the slot2 launch integration rides along: the python-side concatenate + take_along_axis is not dispatched on the SEQ branch) on the column-parallel sequential kernel pair (gdn_fused_step_seq_kernel + gdn_fused_step_seq_out_kernel; 2 launches per GDN layer per step; the attn intermediate [T, Hv, 128] bf16 is op-internal). Gated by MLX_ROCM_GDN_SEQ=1 (DEFAULT OFF -> zero-behavior-change). Same shape gate as gdn_fused_step_slot2 (B=1, 2<=T<=4, Dk=Dv=128, Hv%Hk==0, kernel_size=4; T=3 only under MLX_ROCM_GDN_T3=1). Returns {output [1, T, Hv, Dv], state_new [Hv, Dv, Dk], state_slot [T-1, Hv, Dk, Dv] f32, conv_slot [T-1, 3, conv_dim] bf16, conv_state_new [3, conv_dim] bf16}.
+    // mmul_q_glu: the GLU-fused quantized GEMM (R6 recipe item 1, the llama
+    // mmq dp4a has_fusion port): out = up * silu(gate) with up = x @ W_up^T,
+    // gate = x @ W_gate^T; W is mlx 4-bit affine G64 (raw + scales + biases,
+    // group 64). Gated by MLX_GLU_MMQ=1 (DEFAULT OFF: the fallback is the
+    // dequantize + matmul + silu chain). See MmulQGlu (fast_primitives.h).
+    MLX_API array mmul_q_glu(const array& x,
+                             const array& w_up,
+                             const array& ws_up,
+                             const array& wb_up,
+                             const array& w_gate,
+                             const array& ws_gate,
+                             const array& wb_gate,
+                             StreamOrDevice s = {});
 MLX_API std::vector<array> gdn_fused_step_seq(
+    const array& q_raw,
+    const array& k_raw,
+    const array& v_raw,
+    const array& b,
+    const array& a,
+    const array& A_log,
+    const array& dt_bias,
+    const array& conv_state,
+    const array& conv_weight,
+    const array& z,
+    const array& state,
+    const array& norm_weight,
+    float inv_scale,
+    float prep_eps,
+    float norm_eps,
+    StreamOrDevice s = {});
+MLX_API std::vector<array> gdn_fused_step_tape_t1(
     const array& q_raw,
     const array& k_raw,
     const array& v_raw,
@@ -279,6 +333,18 @@ MLX_API std::vector<array> precompiled_cuda_kernel(
     int shared_memory = 0,
     std::optional<float> init_value = std::nullopt,
     bool ensure_row_contiguous = false,
+    StreamOrDevice s = {});
+
+/** WS3: K-quant (Q2_K/Q5_K/Q6_K) + Q8_0 dequantization from the compressed
+ * GGUF byte stream to f32, on the GPU (ROCm). No re-quantization: the
+ * input is the raw compressed bytes (uint8, {nblocks, block_bytes} or
+ * flat), the output is flat f32 of nblocks * elems_per_block. ktype
+ * follows the GGUF type codes (gguflib / python-gguf 0.19): 8 = Q8_0
+ * (34 B / 32), 10 = Q2_K (84 B / 256), 13 = Q5_K (176 B / 256),
+ * 14 = Q6_K (210 B / 256). GPU-only; a CPU stream raises. */
+MLX_API array kquant_dequantize(
+    const array& x,
+    int ktype,
     StreamOrDevice s = {});
 
 } // namespace mlx::core::fast

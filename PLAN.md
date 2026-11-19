@@ -49,14 +49,22 @@ guest-a is **ROCm 10.1** (core at `/opt/rocm/core-10.1`,
 docs/quickstart.md). Nothing else is verified: 6.4 was the early probe validation and
 7.7 the original target — both are historical, not the verified toolchain.
 
-## Current state (2026-11-12)
+## Current state (2026-11-19)
 
 - Research done (the earlier research pass): the backend is a complete, actively maintained ROCm base; newer forward-merge of the vendor ref. Effort: 2.5-5 person-weeks for the minimum (Phase 0+1).
-- guest-a is UP (RX 9070 XT; guest userland ROCm 10.1 — the only verified toolchain).
+- guest-a is UP (RX 9070 XT; guest userland ROCm 10.1 - the only verified toolchain).
   submitter is building the MVP on the guest-a guest VM (smoke unblocked, relayed to submitter).
 - Repo bootstrapped: hermetic CI (lint/format/pytest/size gate), vendor pin, build +
   smoke scripts. GPU validation recorded on the validated guest (W1 107.56 t/s
-  @1024, #30 merged 2026-11-12); 0.2.0-alpha in flight (PR #31).
+  @1024, #30 merged 2026-11-12); 0.2.0-alpha released (PR #31 merged 2026-11-13).
+- Active lane (2026-11-19): the 3.7K PP prefill lane - #36 consolidated + #37 pad
+  merged by op call. Adopted record 3084.9 t/s @4K (the f2c zero-mode axis, x3,
+  the FLAG-OFF record state; record vehicle lib 070122d8), second axis 2861.4
+  t/s (the pcm bench class); bar 3683.1 t/s = the external 500x sustained stream.
+  MLX_SDPA_FATTN ON-by-default in the merged tree (op letter (a) = ADOPT);
+  MLX_ROCM_INPROJ_PAD default OFF (e2e unmeasured, no win claimed). The parity
+  merge-gate (measured like-for-like at/above the bar) is pending; the fixed
+  record protocol (22:2xZ) never changes. See CHANGELOG + the lane card.
 
 ## Phases
 

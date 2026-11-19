@@ -349,8 +349,17 @@ std::unordered_map<std::string, array> load_arrays(gguf_ctx* ctx) {
 
   while (gguf_get_tensor(ctx, &tensor)) {
     check_tensor_in_file(ctx, tensor);
-    if (tensor.type == GGUF_TYPE_Q4_0 || tensor.type == GGUF_TYPE_Q4_1 ||
-        tensor.type == GGUF_TYPE_Q8_0) {
+    if (tensor.type == GGUF_TYPE_Q2_K ||
+        tensor.type == GGUF_TYPE_Q5_K ||
+        tensor.type == GGUF_TYPE_Q6_K) {
+      // WS3: K-quant tensors stay in the compressed byte stream (raw
+      // uint8 {nblocks, block_bytes}); the GPU dequantizes them at GEMM
+      // time (fast::kquant_dequantize / mx.rocm.kq_dequant). No
+      // re-quantization, no CPU dequant.
+      gguf_load_kquant_raw(array_map, tensor);
+    } else if (tensor.type == GGUF_TYPE_Q4_0 ||
+               tensor.type == GGUF_TYPE_Q4_1 ||
+               tensor.type == GGUF_TYPE_Q8_0) {
       gguf_load_quantized(array_map, tensor);
     } else {
       std::string name(tensor.name, tensor.namelen);

@@ -5,10 +5,24 @@
 #include "mlx/backend/rocm/allocator.h"
 #include "mlx/backend/rocm/device.h"
 #include "mlx/fast_primitives.h"
+#include "mlx/kquant_file_gemm.h"
 
 #include <hip/hip_runtime.h>
 
 namespace mlx::core {
+
+// Linker anchor for the file-layout k-quant free functions (W1): they live
+// in the HIP kernel static archive and are referenced only by the Python
+// extension (resolved dynamically). The asm "r" operands force the symbol
+// addresses into registers (the plain volatile-store form gets optimized
+// away under -O3 + hidden visibility), pulling the archive member into
+// libmlx.so so the extension resolves at load.
+__attribute__((used)) void kquant_file_link_anchor() {
+  const void* a = (const void*)&kquant_file_gemm;
+  const void* b = (const void*)&kquant_file_gather;
+  const void* c = (const void*)&kquant_file_dequant;
+  __asm__ volatile("" : : "r"(a), "r"(b), "r"(c) :);
+}
 
 namespace {
 

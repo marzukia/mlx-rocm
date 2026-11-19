@@ -18,6 +18,15 @@
 #include "mlx/transforms_impl.h"
 #include "mlx/types/limits.h"
 #include "mlx/utils.h"
+#include <cstdlib>
+
+// Plan-D (2026-11-18, 3.7K lane): MLX_ROCM_LOGITS_BF16 canary - harness
+// readable via strings on the built lib (the gate holds the lm-head
+// logits in bfloat16 when the activation is bf16; unset = unchanged).
+static volatile char PLAN_D_LOGITS_CANARY[] = "PLAND-LOGITS-BF16-20261118";
+extern "C" const volatile char* mlx_rocm_plan_d_logits_bf16_canary() {
+  return PLAN_D_LOGITS_CANARY;
+}
 
 namespace mlx::core {
 
@@ -3080,8 +3089,43 @@ array reciprocal(const array& a, StreamOrDevice s /* = {} */) {
   return divide(array(1.0f, dtype), a, to_stream(s));
 }
 
+// Plan-C (2026-11-18): the trunk activation dtype path gate
+// (MLX_ROCM_ACT_BF16). Active iff the env value is exactly "1" (the
+// documented semantics: "1" = active; unset or any other value =
+// bit-identical to legacy). When active, the trunk activation-class
+// ops that would produce a float32 output produce bfloat16 instead:
+// the GEMM outputs (matmul / quantized_matmul, i.e. the f32-scale
+// affine path), the elementwise add / subtract / multiply / divide /
+// sigmoid (the rms_norm / residual / add / silu class, silu =
+// x * sigmoid(x)), and the fast rms_norm / rms_norm_residual. The
+// C3-profile f32 elementwise bucket (248.7ms class) is the HYP
+// target: clamping the chain f32 -> bf16 halves the elementwise HBM
+// bytes (the -124ms HYP). On an already-bf16 activation path the
+// gate is a no-op (the promoted output is never f32). Off by default.
+static bool plan_c_act_bf16() {
+  static const bool g = [] {
+    const char* e = std::getenv("MLX_ROCM_ACT_BF16");
+    return e && e[0] == '1' && e[1] == '\0';
+  }();
+  return g;
+}
+static volatile char PLANC_ACTBF16_CANARY[] = "PLANC-ACTBF16-20261118";
+extern "C" __attribute__((visibility("default"))) const volatile char*
+    mlx_rocm_plan_c_act_bf16_canary() {
+  return PLANC_ACTBF16_CANARY;
+}
+extern "C" __attribute__((visibility("default"))) int
+    mlx_rocm_plan_c_act_bf16_active() {
+  return plan_c_act_bf16() ? 1 : 0;
+}
+
 array add(const array& a, const array& b, StreamOrDevice s /* = {} */) {
   auto out_type = promote_types(a.dtype(), b.dtype());
+  // Plan-C (2026-11-18): the residual / add class (see the
+  // plan_c_act_bf16 semantics above): f32 output -> bf16 under the gate.
+  if (out_type == float32 && plan_c_act_bf16()) {
+    out_type = bfloat16;
+  }
   auto inputs =
       broadcast_arrays({astype(a, out_type, s), astype(b, out_type, s)}, s);
   auto shape = inputs[0].shape();
@@ -3095,6 +3139,11 @@ array operator+(const array& a, const array& b) {
 
 array subtract(const array& a, const array& b, StreamOrDevice s /* = {} */) {
   auto out_type = promote_types(a.dtype(), b.dtype());
+  // Plan-C (2026-11-18): f32 output -> bf16 under the gate (see
+  // plan_c_act_bf16).
+  if (out_type == float32 && plan_c_act_bf16()) {
+    out_type = bfloat16;
+  }
   auto inputs =
       broadcast_arrays({astype(a, out_type, s), astype(b, out_type, s)}, s);
   auto shape = inputs[0].shape();
@@ -3111,6 +3160,12 @@ array operator-(const array& a, const array& b) {
 
 array multiply(const array& a, const array& b, StreamOrDevice s /* = {} */) {
   auto out_type = promote_types(a.dtype(), b.dtype());
+  // Plan-C (2026-11-18): the swiglu mul class (silu = x * sigmoid(x);
+  // see the plan_c_act_bf16 semantics above): f32 output -> bf16 under
+  // the gate.
+  if (out_type == float32 && plan_c_act_bf16()) {
+    out_type = bfloat16;
+  }
   auto inputs =
       broadcast_arrays({astype(a, out_type, s), astype(b, out_type, s)}, s);
   auto shape = inputs[0].shape();
@@ -3127,6 +3182,11 @@ array operator*(const array& a, const array& b) {
 
 array divide(const array& a, const array& b, StreamOrDevice s /* = {} */) {
   auto dtype = at_least_float(promote_types(a.dtype(), b.dtype()));
+  // Plan-C (2026-11-18): f32 output -> bf16 under the gate (see
+  // plan_c_act_bf16).
+  if (dtype == float32 && plan_c_act_bf16()) {
+    dtype = bfloat16;
+  }
   auto inputs = broadcast_arrays(
       {astype(a, dtype, s), astype(b, dtype, to_stream(s))}, s);
   auto shape = inputs[0].shape();
@@ -3416,6 +3476,11 @@ array sigmoid(const array& a, StreamOrDevice s /* = {} */) {
     throw std::invalid_argument("[sigmoid] Not supported for complex64.");
   }
   auto dtype = at_least_float(a.dtype());
+  // Plan-C (2026-11-18): the silu sigmoid class (see the plan_c_act_bf16
+  // semantics above): f32 output -> bf16 under the gate.
+  if (dtype == float32 && plan_c_act_bf16()) {
+    dtype = bfloat16;
+  }
   auto input = astype(a, dtype, s);
   return array(
       a.shape(), dtype, std::make_shared<Sigmoid>(to_stream(s)), {input});
@@ -3502,6 +3567,23 @@ array matmul(
         << " and " << b.dtype() << " were provided which results"
         << " in " << out_type << ", which is not a floating point type.";
     throw std::invalid_argument(msg.str());
+  }
+  // Plan-D (2026-11-18, 3.7K lane): MLX_ROCM_LOGITS_BF16=1 holds the
+  // matmul output in bfloat16 when it would otherwise be f32 with a bf16
+  // activation (the plain-Linear / tied-embedding lm-head path). Unset /
+  // != 1 = unchanged (the f32 default is preserved).
+  if (out_type == float32 && a.dtype() == bfloat16) {
+    const char* g = std::getenv("MLX_ROCM_LOGITS_BF16");
+    if (g && g[0] == '1' && g[1] == '\0') {
+      out_type = bfloat16;
+    }
+  }
+  // Plan-C (2026-11-18): MLX_ROCM_ACT_BF16=1 holds the matmul output
+  // in bfloat16 when it would otherwise be f32 (the trunk activation
+  // GEMM class; see the plan_c_act_bf16 semantics above). Unset / != 1
+  // = unchanged.
+  if (out_type == float32 && plan_c_act_bf16()) {
+    out_type = bfloat16;
   }
   if (a.dtype() != out_type) {
     a = astype(a, out_type, s);
@@ -4780,6 +4862,23 @@ array quantized_matmul(
     msg << "[quantized_matmul] Only real floating types are supported but "
         << "x.dtype() == " << x.dtype() << ".";
     throw std::invalid_argument(msg.str());
+  }
+  // Plan-D (2026-11-18, 3.7K lane): MLX_ROCM_LOGITS_BF16=1 holds the
+  // matmul output in bfloat16 when it would otherwise be f32 with a bf16
+  // activation (halves the lm-head logits HBM term). Unset / != 1 =
+  // unchanged (the f32 default is preserved).
+  if (dtype == float32 && x.dtype() == bfloat16) {
+    const char* g = std::getenv("MLX_ROCM_LOGITS_BF16");
+    if (g && g[0] == '1' && g[1] == '\0') {
+      dtype = bfloat16;
+    }
+  }
+  // Plan-C (2026-11-18): MLX_ROCM_ACT_BF16=1 holds the
+  // quantized_matmul output in bfloat16 when it would otherwise be f32
+  // (the f32-scale affine GEMM class; see the plan_c_act_bf16
+  // semantics above). Unset / != 1 = unchanged.
+  if (dtype == float32 && plan_c_act_bf16()) {
+    dtype = bfloat16;
   }
   std::vector<array> inputs;
   if (qmode == QuantizationMode::Affine) {

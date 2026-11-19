@@ -69,11 +69,10 @@ using rocm::GdPilotLogic;  // the unit-tested pilot state machine
 struct GraphDecodePilot : public GdPilotLogic {
   // The pure state machine (arming streak, kind gating, replay divergence, step-end resolution) lives in the unit-tested GdPilotLogic base (graph_decode_pilot_logic.h); this struct adds the HIP-facing bookkeeping (arena, encoder, slot data).
   std::mutex mu;
-  long step_seq{0};        // slot parity for the captured execs
+  long step_seq{0};        // step counter (logging; the exec slot is the step class' slot, GdPilotLogic::slot_for_batch)
   size_t arena_cap{0};
   bool arena_realloc{false};  // deferred: arena base must be (re)allocated
-  long arena_incarnation{0};   // bumped on every (re)allocation of the base
-  long floor_incarnation{-1};  // incarnation in which the floor was frozen
+  long arena_incarnation{0};   // bumped on every (re)allocation of the base (logging)
   long log_n{0};
 
   // --- Exec-cache replay: capture once per shape, then replay the
@@ -106,6 +105,14 @@ GraphDecodePilot& pilot() {
     const char* e = std::getenv("MLX_ROCM_GRAPH_DECODE_BIG_OPS");
     return e ? std::max<long>(100, std::atol(e)) : 4000;
   }();
+  // MLX_ROCM_GRAPH_DECODE_VERIFY=1: arm the S>1 verify (batched) steps as
+  // their own capture/replay class (per-S, a separate exec slot per S).
+  // Off by default: the pre-verify behavior (a T>1 step runs eager and
+  // clears the T=1 arming) is preserved bit for bit.
+  p.enable_verify([] {
+    const char* v = std::getenv("MLX_ROCM_GRAPH_DECODE_VERIFY");
+    return v && std::string(v) == "1";
+  }());
   return p;
 }
 
@@ -135,17 +142,34 @@ bool gd_is_default_stream(Stream s) {
   return s.device == ds.device && s.index == ds.index;
 }
 
+// Invalidate every class' armed replay (T=1 + all verify keys): their
+// cached execs reference the old arena base (freed by the reallocation, or
+// stale after a session reset that re-allocates the slot region at new
+// VAs). The next step of each class re-captures (end_record overwrites the
+// exec and re-records the slot H2D at the new VAs).
+void gd_invalidate_all_replays(GraphDecodePilot& p) {
+  p.replay_armed = false;
+  p.replay_slot = -1;
+  for (auto& [sb, k] : p.verify_keys) {
+    (void)sb;
+    k.replay_armed = false;
+    k.replay_slot = -1;
+  }
+}
+
 void gd_tear_down(GraphDecodePilot& p) {
   // Back to eager: mode off. The arena is ended and the captured execs
   // destroyed DEFERRED (at the next gd_begin_capture): the just-launched
   // graph may still be in flight, and destroying its exec / freeing its
   // arena base while it runs would read freed memory.
   rocm::set_graph_decode_mode(false);
+  rocm::set_gd_idx_persistent(false);
   p.arena_realloc = true;  // also ends an idle arena from a prior capture
 }
 
 // Shared arena setup for capture AND replay steps: deferred arena
-// teardown, arena begin/reset, floor (re)freeze, decode mode on.
+// teardown, arena begin/reset, per-key floor reset (or first-capture start
+// above everything live), decode mode on.
 // Returns false when the step must run eager (arena setup failed).
 bool gd_step_prepare(GraphDecodePilot& p, Stream s) {
   auto& enc = rocm::get_command_encoder(s);
@@ -171,6 +195,7 @@ bool gd_step_prepare(GraphDecodePilot& p, Stream s) {
     }
     p.arena_realloc = false;
   }
+  const void* base_before = rocm::allocator().decode_arena_base_ptr();
   if (!p.active) {
     if (p.arena_cap == 0) {
       p.arena_cap = gd_arena_cap();
@@ -180,47 +205,82 @@ bool gd_step_prepare(GraphDecodePilot& p, Stream s) {
       p.log(
           "graph decode: arena begin failed (cap=%zu MB); staying eager",
           p.arena_cap >> 20);
-      p.arming = GraphDecodePilot::Arming::Cooldown;
-      p.next_capture = false;
+      if (p.step_batch > 0 && p.verify) {
+        p.cool_down();
+      } else {
+        p.arming = GraphDecodePilot::Arming::Cooldown;
+        p.next_capture = false;
+      }
       return false;
     }
     p.active = true;
     p.arena_incarnation++;
-    // The floor is not valid for the fresh base.
+  }
+  const void* base_after = rocm::allocator().decode_arena_base_ptr();
+  if (base_before != base_after) {
+    // The base moved (a capacity growth): every class' cached exec
+    // references the freed base (all classes, not just this step's: a
+    // per-S verify class armed independently would otherwise replay a
+    // freed-base exec on its next interleaved step). Invalidate them
+    // all; the allocator has already cleared the per-key floors for
+    // the new base (each class' first step on the new base is a fresh
+    // capture).
+    gd_invalidate_all_replays(p);
+  }
+  // Per-key prefix floor: this step's class reclaims its own prefix only
+  // (reset-to-floor). The other classes' live prefixes — whose VAs their
+  // execs baked in — are never touched (a shared single-floor reset would
+  // let this class' re-allocations alias them; the 2nd-capture RCA line).
+  const long key = GdPilotLogic::slot_for_batch(p.step_batch);
+  rocm::allocator().decode_arena_set_current_key(key);
+  if (rocm::allocator().decode_arena_floor_frozen(key)) {
+    rocm::allocator().decode_arena_reset_to_floor(key);
   } else {
-    // Idle arena from a deferred teardown: fresh capture starts at 0.
-    rocm::allocator().decode_arena_reset();
+    // First capture of this class (or a fresh base): start above everything
+    // live (the shared slot region + the other classes' live prefixes), so
+    // the classes' prefix regions are disjoint by construction.
+    rocm::allocator().decode_arena_offset_to_high_water();
   }
-  if (p.floor_incarnation == p.arena_incarnation) {
-    // Replay step. The between-capture allocations (the token
-    // input/idx buffer) live above the prefix, at the previous
-    // capture's end offset. The reset above reclaims the prefix but
-    // not the input slots. The original reset-to-floor moved the
-    // offset up to the floor (== the input slots' start), and the
-    // step's first re-allocation then landed in the input slot,
-    // aliasing a gather's output with the idx buffer (observed
-    // 2nd-capture fault: the embedding gather writes its row into
-    // the idx slot and the next gather reads the row's float bits
-    // as an index). Re-freezing the floor at the (reset) offset
-    // keeps the step's re-allocations inside the prefix, so the
-    // input slots are never reclaimed; they are stably reused each
-    // step, and the sync at the top of this function covers that
-    // reuse.
-    rocm::allocator().decode_arena_freeze_floor();
-  }
-  // Reserve the slot region (5 wrappers: value slots 0-3 + zero slot)
-  // so capture and replay steps advance the offset identically: a capture step allocates the slots (bumping the offset), a replay step reuses them (no bump) — reserving in both keeps the step's re-allocations at identical relative addresses.
-  rocm::allocator().decode_arena_reserve_wrappers(5);
-  // Pre-allocate the value-slot device buffers (arena bump, no hip calls) and their pinned host buffers BEFORE the capture window: hipHostMalloc during a capture invalidates it on ROCm 10.1 (observed: first capture step died at the first slot use, the next launch failing with hipErrorStreamCaptureInvalidated).
+  // Pre-allocate the slot region (6 wrappers: value slots 0-3 + zero slot +
+  // token-id slot) device buffers (arena bump, no hip calls) and their
+  // pinned host buffers BEFORE the capture window: hipHostMalloc during a
+  // capture invalidates it on ROCm 10.1 (observed: first capture step died
+  // at the first slot use, the next launch failing with
+  // hipErrorStreamCaptureInvalidated). Cached slots (re-allocated with the
+  // arena) are a no-op here, so capture and replay steps keep identical
+  // layouts without the K3 double-reserve hack (the per-key floor makes the
+  // fresh/cached distinction structural: a fresh key starts at 0 with the
+  // slots allocated below its floor; a cached key starts at its own floor,
+  // above the shared slot region).
   for (int i = 0; i < 4; ++i) {
     (void)rocm::allocator().decode_value_slot(i);
   }
   (void)rocm::allocator().decode_zero_slot();
-  // K3 (t1082): when the slots are CACHED (the arena already exists) the reserved 5 wrappers are not consumed by slot allocation, and the step re-allocations then start at 0x5000 — aliasing the slot wrappers (0x5000..0x9FFF): a step buffer clobbers a slot value (the gather idx / zero slot, the dyn copy offsets) in-graph, and the layout differs from the first capture step (slots fresh, starting at 0xA000). Reserve 5 more when the slots were cached — the step layout is then identical to the first capture's, and the VAs the graph baked in stay valid at replay.
-  if (rocm::allocator().decode_arena_offset() == 5 * 4096) {
-    rocm::allocator().decode_arena_reserve_wrappers(5);
+  (void)rocm::allocator().decode_token_slot();
+  // Freeze this class' prefix floor (the prefix start, after the shared
+  // slots have settled). First capture only: a frozen floor is persistent
+  // for the base's life and this is then a no-op.
+  if (!rocm::allocator().decode_arena_floor_frozen(key)) {
+    rocm::allocator().decode_arena_freeze_floor(key);
   }
+  // GD-idx (t1099 R3): materialize the persistent idx slot BEFORE the window
+  // too: its lazy hipMalloc/hipHostMalloc would otherwise run inside the
+  // capture window on the first capture, and hip* during a capture
+  // invalidates it on ROCm 10.1 (same failure class as above).
+  (void)rocm::allocator().decode_idx_slot();
+  // GD-idx (R4-fix v2): same pre-window materialization for the per-gather
+  // indirect-idx pointer pairs (4 x 8 B device slots + their pinned host
+  // shadows): the captured H2D nodes bake the slot VAs, and a lazy
+  // hipMalloc inside the capture window would invalidate them (same
+  // class).
+  rocm::allocator().decode_idx_ptrs_materialize();
   rocm::set_graph_decode_mode(true);
+  // GD-idx (R4): the persistent token-delivery flag (the Load small path gate):
+  // the next step's token Load lands BEFORE this prepare (previous step's tail),
+  // but every LATER step's Load must fire regardless of the window mode; the
+  // arena is secured here so the flag is live for this and all following steps
+  // until a teardown/retract clears it.
+  rocm::set_gd_idx_persistent(true);
   if (std::getenv("MLX_G1Y_DEBUG") != nullptr) {
     auto& al = rocm::allocator();
     fprintf(stderr,
@@ -252,11 +312,20 @@ void gd_begin_capture(GraphDecodePilot& p, Stream s) {
   if (!gd_step_prepare(p, s)) {
     return;
   }
+  // GD-idx (R4-fix v2): a fresh capture records FRESH H2D + indirect-gather
+  // nodes in this window; there is no per-incarnation state to reset (the
+  // pointer pairs are persistent and their pinned host shadows are
+  // rewritten in place by every step's gather op).
   auto& enc = rocm::get_command_encoder(s);
-  if (!enc.decode_capture_begin(p.step_seq & 1)) {
+  if (!enc.decode_capture_begin(
+          (int)GdPilotLogic::slot_for_batch(p.step_batch))) {
     p.log("graph decode: capture begin failed; staying eager");
     gd_tear_down(p);
-    p.next_capture = false;
+    if (p.step_batch > 0 && p.verify) {
+      p.cool_down();
+    } else {
+      p.next_capture = false;
+    }
   }
 }
 
@@ -270,8 +339,8 @@ void gd_begin_replay(GraphDecodePilot& p, Stream s) {
   p.cpu_t0 = std::chrono::steady_clock::now();
 }
 
-// T>1 detection on a step's first op: a prefill chunk (or speculative decode) step's token indices are [1, T] with T > 1; a decode step's are [1, 1]. Weight inputs are [V, D] (shape(0) != 1). Such steps run fully eager (they would also blow the small-op-count budget at step end).
-bool gd_step_is_big(const array& arr) {
+// Step-class detection on a step's first op: a verify (batched) step's token indices are [1, S] with S > 1 — the class is S (the batch size, the only shape dimension that varies across steps of a class); a T=1 AR decode step's are [1, 1]. Weight inputs are [V, D] (shape(0) != 1). With verify off, the caller takes the pre-verify path (a T>1 step runs eager and clears the T=1 arming).
+long gd_step_batch(const array& arr) {
   if (std::getenv("MLX_G1Y_DEBUG") != nullptr) {
     static int n = 0;
     if (n < 6) {
@@ -289,10 +358,10 @@ bool gd_step_is_big(const array& arr) {
   }
   for (auto& in : arr.inputs()) {
     if (in.ndim() == 2 && in.shape(0) == 1 && in.shape(1) > 1) {
-      return true;
+      return in.shape(1);
     }
   }
-  return false;
+  return 1;
 }
 
 // Last op of a step (the "Synchronize" primitive of every eval burst).
@@ -300,6 +369,21 @@ bool gd_step_is_big(const array& arr) {
 void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
   auto& enc = rocm::get_command_encoder(s);
   const bool big = ops >= p.big_ops;
+  const bool vkey = p.step_batch > 0 && p.verify;
+  const long eslot = GdPilotLogic::slot_for_batch(p.step_batch);
+  // Class-aware cool-down (the legacy path pokes the T=1 fields directly;
+  // with verify on, this step's class is its S key and the T=1 fields
+  // must not be touched).
+  auto class_cool = [&]() {
+    gd_tear_down(p);
+    if (vkey) {
+      p.cool_down();
+    } else {
+      p.arming = GraphDecodePilot::Arming::Cooldown;
+      p.small_streak = 0;
+      p.prev_small_ops = -1;
+    }
+  };
   p.step_seq++;
   if (p.active && p.step_kind == GdPilotLogic::Kind::Replay) {
     // This step replayed the cached exec (per-op launches were suppressed). Time the CPU side (first op -> graph launch).
@@ -312,7 +396,7 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
     const auto end =
         p.replay_end(ops, rocm::allocator().decode_arena_overflowed());
     if (end == GdPilotLogic::ReplayEnd::GrowArena) {
-      // Some allocations escaped the arena: same treatment as the capture-time overflow — this step's launch is best-effort, the next small step re-captures with a bigger arena.
+      // Some allocations escaped the arena: same treatment as the capture-time overflow — this step's launch is best-effort, the next step of this class re-captures with a bigger arena.
       if (p.arena_cap < 8ULL * 1024 * 1024 * 1024) {
         p.log(
             "graph decode: replay arena overflowed (cap=%zu MB); "
@@ -322,14 +406,15 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
         p.arena_realloc = true;
       } else {
         p.log("graph decode: replay arena overflowed at cap; cooling down");
-        gd_tear_down(p);
-        p.arming = GraphDecodePilot::Arming::Cooldown;
-        p.small_streak = 0;
-        p.prev_small_ops = -1;
+        class_cool();
       }
-      p.next_capture = true;
-      p.replay_armed = false;
-      (void)enc.decode_capture_replay((int)p.replay_slot);
+      if (vkey) {
+        p.rearm_capture();
+      } else {
+        p.next_capture = true;
+        p.replay_armed = false;
+      }
+      (void)enc.decode_capture_replay((int)p.cur_replay_slot());
     } else if (end == GdPilotLogic::ReplayEnd::Launch) {
       if (std::getenv("MLX_G1Y_DEBUG") != nullptr && p.cpu_n < 4) {
         auto rstream = static_cast<hipStream_t>(enc.stream());
@@ -347,9 +432,13 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
                   (long long)dv);
         }
       }
-      if (enc.decode_capture_replay((int)p.replay_slot)) {
-        // Stay armed: the next small step replays too.
-        p.replay_armed = true;
+      if (enc.decode_capture_replay((int)p.cur_replay_slot())) {
+        // Stay armed: the next step of this class replays too (the class-aware arm: with verify on, a verify step's success must not touch the T=1 fields).
+        if (vkey) {
+          p.arm_replay(eslot);
+        } else {
+          p.replay_armed = true;
+        }
         if (std::getenv("MLX_G1Y_DEBUG") != nullptr && p.cpu_n < 4) {
           // POST-LAUNCH readback: did the recorded H2D nodes deliver this step's host values to the slot VAs the exec baked in?
           auto rstream = static_cast<hipStream_t>(enc.stream());
@@ -377,13 +466,8 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
         p.log(
             "graph decode: replay launch failed (ops=%ld); re-arming",
             ops);
-        gd_tear_down(p);
-        p.arming = GraphDecodePilot::Arming::Cooldown;
-        p.small_streak = 0;
-        p.prev_small_ops = -1;
-        p.replay_armed = false;
+        class_cool();
       }
-      p.next_capture = false;
     } else {
       // ReplayEnd::Discard: diverged or big — do NOT launch the cached exec (see GdPilotLogic::ReplayEnd in graph_decode_pilot_logic.h for the full argument: its node sequence is the capture step's, not this step's, so a launch would re-run a stale sequence — on divergence, its suffix nodes re-write the same persistent state buffers (KV rows, hidden state, identical arena VAs) after the eager suffix, which itself ran on the suppressed prefix's stale arena intermediates; on a big step, the step's real outputs would never be computed). Discard: this step's token is lost, the state is not clobbered by a stale-sequence launch, and the re-arm makes the next small step a fresh capture (a new reference) that overwrites the exec.
       p.log(
@@ -400,34 +484,36 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
   }
   if (p.active && p.step_kind == GdPilotLogic::Kind::Capture) {
     // This step was captured: end the capture, refresh (ExecUpdate) or re-instantiate the slot's exec, and launch it (the only real execution of this step's kernels).
-    bool ok = enc.decode_capture_end_record(p.step_seq & 1);
+    bool ok = enc.decode_capture_end_record((int)eslot);
     if (!ok) {
       p.log(
           "graph decode: capture end_record failed (ops=%ld); staying eager",
           ops);
-      gd_tear_down(p);
-      p.next_capture = false;
-      p.arming = GraphDecodePilot::Arming::Cooldown;
-      p.small_streak = 0;
+      class_cool();
       return;
     }
     p.log(
         "graph decode: step captured+launched (ops=%ld, slot=%ld, active)",
         ops,
-        p.step_seq & 1);
+        eslot);
     if (big) {
       // A large step was captured (a prefill slipped in): the launch is correct for this step, but the exec is the wrong shape for decode.
       p.log("graph decode: large step captured (ops=%ld); re-arming", ops);
       gd_tear_down(p);
+      if (vkey) {
+        p.cool_down();
+      } else {
+        p.arming = GraphDecodePilot::Arming::PrefillSeen;
+        p.small_streak = 0;
+        p.prev_small_ops = -1;
+      }
       p.next_capture = false;
-      p.arming = GraphDecodePilot::Arming::PrefillSeen;
-      p.small_streak = 0;
       return;
     }
     if (p.capture_end(ops) == GdPilotLogic::CaptureEnd::MicroLaunch) {
       // A micro step started as a capture candidate: launch its recorded (1-op) graph — that is exactly this step — and keep the capture armed: the next real step re-captures.
       p.log("graph decode: micro step (ops=%ld); launched, re-capturing next", ops);
-      (void)enc.decode_capture_replay((int)(p.step_seq & 1));
+      (void)enc.decode_capture_replay((int)eslot);
       p.step_done();
       return;
     }
@@ -435,11 +521,9 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
       p.log(
           "graph decode: shape mismatch (ops=%ld ref=%ld); cooling down",
           ops,
-          p.capture_ref_ops);
-      gd_tear_down(p);
-      p.next_capture = false;
-      p.arming = GraphDecodePilot::Arming::Cooldown;
-      p.small_streak = 0;
+          vkey ? p.verify_keys[p.step_batch].capture_ref_ops
+              : p.capture_ref_ops);
+      class_cool();
       p.step_done();
       return;
     }
@@ -454,31 +538,35 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
         p.arena_realloc = true;
       } else {
         p.log("graph decode: arena overflowed at cap; cooling down");
-        gd_tear_down(p);
-        p.next_capture = false;
-        p.arming = GraphDecodePilot::Arming::Cooldown;
-        p.small_streak = 0;
+        class_cool();
+      }
+      if (vkey) {
+        p.rearm_capture();
+      } else {
+        p.next_capture = true;
+        p.replay_armed = false;
       }
       return;
     }
-    // Good capture: freeze the one-time prefix (first capture step only) so
-    // replay steps re-allocate from the same addresses.
-    if (p.floor_incarnation != p.arena_incarnation) {
-      rocm::allocator().decode_arena_freeze_floor();
-      p.floor_incarnation = p.arena_incarnation;
-    }
-    // Arm the exec cache: from the next small step on, replay this exec (hipGraphLaunch) instead of re-capturing. The exec lives in the slot end_record just wrote (post-increment parity).
-    p.arm_replay(p.step_seq & 1);
+    // Arm the exec cache: from the next step of this class on, replay this
+    // exec (hipGraphLaunch) instead of re-capturing. The exec lives in the
+    // slot end_record just wrote (the step class' exec slot).
+    p.arm_replay(eslot);
     for (int i = 0; i < 4; ++i) {
       p.capture_slot_data[i] = rocm::allocator().decode_value_slot(i).data;
     }
     p.capture_slot_data[4] = rocm::allocator().decode_zero_slot().data;
-    p.ref_names = std::move(p.capture_names);
+    if (vkey) {
+      p.verify_keys[p.step_batch].ref_names = std::move(p.capture_names);
+    } else {
+      p.ref_names = std::move(p.capture_names);
+    }
     p.log(
         "graph decode: exec cache armed (ops=%ld, slot=%ld, %zu ref names)",
         ops,
-        p.replay_slot,
-        p.ref_names.size());
+        p.cur_replay_slot(),
+        vkey ? p.verify_keys[p.step_batch].ref_names.size()
+            : p.ref_names.size());
     p.step_done();
     return;
   }
@@ -486,8 +574,33 @@ void gd_step_end(GraphDecodePilot& p, Stream s, long ops) {
   if (p.eager_end(ops)) {
     p.log(
         "graph decode: armed (small steps %ld/%ld ops); capturing next",
-        p.prev_small_ops,
+        vkey ? p.verify_keys[p.step_batch].prev_small_ops
+            : p.prev_small_ops,
         ops);
+    // GD-idx (t1099 R3): pre-activate the staging mode BEFORE the next
+    // step's token Load: that load is evaluated before the step's first
+    // op (i.e. before gd_begin_capture), so only a mode that is already
+    // set routes it through the persistent idx slot. The pre-window H2D
+    // lands eagerly, the gather (in-window) reads the slot via the arm,
+    // and no per-step idx buffer is allocated whose VA the capture would
+    // bake (the R2 value-staging gap). The slot's lazy hip* calls happen
+    // here, outside the capture window (a hip* during a capture
+    // invalidates it on ROCm 10.1). The materialization also covers the
+    // fallback where the next step's first op is not the embedding
+    // gather. If the next step turns out to be big/micro (Eager kind),
+    // gd_on_op retracts the mode (it is reset there).
+    rocm::set_graph_decode_mode(true);
+    rocm::set_gd_idx_persistent(true);
+    {
+      auto iss = rocm::allocator().decode_idx_slot();
+      // GD-idx (R4-fix v2): the per-gather indirect-idx pointer pairs too —
+      // the gather ops of every later step stream the current per-step idx
+      // buffer's VA through them, and the capture's H2D nodes bake the
+      // slot VAs; both need the pairs outside any capture window.
+      rocm::allocator().decode_idx_ptrs_materialize();
+      fprintf(stderr, "[gdidx] arm: mode set; slot dev=%p host=%p\n",
+              iss.data, iss.host);
+    }
   }
   p.step_done();
 }
@@ -503,10 +616,34 @@ bool gd_step_is_embedding_lookup(const array& arr) {
 // per-op launches are suppressed and the cached exec is launched at step end); every op of a replay step is validated against the captured op-name sequence (a KVCache resize inserts extra ops). next_capture stays true for the whole step (it is only cleared at step end / on a begin failure), so guard on step_ops: re-beginning per op would discard the partial capture on every op (decode_capture_begin's defensive end+discard) and the recorded step would end up 0 nodes.
 void gd_on_op(GraphDecodePilot& p, const array& arr, Stream s) {
   const std::string name = arr.primitive().name();
+  // G1OP (DEFAULT OFF): per-op sequence dump for the decode pilot. Tags the
+  // step sequence, the op index, the step kind (E/C/R) and the op name so a
+  // capture step and a diverged replay step can be diffed to find the op
+  // that appears in one but not the other.
+  if (std::getenv("MLX_G1_OPDUMP") != nullptr) {
+    const char* kind = p.step_kind == GdPilotLogic::Kind::Capture ? "C"
+                        : p.step_kind == GdPilotLogic::Kind::Replay ? "R" : "E";
+    auto shp = arr.shape();
+    char sbuf[128];
+    int off = snprintf(sbuf, sizeof(sbuf), "");
+    for (size_t d = 0; d < shp.size() && off < 100; ++d)
+      off += snprintf(sbuf + off, sizeof(sbuf) - off, "%s%ld",
+                     d ? "x" : "", (long)shp[d]);
+    fprintf(stderr, "[g1o] seq %ld %s op %ld %s [%s]\n",
+            (long)p.step_seq, kind, (long)p.step_ops, name.c_str(), sbuf);
+  }
   if (p.step_ops == 0) {
-    // Choose the step kind (the logic lives in the unit-tested GdPilotLogic base: T>1 eager, the replay arm with the embedding-lookup gate, the capture candidate match) and start the per-op tracking. Re-beginning per op would discard the partial capture on every op (decode_capture_begin's defensive end+discard) and the recorded step would end up 0 nodes.
-    p.first_op(name, gd_step_is_big(arr),
+    // Choose the step kind (the logic lives in the unit-tested GdPilotLogic base: the per-class arming, the replay arm with the embedding-lookup gate, the capture candidate match) and start the per-op tracking. Re-beginning per op would discard the partial capture on every op (decode_capture_begin's defensive end+discard) and the recorded step would end up 0 nodes.
+    p.first_op(name, gd_step_batch(arr),
                gd_step_is_embedding_lookup(arr));
+    if (p.step_kind == GdPilotLogic::Kind::Eager && rocm::graph_decode_mode()
+        && !p.active) {
+      // GD-idx (t1099 R3): big/micro step after an arming: retract the
+      // arm-time mode pre-activation (it was only meant for the next
+      // capture's token load, which this step is not).
+      rocm::set_graph_decode_mode(false);
+      rocm::set_gd_idx_persistent(false);
+    }
     if (p.step_kind == GdPilotLogic::Kind::Replay) {
       gd_begin_replay(p, s);
     } else if (p.step_kind == GdPilotLogic::Kind::Capture) {
@@ -515,20 +652,21 @@ void gd_on_op(GraphDecodePilot& p, const array& arr, Stream s) {
   } else if (p.op(name)) {
     // The first divergence (strict name sequence vs the captured reference; a KVCache resize inserts extra ops): run the rest of the step eagerly. The diverged op is the previous one (op() already counted it); the step-end discards the stale exec instead of launching it.
     const long at = p.step_ops - 1;
-    if (at < (long)p.ref_names.size())
+    const auto& rn = p.cur_ref_names();
+    if (at < (long)rn.size())
       p.log(
           "graph decode: replay diverged at op %ld (replay=%s, "
           "captured=%s)",
           at,
           name.c_str(),
-          p.ref_names[at].c_str());
+          rn[at].c_str());
     else
       p.log(
           "graph decode: replay diverged at op %ld (%s, past the "
           "captured %zu ops)",
           at,
           name.c_str(),
-          p.ref_names.size());
+          rn.size());
     rocm::get_command_encoder(s).set_decode_replay_suppress(false);
   }
   if (p.step_kind == GdPilotLogic::Kind::Capture) {
