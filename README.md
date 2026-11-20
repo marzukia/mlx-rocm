@@ -1,21 +1,29 @@
 # mlx-rocm
 
 ROCm backend for [MLX](https://github.com/mlx-project/mlx) — **alpha**
-(0.2.0-alpha; public line 0.0.0 → 0.1.0 → 0.1.1 → 0.1.2 → 0.2.0-alpha).
+(0.3.0-alpha; public line 0.0.0 → 0.1.0 → 0.1.1 → 0.1.2 → 0.2.0-alpha →
+0.3.0-alpha).
 
-Purpose: a ROCm backend for MLX on AMD RDNA4 — validated on the RX 9070 XT
-(**gfx1201** — *not* gfx110x) — targeting the 9B hybrid at high decode
-speed. MTP spec decode and KV management are part of the MLX core path;
-serving is out of scope for this repo.
+Purpose: a ROCm backend for MLX-compatible weights — 9B-class dense Qwen3
+models on AMD ROCm GPUs, validated on the RX 9070 XT (**gfx1201** — *not*
+gfx110x) at high decode speed. MTP spec decode and KV management are part
+of the MLX core path; serving is out of scope for this repo.
 
-Stage: **alpha** (0.2.0-alpha) — the alpha cut; API and performance are
-not stable, expect breaking changes. Public line: 0.0.0 → 0.1.0 → 0.1.1 →
-0.1.2 (PyPI releases: `0.0.0` and `0.1.2`, uploaded 2026-10-30; the
-0.1.0/0.1.1 tags are git-only, never published) → 0.2.0-alpha (this cut).
+Hardware: **RX 9070 XT / gfx1201** (RDNA4), **ROCm 7.2.x** userland
+(the verified-toolchain guest — the ROCm 10.1-line core at
+`/opt/rocm/core-10.1`; see `docs/quickstart.md`).
+
+Stage: **alpha** (0.3.0-alpha) — API and performance are not stable, expect
+breaking changes. Public line: 0.0.0 → 0.1.0 → 0.1.1 → 0.1.2 (PyPI
+releases: `0.0.0` and `0.1.2`, uploaded 2026-10-30; the 0.1.0/0.1.1 tags
+are git-only, never published) → 0.2.0-alpha → 0.3.0-alpha (this cut).
 The 9B-hybrid target is ~120 tok/s (byte-identical vs autoregressive); the
-alpha-cut condition (decode close to the card ceiling) is unmet — 0.2.0
-stands at the 107.56 t/s @1024 certified record, 84.8% of the same-GPU
-126.9 t/s reference (in-tree repro: `bench/gdn_seq1024_repro.sh`).
+0.2.0 cut stood at the 107.56 t/s @1024 certified record, 84.8% of the
+same-GPU 126.9 t/s reference (in-tree repro:
+`bench/gdn_seq1024_repro.sh`). 0.3.0 adds the 3.7K PP prefill lane stack
+(#36/#37, merged 2026-11-19; adopted record 3084.9 t/s @4K) and the MTP
+K=3 record protocol (111.01 t/s decode banked on main; in-tree record
+`docs/w1/REPORT-W1-RECORD-11184-20261114.md`).
 
 Lane state (2026-11-19): the **3.7K PP prefill lane** is the active
 campaign - #36 consolidated + #37 pad merged by op call. Adopted record
@@ -90,6 +98,11 @@ host build above is the CPU-reference path only):
 bash scripts/build-wheel.sh   # clones the pinned tree (vendor.json), sha-verified, pip wheel .
 ```
 
+`BUILD-RECIPE.md` (repo root) is the 2026-11-01 historical provenance
+snapshot (the 80.93 tok/s fused-AR wheel); the single canonical wheel
+recipe is `scripts/build-wheel.sh` + `vendor.json` — entry path
+`docs/quickstart.md`.
+
 The wheel builds from the *fetched pinned tree* (the repo root is the
 buildable `pip wheel .` source with the ROCm backend grafted in). The
 committed `vendor/mlx-rocm-upstream/` is a partial, byte-verified
@@ -123,6 +136,23 @@ check, tar transfer, ROCm build, GPU GEMM + fp8 probe. Results land in
 | non-gfx1201 archs | — | not validated (only gfx1201 is validated in this repo) |
 
 Details, in-flight items, and caveats: `docs/limitations.md`.
+
+## Known limits
+
+- **MTP enablement is a flag-class recipe** — not a model-config switch:
+  `--force-spec-decode` + `--speculative-config method=mtp` on the serve
+  side, plus the 4-bit sidecar class (the `model-mtp.safetensors` /
+  `model-mtp-4bit.safetensors` sidecar next to the 9B weights). The
+  measured record protocol is the `MLX_MTP=3` + `MTP6_PREFILL_FILL=1`
+  env class (MTP K=3; 111.01 t/s decode banked on main). Full recipe:
+  `docs/mtp-enablement.md`; every env flag in the tree is documented in
+  `docs/env-flags.md`.
+- **Sustained-load box caveat (declared box state, not a software
+  defect)**: the GPU shader-clock boost is duty-dependent — the sustained
+  stream under continuous duty measures ~3% below the fixed-protocol
+  headline (3558.63 vs 3683.1 t/s @4K prefill, same box and model; the
+  "Benchmarks vs the llama.cpp reference" section below and
+  `docs/limitations.md`).
 
 ## Converting a model
 
@@ -175,12 +205,13 @@ MIT (MLX upstream license; see `LICENSE`).
   prior art, gfx1201 findings, effort).
 - `docs/limitations.md` — what works / in flight / not supported / caveats.
 - `docs/quickstart.md` — the verified build + smoke path on a gfx1201 box.
-- `PLAN.md` — living plan (phases, current state, open questions).
+- `docs/notes/PLAN.md` — living plan (phases, current state, open questions).
+- `docs/notes/` — the root-cluster reports + notes (moved from the repo root, 0.3.0 alpha prep): `REPORT.md`, `WALL-NOTE.md`, the `REPORT-*.md` and `NOTES-*.md` files, `size-ratchet.json`.
 - `vendor.json` — the pinned vendor fork + ref (primary/fallback) and the build flags. The pin is advisory: `scripts/build-wheel.sh` verifies the sha at build time and fails loud (the pin must resolve in the fork; re-pin in a PR when the base moves).
 - `scripts/build-wheel.sh` — build the `mlx` wheel with `-DMLX_BUILD_ROCM=ON` for gfx1201 (guest-a-only: requires a ROCm gfx1201 box).
 - `scripts/smoke.py` — Phase 0 smoke: is_available, matmul/softmax numerics, 0.6B generate.
 - `scripts/smoke-serve.sh` — Phase 1 smoke: qmlx-serve with a 9B-class dense Qwen3.
-- `scripts/size_ratchet.py` + `size-ratchet.json` — deterministic size gate (CI).
+- `scripts/size_ratchet.py` + `docs/notes/size-ratchet.json` — deterministic size gate (CI).
 - `tests/` — hermetic tests (CI) + `@pytest.mark.gpu` tests (guest-a only).
 
 ## Commands
