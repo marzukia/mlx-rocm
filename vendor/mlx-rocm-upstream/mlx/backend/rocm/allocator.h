@@ -273,6 +273,19 @@ class RocmAllocator : public allocator::Allocator {
   size_t get_cache_memory() const;
   size_t set_cache_limit(size_t limit);
   void clear_cache();
+  // t3298: explicit driver-pool trim at a phase boundary. Clears the wheel
+  // BufferCache freelist, then best-effort trims the per-device memory
+  // pools (incl. the HIP default pool) to zero so freed transient memory
+  // returns to the OS. Without it, clear_cache() releases only the wheel
+  // freelist and the driver can retain freed pages that are invisible to
+  // hipMemGetInfo (t3297 leg-B: ~8.6GiB untracked retention after a 4096
+  // prefill; first-decode 3MB OOM). Best effort: on a driver where the
+  // default pool reports reserved=0 the trim is a harmless no-op and the
+  // prewarm-reuse protocol (r9) is the effective lever.
+  void pool_trim();
+  // Pool-trim leg of clear_cache (caller holds no lock; the wheel
+  // freelist must already be released).
+  void trim_pools();
 
  private:
   RocmAllocator();
