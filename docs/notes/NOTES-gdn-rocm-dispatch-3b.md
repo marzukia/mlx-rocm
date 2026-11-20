@@ -1,11 +1,6 @@
 # NOTES: GDN-ROCM-DISPATCH (3b) — expose + route the fast GDN on ROCm
 
-One-PR scope, GAUNTLET 1.4k campaign 3b. Fixes the 27B MLX prefill wall:
-the Qwen3.8-27B GDN layers ran the per-token Python loop (`gated_delta_ops`)
-on the ROCm wheel because stock routing treats "not metal" as "fallback".
-The fused `fast::GatedDeltaUpdate` (chunked scan; recurrent kernel for
-T <= 8) already exists in the ROCm wheel and already covers the 27B
-geometry; this PR makes the model file actually use it.
+One-PR scope, GAUNTLET 1.4k campaign 3b. Fixes the 27B MLX prefill wall: the Qwen3.8-27B GDN layers ran the per-token Python loop (`gated_delta_ops`) on the ROCm wheel because stock routing treats "not metal" as "fallback". The fused `fast::GatedDeltaUpdate` (chunked scan; recurrent kernel for T <= 8) already exists in the ROCm wheel and already covers the 27B geometry; this PR makes the model file actually use it.
 
 ## 1. The binding already exists (3a's "not exposed" claim is debunked)
 
@@ -23,8 +18,7 @@ geometry; this PR makes the model file actually use it.
 
 ## 2. C++ `use_fallback` guard (mirrored verbatim by the Python gate)
 
-`mlx/backend/rocm/gated_delta_update.cpp` (identical in the CWD vendor
-snapshot and the box SoT build tree):
+`mlx/backend/rocm/gated_delta_update.cpp` (identical in the CWD vendor snapshot and the box SoT build tree):
 
     use_fallback(Hk, Dk, Hv, Dv, has_mask, s) == true  iff
       s.device == Device::cpu
@@ -34,22 +28,13 @@ snapshot and the box SoT build tree):
       || Hv % Hk != 0
       || Hv / Hk > 8
 
-`eval_gpu` additionally degrades to the op loop internally for non-bf16
-q/k/v, non-scalar g (`g.ndim() != 3 || g.shape(2) != Hv`), and
-non-row-contiguous inputs. The Python gate (this PR) mirrors the
-`use_fallback` guard exactly and is deliberately NOT extended (no
-hasattr check, no extra geometry): non-matching geometries fall through
-to the existing `gated_delta_ops` path, and the C++ side still has its
-own internal fallbacks.
+`eval_gpu` additionally degrades to the op loop internally for non-bf16 q/k/v, non-scalar g (`g.ndim() != 3 || g.shape(2) != Hv`), and non-row-contiguous inputs. The Python gate (this PR) mirrors the `use_fallback` guard exactly and is deliberately NOT extended (no hasattr check, no extra geometry): non-matching geometries fall through to the existing `gated_delta_ops` path, and the C++ side still has its own internal fallbacks.
 
-Qwen3.8-27B GDN geometry is in coverage: Dk = 128, Dv = 128, Hk = 16,
-Hv = 48, Hv/Hk = 3 (<= 8), scalar g (`[B, T, Hv]`), bf16, no mask.
+Qwen3.8-27B GDN geometry is in coverage: Dk = 128, Dv = 128, Hk = 16, Hv = 48, Hv/Hk = 3 (<= 8), scalar g (`[B, T, Hv]`), bf16, no mask.
 
 ## 3. The gate reroute
 
-`patches/gdn-rocm-dispatch.diff` (+ `scripts/apply-gdn-rocm-dispatch.py`,
-idempotent, one-time `.bak-gdn3b` backup, `--check` mode) inserts, BEFORE
-the stock routing in `mlx_lm/models/gated_delta.py::gated_delta_update`:
+`patches/gdn-rocm-dispatch.diff` (+ `scripts/apply-gdn-rocm-dispatch.py`, idempotent, one-time `.bak-gdn3b` backup, `--check` mode) inserts, BEFORE the stock routing in `mlx_lm/models/gated_delta.py::gated_delta_update`:
 
     if (
         use_kernel
@@ -63,15 +48,11 @@ the stock routing in `mlx_lm/models/gated_delta.py::gated_delta_update`:
     ):
         return mx.fast.gated_delta_update(q, k, v, g, beta, state, mask)
 
-Applied via the script (or `patch -p1`) to the venv's installed
-`gated_delta.py`; the 6f-pkg variant is superseded by this (same intent,
-cleaner guard, byte-identical insert).
+Applied via the script (or `patch -p1`) to the venv's installed `gated_delta.py`; the 6f-pkg variant is superseded by this (same intent, cleaner guard, byte-identical insert).
 
 ## 4. The 4x GEMM "inconsistency" is an accounting-unit error, not physics
 
-Per-shape probes (t3294b, M = 1024, 3 warm + 5 timed,
-`mx.quantized_matmul`): 66-71 TFLOPS eff on this GPU. [b]'s "in-situ"
-GEMM bucket (0.17 s/chunk / 0.69 s per pass / 289 TFLOPS) is not an independent KPROF measurement:
+Per-shape probes (t3294b, M = 1024, 3 warm + 5 timed, `mx.quantized_matmul`): 66-71 TFLOPS eff on this GPU. [b]'s "in-situ" GEMM bucket (0.17 s/chunk / 0.69 s per pass / 289 TFLOPS) is not an independent KPROF measurement:
 
 1. The per-shape probe's `PASS_TOTAL` accumulator is a unit bug
    (`tot_s += cnt * fl / dt` accumulates FLOP counts, not seconds);
@@ -85,18 +66,13 @@ GEMM bucket (0.17 s/chunk / 0.69 s per pass / 289 TFLOPS) is not an independent 
    GEMM total; [b]'s 22.47 s GEMM bucket is a back-calc
    (227.104 TFLOP / 10.1 TFLOPS dense probe), not a measurement.
 
-Record: GEMM on this GPU is the per-shape probe class (66-71 TFLOPS at
-M = 1024); the e2e gate round measures the wall directly.
+Record: GEMM on this GPU is the per-shape probe class (66-71 TFLOPS at M = 1024); the e2e gate round measures the wall directly.
 
 ## 5. Wheel build recipe (box / guest-a)
 
-The fork `github.com/marzukia/mlx-rocm` main (3e84320e) is a mirror of
-this work repo (the `mlx_rocm` shim), NOT a buildable mlx tree; the
-vendor.json comment predates that layout. The canonical wheel build
-(reproducing 265055a / 85023b4 / dcd1c69) happens ON the box from the
-SoT build tree:
+The fork `github.com/marzukia/mlx-rocm` main (3e84320e) is a mirror of this work repo (the `mlx_rocm` shim), NOT a buildable mlx tree; the vendor.json comment predates that layout. The canonical wheel build (reproducing 265055a / 85023b4 / dcd1c69) happens ON the box from the SoT build tree:
 
-- tree: `/home/andryo/mlx-rocm-dev`, HEAD cc9afe2 (p1b-planC) +
+- tree: `$VEHICLE_BUILD_TREE`, HEAD cc9afe2 (p1b-planC) +
   uncommitted C++ changes; full upstream tree under
   `vendor/mlx-rocm-upstream/` (18810-byte CMakeLists with the
   `MLX_BUILD_ROCM` option, `python/` with `src/`).
@@ -111,10 +87,7 @@ SoT build tree:
 
 ## 5b. 3b box-rebuild attempt (recorded, abandoned)
 
-The box was re-provisioned before this lane; the userland's hand-installed
-ROCm header set was wiped. A from-scratch rebuild in
-`/var/tmp/mlx3b-build` (tree copy + 75ca881 setup.py; tree git sha
-7734c1c) got far but is blocked by the toolchain itself, not by this PR:
+The box was re-provisioned before this lane; the userland's hand-installed ROCm header set was wiped. A from-scratch rebuild in `/var/tmp/mlx3b-build` (tree copy + 75ca881 setup.py; tree git sha 7734c1c) got far but is blocked by the toolchain itself, not by this PR:
 
 - Repaired: lld needed libxml2.so.2 + libicu*.so.60 (absent on the
   re-provisioned Ubuntu 26.10 host; fetched from the distro archive);
@@ -137,8 +110,7 @@ ROCm header set was wiped. A from-scratch rebuild in
 
 ## 6. In-run verification (vehicle venv, wheel 265055a, gfx1201 GPU 1)
 
-All on `HIP_VISIBLE_DEVICES=1` (GPU 0 was 98% VRAM-occupied by another
-lane), ROCm 10.1 userland, `MLX_GDN_DEBUG=1`:
+All on `HIP_VISIBLE_DEVICES=1` (GPU 0 was 98% VRAM-occupied by another lane), ROCm 10.1 userland, `MLX_GDN_DEBUG=1`:
 
 1. Import probe: `hasattr(mx.fast, "gated_delta_update")` → True; doc
    string shows `(q, k, v, gamma, beta, initial_state=None, mask=None,
