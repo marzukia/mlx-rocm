@@ -42,7 +42,7 @@ for K, N, tag in SHAPES:
         w = mx.random.normal((N, K)) * 0.05
         wq, s, b = mx.quantize(w, 64, 4)
         # bf16 scales (the model's dtype); f32 scales are misread by the
-        # wide/MR kernels (all-zero on the current wheel) — REPORT.md §3.
+        # wide/MR kernels (all-zero on the current wheel) — docs/notes/REPORT.md §3.
         s = s.astype(mx.bfloat16)
         b = b.astype(mx.bfloat16)
         x = mx.random.normal((M, K)).astype(mx.bfloat16)

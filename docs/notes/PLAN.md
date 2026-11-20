@@ -57,8 +57,7 @@ docs/quickstart.md). Nothing else is verified: 6.4 was the early probe validatio
 - Repo bootstrapped: hermetic CI (lint/format/pytest/size gate), vendor pin, build +
   smoke scripts. GPU validation recorded on the validated guest (W1 107.56 t/s
   @1024, #30 merged 2026-11-12); 0.2.0-alpha released (PR #31 merged 2026-11-13).
-- Active lane (2026-11-19): the 3.7K PP prefill lane - #36 consolidated + #37 pad
-  merged by op call. Adopted record 3084.9 t/s @4K (the f2c zero-mode axis, x3,
+- Active lane (2026-11-19): the 3.7K PP prefill lane - #36 consolidated + #37 pad merged by op call. Adopted record 3084.9 t/s @4K (the f2c zero-mode axis, x3,
   the FLAG-OFF record state; record vehicle lib 070122d8), second axis 2861.4
   t/s (the pcm bench class); bar 3683.1 t/s = the external 500x sustained stream.
   MLX_SDPA_FATTN ON-by-default in the merged tree (op letter (a) = ADOPT);

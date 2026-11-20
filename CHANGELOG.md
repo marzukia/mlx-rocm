@@ -2,6 +2,54 @@
 
 All notable changes to `mlx-rocm` are documented here.
 
+## [0.3.0-alpha] - 2026-11-19
+
+The 0.3.0 alpha cut. API and performance are not stable; expect breaking
+changes. Everything below the 0.2.0-alpha line stands; 0.3.0 lands the
+3.7K PP lane stack on main (the #36 ONE-PR record, `f5e7cd88`) + the
+version bump (the alpha is expressed by the tag, not the version string).
+
+### Added
+
+- **Q4_K mmq port (#36)**: the `Q4_K` mmq path (the 4-byte-into-2-byte
+  store-width defect fixed in the PATCH81 in-place bf16 store chain) —
+  the in-tree `Q4_K_M` path for the 9B work model.
+- **Attention port (#36)**: the RDNA WMMA `mma-f16` flash-attention port
+  (RDNA WMMA mma-f16 flash attention, gated behind `MLX_SDPA_FATTN`,
+  ON-by-default in the merged tree per op letter (a) = ADOPT).
+- **HBM edge fix (`hbmfix`, #36)**: the sync `hipMalloc` fallback when
+  the HSA async pool fails to extend (the HBM-full-after-reclaim edge)
+  + the `sync_alloc` free tag + the reclaim/fallback diagnostics
+  (physical HBM + arena + hip error at reclaim/fallback).
+- **MTP decode path**: the MTP K=3 record protocol (`MLX_MTP=3` +
+  `MTP6_PREFILL_FILL=1`; 111.01 t/s decode banked on main; in-tree W1
+  record 111.84 t/s, `docs/w1/REPORT-W1-RECORD-11184-20261114.md`).
+  Enablement is a flag-class recipe — see `docs/mtp-enablement.md`.
+- **Prefill stack (3.7K parity work, on main at `f5e7cd88`)**: the #36
+  ONE-PR consolidated lane stack — vendor-sync + S1 SDPA fix (the Q
+  staging per-D-chunk fix) + hbmfix + mmq Q4_K port + P1B4 scratch fix
+  (pool-routed scratch in `mmq_q4k_g64`, killing the per-call
+  `hipMalloc`/`hipFree` churn; `MLX_ROCM_MMQ_Q4K_ALLOC=0` raw
+  fallback) + attention port. See the `[3.7K PP lane merge]` section
+  below for the record (3084.9 t/s @4K adopted / 2861.4 second axis vs the 3683.1 bar).
+- **The 0.3.0-alpha release prep**: the `CHANGELOG` section, the version
+  bump to `0.3.0` (the tag is the alpha carrier), the README pass
+  (hardware line, known-limits, `BUILD-RECIPE.md` pointer, benchmark
+  section), `docs/env-flags.md` (every env flag in the tree),
+  `docs/mtp-enablement.md`, the benchmark charts under `docs/diagrams/`
+  (the llama.cpp anchor, 2026-11-19), and the root-cluster move to
+  `docs/notes/`.
+
+### Changed
+
+- `pyproject.toml` 0.2.0 → 0.3.0 (the wheel metadata is derived from it at
+  build time; the alpha designation rides the tag).
+- The root cluster (`PLAN.md`, the `REPORT*.md` / `NOTES-*.md` / `WALL-NOTE.md`
+  files, `size-ratchet.json`) moved to `docs/notes/` (moved, not deleted;
+  `vendor.json` stays at the root — `scripts/build-wheel.sh` reads it).
+- `scripts/size_ratchet.py` ratchet path follows the move
+  (`docs/notes/size-ratchet.json`).
+
 ## [3.7K PP lane merge] - 2026-11-19
 
 Post-0.2.0-alpha lane work: the 3.7K PP prefill lane, merged by op call

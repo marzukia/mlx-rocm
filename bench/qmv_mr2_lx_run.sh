@@ -1,6 +1,6 @@
 #!/bin/bash
 # run-889 (method-correction doc 2026-10-28, section 4 step 1, lever 1
-# follow-up; REPORT.md section 6.4/7.6 pointer): run-852 LX-hoist A/B gates.
+# follow-up; docs/notes/REPORT.md section 6.4/7.6 pointer): run-852 LX-hoist A/B gates.
 #
 # (a) LOSSLESS: MR+hoist kernel bit-exact vs the per-row qmv_wide_kernel
 #     at identical inputs (maxdiff 0.0, raw-uint16 equality) — the

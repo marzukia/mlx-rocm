@@ -35,8 +35,8 @@ unresolvable or the checkout mismatches; the committed
 `vendor/mlx-rocm-upstream/` is a partial, byte-verified *reference*
 snapshot without a build manifest, NOT the build input), then runs
 `pip wheel .` on the repo root (setuptools, `packages = mlx_rocm`, no
-`setup.py`); the deliverable is the **`mlx_rocm-0.2.0` shim wheel ONLY**
-(`dist/mlx_rocm-0.2.0-*.whl`) and the canonical path does not build the
+`setup.py`); the deliverable is the **`mlx_rocm-0.3.0` shim wheel ONLY**
+(`dist/mlx_rocm-0.3.0-*.whl`) and the canonical path does not build the
 `mlx` framework.
 
 ```

@@ -27,6 +27,6 @@ Purpose in one line: get qmlx-serve running a 9B-class dense Qwen3 correctly on 
 - The vendored MLX source is NOT in this repo: `vendor.json` pins fork + ref;
   `scripts/build-wheel.sh` clones it. Re-pin in a PR when the base moves.
 - File size is a load-bearing signal (size gate, CI + pre-commit): >800 non-blank lines
-  must be in size-ratchet.json; ratcheted files may only shrink; `--update` after a split,
+  must be in docs/notes/size-ratchet.json; ratcheted files may only shrink; `--update` after a split,
   never to raise a budget without a same-PR split or explicit operator OK.
 - A change adding code to a >2,000-line file must name the target module, not the god file.
