@@ -15,31 +15,79 @@ Dynamic: license-file
 
 # mlx-rocm
 
-ROCm backend for [MLX](https://github.com/mlx-project/mlx) — **alpha** (0.3.0-alpha, released 2026-11-20; public line 0.0.0 → 0.1.0 → 0.1.1 → 0.1.2 → 0.2.0-alpha → 0.3.0-alpha).
+ROCm backend for [MLX](https://github.com/mlx-project/mlx) — **alpha**
+(0.3.0-alpha; public line 0.0.0 → 0.1.0 → 0.1.1 → 0.1.2 → 0.2.0-alpha →
+0.3.0-alpha).
 
-Purpose: a ROCm backend for MLX-compatible weights — 9B-class dense Qwen3 models on AMD ROCm GPUs, validated on the RX 9070 XT (**gfx1201** — *not* gfx110x) at high decode speed. MTP spec decode and KV management are part of the MLX core path; serving is out of scope for this repo.
+Purpose: a ROCm backend for MLX-compatible weights — 9B-class dense Qwen3
+models on AMD ROCm GPUs, validated on the RX 9070 XT (**gfx1201** — *not*
+gfx110x) at high decode speed. MTP spec decode and KV management are part
+of the MLX core path; serving is out of scope for this repo.
 
-Hardware: **RX 9070 XT / gfx1201** (RDNA4), **ROCm 7.2.x** userland (the verified-toolchain guest — the ROCm 10.1-line core at `/opt/rocm/core-10.1`; see `docs/quickstart.md`).
+Hardware: **RX 9070 XT / gfx1201** (RDNA4), **ROCm 7.2.x** userland
+(the verified-toolchain guest — the ROCm 10.1-line core at
+`/opt/rocm/core-10.1`; see `docs/quickstart.md`).
 
-Stage: **alpha** (0.3.0-alpha; released — published to PyPI as `0.3.0` on 2026-11-20, merged to main `3e84320e` (PR #40)) — API and performance are not stable, expect breaking changes. Public line: 0.0.0 → 0.1.0 → 0.1.1 → 0.1.2 (PyPI releases: `0.0.0` and `0.1.2`, uploaded 2026-10-30; the 0.1.0/0.1.1 tags are git-only, never published) → 0.2.0-alpha → 0.3.0-alpha (this cut; `pip install mlx-rocm` resolves `0.3.0` — verified on the PyPI simple index). The 9B-hybrid target is ~120 tok/s (byte-identical vs autoregressive); the 0.2.0 cut stood at the 107.56 t/s @1024 certified record, 84.8% of the same-GPU 126.9 t/s reference (in-tree repro: `bench/gdn_seq1024_repro.sh`). 0.3.0 adds the 3.7K PP prefill lane stack (#36/#37, merged 2026-11-19; adopted record 3084.9 t/s @4K) and the MTP K=3 record protocol (111.01 t/s decode banked on main; in-tree record `docs/w1/REPORT-W1-RECORD-11184-20261114.md`).
+Stage: **alpha** (0.3.0-alpha) — API and performance are not stable, expect
+breaking changes. Public line: 0.0.0 → 0.1.0 → 0.1.1 → 0.1.2 (PyPI
+releases: `0.0.0` and `0.1.2`, uploaded 2026-10-30; the 0.1.0/0.1.1 tags
+are git-only, never published) → 0.2.0-alpha → 0.3.0-alpha (this cut).
+The 9B-hybrid target is ~120 tok/s (byte-identical vs autoregressive); the
+0.2.0 cut stood at the 107.56 t/s @1024 certified record, 84.8% of the
+same-GPU 126.9 t/s reference (in-tree repro:
+`bench/gdn_seq1024_repro.sh`). 0.3.0 adds the 3.7K PP prefill lane stack
+(#36/#37, merged 2026-11-19; adopted record 3084.9 t/s @4K) and the MTP
+K=3 record protocol (111.01 t/s decode banked on main; in-tree record
+`docs/w1/REPORT-W1-RECORD-11184-20261114.md`).
 
-Lane state (2026-11-20): the **3.7K PP prefill lane** is **merged** — #36 (the ONE-PR consolidated lane stack) to main `f5e7cd88` at 2026-11-19 22:37Z, clearing the parity merge-gate: fixed-protocol record **3719.25 t/s = 100.98% of the 3683.1 bar** (the external 500x sustained stream; the fixed record protocol (22:2xZ) never changes). Axis records: 3084.9 t/s @4K (the f2c zero-mode axis, x3, the FLAG-OFF record state; record vehicle lib 070122d8) and 2861.4 t/s (the pcm bench class). The W1 decode record (107.56 t/s @1024, #30) remains the decode-axis record.
+Lane state (2026-11-19): the **3.7K PP prefill lane** is the active
+campaign - #36 consolidated + #37 pad merged by op call. Adopted record
+**3084.9 t/s @4K** (the f2c zero-mode axis, x3, the FLAG-OFF record state;
+record vehicle lib 070122d8), second axis **2861.4 t/s** (the pcm bench
+class). Bar **3683.1 t/s** = the external 500x sustained stream; the fixed
+record protocol (22:2xZ) never changes. The parity merge-gate (measured
+like-for-like at/above the bar) is pending. The W1 decode record (107.56
+t/s @1024, #30) remains the decode-axis record.
 
-Verified toolchain: ROCm 10.1 userland on the validated guest (core at `/opt/rocm/core-10.1`; 6.4 was the early probe validation and 7.7 the original target — neither is the verified version).
+Verified toolchain: ROCm 10.1 userland on the validated guest (core at
+`/opt/rocm/core-10.1`; 6.4 was the early probe validation and 7.7 the original
+target — neither is the verified version).
 
 ## What this is
 
 Three pieces:
 
-1. **`vendor/mlx-rocm-upstream/`** — the vendored ROCm backend tree. The ROCm base already carries a complete `mlx/backend/rocm/` mirroring the CUDA backend file-for-file; we vendor the newer forward-merge of the vendor ref (adds GatedDeltaUpdate fallback, mxfp8 prefill GEMM, gfx1200/RDNA4 fixes). Provenance: `vendor/mlx-rocm-upstream/README.md`.
-2. **`src/cpp/mlx_rocm/gemm/`** — a minimal standalone hipBLASLt GEMM (bf16 + fp8 e4m3, persistent handle + workspace, heuristic algo, row-major layouts) plus a dependency-free CPU reference GEMM, modeled on the fork's `gemms/hipblaslt_gemm.cpp`.
-3. **`scripts/smoke.sh`** — builds the GEMM, runs a small GEMM on the build host (host-a, CPU reference), then rsyncs the tree to guest-a (`ssh operator@<tailnet-ip>`), builds it against local ROCm, and runs the GPU GEMM + fp8 probe there (guest-a phase budgeted ~120 s; failures are recorded, not fatal).
+1. **`vendor/mlx-rocm-upstream/`** — the vendored ROCm backend tree. The
+   ROCm base already carries a complete `mlx/backend/rocm/` mirroring the
+   CUDA backend file-for-file; we vendor the newer forward-merge of the
+   vendor ref (adds GatedDeltaUpdate fallback, mxfp8 prefill GEMM,
+   gfx1200/RDNA4 fixes). Provenance: `vendor/mlx-rocm-upstream/README.md`.
+2. **`src/cpp/mlx_rocm/gemm/`** — a minimal standalone hipBLASLt GEMM
+   (bf16 + fp8 e4m3, persistent handle + workspace, heuristic algo,
+   row-major layouts) plus a dependency-free CPU reference GEMM, modeled
+   on the fork's `gemms/hipblaslt_gemm.cpp`.
+3. **`scripts/smoke.sh`** — builds the GEMM, runs a small GEMM on the
+   build host (host-a, CPU reference), then rsyncs the tree to
+   guest-a (`ssh operator@<tailnet-ip>`), builds it against local
+   ROCm, and runs the GPU GEMM + fp8 probe there (guest-a phase budgeted
+   ~120 s; failures are recorded, not fatal).
 
 ## gfx1201 notes
 
-- **RX 9070 XT = `gfx1201`** (RDNA4). `gfx110x` is RDNA3 (RX 7000). The fork's default arch list includes gfx1200/gfx1201; the RDNA4 tier gets its own QMV/QMM crossover tuning and the WMMA dense-qmm allowlist.
-- **fp8 GEMM status on this box**: the smoke's `mlx_rocm_gemm_fp8_probe()` (256³ e4m3 GEMM vs. host reference) **passes** on guest-a gfx1201 (max_rel_err 0.0057, 0/65536 bad) — the probe shows no driver bug. Upstream notes fp8 e4m3 activation GEMM "may be kernel-buggy on some RDNA4 drivers — long-context prefill on gfx1201 garbles" (run-386 evidence, a different workload than this probe). Keep `MLX_ROCM_GEMM_BF16=1` as the safe default until real prefill validation proves the driver clean for that workload. The probe is part of the smoke run.
-- Discrete-GPU allocator hazards the fork engineered around (BAR read ~54 MB/s vs hipMemcpy 50.4 GB/s → pinned `host_stage` bounce; async-pool off by default) are inherited from the vendored tree.
+- **RX 9070 XT = `gfx1201`** (RDNA4). `gfx110x` is RDNA3 (RX 7000). The
+  fork's default arch list includes gfx1200/gfx1201; the RDNA4 tier gets
+  its own QMV/QMM crossover tuning and the WMMA dense-qmm allowlist.
+- **fp8 GEMM status on this box**: the smoke's
+  `mlx_rocm_gemm_fp8_probe()` (256³ e4m3 GEMM vs. host reference)
+**passes** on guest-a gfx1201 (max_rel_err 0.0057, 0/65536 bad) — the probe shows no driver bug. Upstream notes fp8 e4m3 activation GEMM
+  "may be kernel-buggy on some RDNA4 drivers — long-context prefill on
+  gfx1201 garbles" (run-386 evidence, a different workload than this
+  probe). Keep `MLX_ROCM_GEMM_BF16=1` as the safe default until real
+  prefill validation proves the driver clean for that workload. The
+  probe is part of the smoke run.
+- Discrete-GPU allocator hazards the fork engineered around (BAR read
+  ~54 MB/s vs hipMemcpy 50.4 GB/s → pinned `host_stage` bounce;
+  async-pool off by default) are inherited from the vendored tree.
 
 ## Build
 
@@ -58,15 +106,27 @@ cmake -S . -B build -DMLX_ROCM_WITH_HIP=ON -DCMAKE_PREFIX_PATH=/opt/rocm/core-10
 ./build/gemm_smoke hip        # bf16 512^3 + fp8 e4m3 probe
 ```
 
-Full `mlx` wheel — **guest-a-only** (a ROCm gfx1201 box is required; the host build above is the CPU-reference path only):
+Full `mlx` wheel — **guest-a-only** (a ROCm gfx1201 box is required; the
+host build above is the CPU-reference path only):
 
 ```
 bash scripts/build-wheel.sh   # clones the pinned tree (vendor.json), sha-verified, pip wheel .
 ```
 
-`BUILD-RECIPE.md` (repo root) is the 2026-11-01 historical provenance snapshot (the 80.93 tok/s fused-AR wheel); the single canonical wheel recipe is `scripts/build-wheel.sh` + `vendor.json` — entry path `docs/quickstart.md`.
+`BUILD-RECIPE.md` (repo root) is the 2026-11-01 historical provenance
+snapshot (the 80.93 tok/s fused-AR wheel); the single canonical wheel
+recipe is `scripts/build-wheel.sh` + `vendor.json` — entry path
+`docs/quickstart.md`.
 
-The wheel builds from the *fetched pinned tree* (the repo root is the buildable `pip wheel .` source with the ROCm backend grafted in). The committed `vendor/mlx-rocm-upstream/` is a partial, byte-verified *reference* snapshot — it carries no build manifest (no `setup.py` / `pyproject` of its own; `CMakeLists` is preserved as `CMakeLists.upstream.txt`; `python/` holds only `src/fast.cpp`; no `tests/`) and is NOT the build input. `scripts/build-wheel.sh` fails loud if the `vendor.json` pin is unresolvable in the fork or the checkout mismatches it.
+The wheel builds from the *fetched pinned tree* (the repo root is the
+buildable `pip wheel .` source with the ROCm backend grafted in). The
+committed `vendor/mlx-rocm-upstream/` is a partial, byte-verified
+*reference* snapshot — it carries no build manifest (no `setup.py` /
+`pyproject` of its own; `CMakeLists` is preserved as
+`CMakeLists.upstream.txt`; `python/` holds only `src/fast.cpp`; no
+`tests/`) and is NOT the build input. `scripts/build-wheel.sh` fails loud
+if the `vendor.json` pin is unresolvable in the fork or the checkout
+mismatches it.
 
 ## Smoke
 
@@ -74,7 +134,9 @@ The wheel builds from the *fetched pinned tree* (the repo root is the buildable 
 scripts/smoke.sh
 ```
 
-Local: build + small host GEMM. Guest-a: `ssh` reachability + `rocm-smi` check, tar transfer, ROCm build, GPU GEMM + fp8 probe. Results land in `scripts/smoke-results/` (gitignored).
+Local: build + small host GEMM. Guest-a: `ssh` reachability + `rocm-smi`
+check, tar transfer, ROCm build, GPU GEMM + fp8 probe. Results land in
+`scripts/smoke-results/` (gitignored).
 
 ## Supported models (gfx1201, ROCm 10.1 guest)
 
@@ -83,7 +145,7 @@ Local: build + small host GEMM. Guest-a: `ssh` reachability + `rocm-smi` check, 
 | Qwen3-0.6B | 8-bit (affine) | validated — benched 207.6–214.3 tok/s (`k2-non-gemm-fusion`) |
 | Qwen3-0.6B | bf16 | Phase 0 smoke target (`scripts/smoke.py` ladder) |
 | 9B-class dense Qwen3 | 4-bit (affine qmm) | validated — benched 55.9–57.8 tok/s A/B (`k2-non-gemm-fusion`), 63.8 tok/s with a 16-token warmup (`opt-gauntlet-areaA`) |
-| 9B hybrid (GDN + FA) | 4-bit (affine) | supported - the main workload: AR 97.52 t/s @1024, MTP K=2 107.56 t/s @1024 certified (W1, #30; the decode-axis record); the 3.7K PP prefill lane is merged (main `f5e7cd88`, 2026-11-19 22:37Z; fixed-protocol 3719.25 t/s = 100.98% of the 3683.1 bar; adopted record 3084.9 t/s @4K) |
+| 9B hybrid (GDN + FA) | 4-bit (affine) | supported - the main workload: AR 97.52 t/s @1024, MTP K=2 107.56 t/s @1024 certified (W1, #30; the decode-axis record); the 3.7K PP prefill lane is the active campaign (record 3084.9 t/s @4K) |
 | 27B dense / MoE | — | not validated (a 27B load was in flight on the guest, unvalidated) |
 | MTP spec decode | 4-bit | K=2 supported, lossless (merged, #26); 107.56 t/s @1024 certified - leads AR (97.52); the W1 decode-axis record |
 | non-gfx1201 archs | — | not validated (only gfx1201 is validated in this repo) |
@@ -92,12 +154,25 @@ Details, in-flight items, and caveats: `docs/limitations.md`.
 
 ## Known limits
 
-- **MTP enablement is a flag-class recipe** — not a model-config switch: `--force-spec-decode` + `--speculative-config method=mtp` on the serve side, plus the 4-bit sidecar class (the `model-mtp.safetensors` / `model-mtp-4bit.safetensors` sidecar next to the 9B weights). The measured record protocol is the `MLX_MTP=3` + `MTP6_PREFILL_FILL=1` env class (MTP K=3; 111.01 t/s decode banked on main). Full recipe: `docs/mtp-enablement.md`; every env flag in the tree is documented in `docs/env-flags.md`.
-- **Sustained-load box caveat (declared box state, not a software defect)**: the GPU shader-clock boost is duty-dependent — the sustained stream under continuous duty measures ~3% below the fixed-protocol headline (3558.63 vs 3683.1 t/s @4K prefill, same box and model; the "Benchmarks vs the llama.cpp reference" section below and `docs/limitations.md`).
+- **MTP enablement is a flag-class recipe** — not a model-config switch:
+  `--force-spec-decode` + `--speculative-config method=mtp` on the serve
+  side, plus the 4-bit sidecar class (the `model-mtp.safetensors` /
+  `model-mtp-4bit.safetensors` sidecar next to the 9B weights). The
+  measured record protocol is the `MLX_MTP=3` + `MTP6_PREFILL_FILL=1`
+  env class (MTP K=3; 111.01 t/s decode banked on main). Full recipe:
+  `docs/mtp-enablement.md`; every env flag in the tree is documented in
+  `docs/env-flags.md`.
+- **Sustained-load box caveat (declared box state, not a software
+  defect)**: the GPU shader-clock boost is duty-dependent — the sustained
+  stream under continuous duty measures ~3% below the fixed-protocol
+  headline (3558.63 vs 3683.1 t/s @4K prefill, same box and model; the
+  "Benchmarks vs the llama.cpp reference" section below and
+  `docs/limitations.md`).
 
 ## Converting a model
 
-`mlx_lm` (≥ 0.32) converts a HuggingFace ref to the safetensors layout the loader expects:
+`mlx_lm` (≥ 0.32) converts a HuggingFace ref to the safetensors layout the
+loader expects:
 
 ```
 # bf16
@@ -108,24 +183,32 @@ mlx_lm.convert --model Qwen/Qwen3-8B --quantize --bits 4 --group-size 64
 mlx_lm.convert --model Qwen/Qwen3-8B --quantize --bits 8 --q-mode awq
 ```
 
-Or use a pre-converted `mlx-community/*` ref (e.g. `mlx-community/Qwen3-0.6B-8bit`). **mxfp4 is the in-flight target (K4)**: prefill runs via the opt-in dequant→bf16 GEMM path today; there is no native mxfp4 kernel yet.
+Or use a pre-converted `mlx-community/*` ref (e.g.
+`mlx-community/Qwen3-0.6B-8bit`). **mxfp4 is the in-flight target (K4)**:
+prefill runs via the opt-in dequant→bf16 GEMM path today; there is no native
+mxfp4 kernel yet.
 
 ## Status — lanes
 
 | Lane | What | Branch |
 |---|---|---|
 | W1 (sequential GDN) | merged (#30) - the current record (107.56 t/s @1024 certified) | — |
-| 3.7K PP (prefill) | **merged** — #36 ONE-PR to main `f5e7cd88` (2026-11-19 22:37Z) + #37 pad; parity merge-gate cleared: fixed-protocol record 3719.25 t/s = 100.98% of the 3683.1 bar (the external 500x sustained stream); axis records 3084.9 t/s @4K (f2c zero-mode) / 2861.4 t/s (pcm axis) | main (merged) |
+| 3.7K PP (prefill) | the active lane - #36 consolidated + #37 pad merged 2026-11-19 (op call); adopted record 3084.9 t/s @4K (f2c zero-mode) / 2861.4 (pcm axis); bar 3683.1 (external 500x sustained stream); parity merge-gate pending | main (merged) |
 | K1 (QMV/GEMV bandwidth) | int8-activation QMV fix (N=12288) — the kernel + fix are in the committed vendor tree | — |
 | K2 (non-GEMM fusion) | merged (#2) | — |
 | K3 (GDN port) | merged (#3) | — |
 | K4 (MXFP4) | opt-in dequant→bf16 GEMM only; no native kernel, no dedicated branch yet | — |
 | G1 (graph decode) | retired — the graph-capture NO-GO verdict (`docs/audit/slot-path-mtp-verify.md`; the run-1059 digest in `docs/audit/README.md`) | — |
-| alpha (docs/housekeeping) | the 0.3.0 release (published to PyPI 2026-11-20; main `3e84320e`, PR #40) + this docs wave | main (released) |
+| alpha (docs/housekeeping) | the 0.2.0-alpha release + this docs wave | `release/0.2.0` (PR #31) |
 
 ## Python package
 
-`pip install mlx-rocm` (`pyproject.toml`, `src/python/mlx_rocm/`): ctypes bindings to `libmlx_rocm.so` (host GEMM always; GPU GEMM + fp8 probe in ROCm builds) with a pure-numpy bf16 fallback. The published wheels (PyPI `0.0.0`, `0.1.2`, and `0.3.0` — published 2026-11-20; `pip install mlx-rocm` resolves `0.3.0`, verified on the PyPI simple index) are this package; the full `mlx` wheel (the pinned tree with the ROCm backend, `scripts/build-wheel.sh`) is built and validated per workload — the 9B-class and 9B-hybrid serve paths are validated on the guest.
+`pip install mlx-rocm` (`pyproject.toml`, `src/python/mlx_rocm/`): ctypes
+bindings to `libmlx_rocm.so` (host GEMM always; GPU GEMM + fp8 probe in ROCm
+builds) with a pure-numpy bf16 fallback. The published wheels (PyPI `0.0.0`,
+`0.1.2`) are this package; the full `mlx` wheel (the pinned tree with the
+ROCm backend, `scripts/build-wheel.sh`) is built and validated per workload
+— the 9B-class and 9B-hybrid serve paths are validated on the guest.
 
 ## License
 
@@ -133,7 +216,8 @@ MIT (MLX upstream license; see `LICENSE`).
 
 ## Repo layout (scaffold)
 
-- `docs/plan.md` — the research report + phased plan (architecture, CUDA→ROCm map, prior art, gfx1201 findings, effort).
+- `docs/plan.md` — the research report + phased plan (architecture, CUDA→ROCm map,
+  prior art, gfx1201 findings, effort).
 - `docs/limitations.md` — what works / in flight / not supported / caveats.
 - `docs/quickstart.md` — the verified build + smoke path on a gfx1201 box.
 - `docs/notes/PLAN.md` — living plan (phases, current state, open questions).
@@ -144,18 +228,6 @@ MIT (MLX upstream license; see `LICENSE`).
 - `scripts/smoke-serve.sh` — Phase 1 smoke: qmlx-serve with a 9B-class dense Qwen3.
 - `scripts/size_ratchet.py` + `docs/notes/size-ratchet.json` — deterministic size gate (CI).
 - `tests/` — hermetic tests (CI) + `@pytest.mark.gpu` tests (guest-a only).
-
-## Release
-
-Release publishing is tag-driven (`.github/workflows/release.yml`): a `v*` tag push runs `uv build` (sdist + wheel), then a guard that refuses to publish when the `pyproject.toml` version does not equal the tag (leading `v` stripped), then `uvx twine upload --non-interactive --skip-existing dist/*` to PyPI using the repo's PyPI secret (`TWINE_PASSWORD` = `secrets.PYPI_API_TOKEN`, `TWINE_USERNAME` = `__token__`). Tag pushes are the owner's action — workers never tag or publish. The 0.3.0 cut (released) published to PyPI on 2026-11-20 via this path.
-
-## Benchmark (0.3.0-alpha)
-
-9B work model, Q4_K mmq, gfx1201. Reference = the llama.cpp Q4_K_M 4K-box line (same box). Provenance, verbatim: "the Q4_K_M 4K-box line is the llama.cpp reference (3683.1 / 85.16 / 96.62% / 100.98% / 130.4% / 111.01 t/s); the llama.cpp Q4_K_M 4K-box line = 85.16 t/s decode (MTP K=3), 3683.1 t/s prefill (the fixed record protocol); 3558.63 = sustained (continuous duty, 96.62% of reference)" — see `docs/notes/REPORT-RELEASE020-20261112.md`, `docs/w1/`, and `docs/notes/WALL-NOTE.md`.
-
-- **Prefill @4K, fixed record protocol:** `3683.1` (llama.cpp) vs `3719.25` (mlx-rocm) → **100.98% of reference**. ![prefill-4k](docs/diagrams/prefill-4k.svg)
-- **Prefill @4K, sustained (continuous duty):** `3683.1` (llama.cpp) vs `3558.63` (mlx-rocm) → **96.62% of reference**. *Box-state caveat (declared box state, not a software defect): the sustained-continuous-duty box sits ~3% below the fixed-protocol headline line on duty-dependent shader-clock boost — see `docs/notes/WALL-NOTE.md` 2026-11-19.* ![prefill-4k-sustained](docs/diagrams/prefill-4k-sustained.svg)
-- **Decode @4K ctx, MTP K=3:** `85.16` (llama.cpp) vs `111.01` (mlx-rocm, the `MTP=3` + `MTP6_PREFILL_FILL=1` env class; banked on main) → **130.4% of reference**. ![decode-4k-mtp3](docs/diagrams/decode-4k-mtp3.svg)
 
 ## Commands
 
@@ -170,8 +242,10 @@ GPU commands run on guest-a (see AGENTS.md).
 
 ## Rules
 
-Branch + PR to main (protected: no direct pushes), CI green, adversarial review by a different agent than the submitter, peer merges `--squash`. See AGENTS.md.
-
+Branch + PR to main (protected: no direct pushes), CI green, adversarial review by a
+different agent than the submitter, peer merges `--squash`. See AGENTS.md.
 ## Provenance
 
-Development took place on a private GitLab instance. This public repository carries the project from the v0.1.2 release onward; the earlier development history is not public.
+Development took place on a private GitLab instance. This public
+repository carries the project from the v0.1.2 release onward; the
+earlier development history is not public.
