@@ -1,0 +1,30 @@
+--- a/lib/python3.14/site-packages/mlx_lm/models/gated_delta.py
++++ b/lib/python3.14/site-packages/mlx_lm/models/gated_delta.py
+@@ -636,6 +636,27 @@
+         Hv, Dv = v.shape[-2:]
+         state = mx.zeros((B, Hv, Dv, Dk), dtype=mx.float32)
+ 
++    # GDN-ROCM-DISPATCH (3b): on the ROCm wheel mx.metal.is_available() is
++    # False, so the stock routing falls through to the per-token Python
++    # loop (gated_delta_ops) for every GDN call. The fused
++    # fast::GatedDeltaUpdate (chunked scan; recurrent kernel for T <= 8)
++    # is bound at mx.fast.gated_delta_update. Route there when the C++
++    # use_fallback geometry guard matches: GPU device, no mask,
++    # Dk == 128, Dv == 128, Hv % Hk == 0, Hv / Hk <= 8. Non-matching
++    # geometries keep the Python fallback below (not extended).
++    # Qwen3.8-27B: Dk = Dv = 128, Hk = 16, Hv = 48, ratio = 3, scalar g,
++    # bf16, no mask -> in coverage.
++    if (
++        use_kernel
++        and mx.default_device() == mx.gpu
++        and not mx.metal.is_available()
++        and mask is None
++        and q.shape[-1] == 128
++        and v.shape[-1] == 128
++        and v.shape[-2] % q.shape[-2] == 0
++        and v.shape[-2] // q.shape[-2] <= 8
++    ):
++        return mx.fast.gated_delta_update(q, k, v, g, beta, state, mask)
+     if (
+         not use_kernel
+         or mx.default_device() != mx.gpu
