@@ -110,3 +110,58 @@ SoT build tree:
   --no-deps -w dist/` (ROCm 10.1 userland; cp314 for the vehicle venv).
 - GPU 1 (idle lane) for verification; `MLX_GDN_DEBUG=1` prints the
   kernel/fallback path on stderr (evidence line for the smoke).
+
+## 5b. 3b box-rebuild attempt (recorded, abandoned)
+
+The box was re-provisioned before this lane; the userland's hand-installed
+ROCm header set was wiped. A from-scratch rebuild in
+`/var/tmp/mlx3b-build` (tree copy + 75ca881 setup.py; tree git sha
+7734c1c) got far but is blocked by the toolchain itself, not by this PR:
+
+- Repaired: lld needed libxml2.so.2 + libicu*.so.60 (absent on the
+  re-provisioned Ubuntu 26.10 host; fetched from the distro archive);
+  rocthrust/rocprim/hiprand headers re-fetched (ROCm/thrust 2.6.0, ROCm/
+  rocprim main, ROCm/hiprand rocm-7.2.4) into `/tmp/hipblas-shim/`;
+  `thrust/system/cuda/detail/bulk/malloc.hpp` patched for non-NVCC device
+  arrays; `thrust::hip` namespace alias appended to
+  `thrust/execution_policy.h`; `rocprim_version.hpp` generated from the
+  `.in` template; DPP macros force-defined in `cccl_shim.h`.
+- Blocked: rocprim's wave-64 warp scan uses DPP row-broadcast, which the
+  LLVM 22 ROCm 7.2 backend rejects on GFX10+ ("broadcasts are not
+  supported on GFX10+"); stock rocprim swizzle paths cap at WarpSize 32.
+  The 11-19/11-20 builds succeeded inside the `mlx72` docker container
+  (`rocm/dev-ubuntu-24.04:7.2`, still up) which carries a patched
+  userland rocprim. Rebuilding that container image is out of 3b scope.
+- Verification therefore ran on the canonical installed wheel (265055a,
+  the 11-20 09:31 build) in the vehicle venv — the same wheel 3a and 6f
+  were diagnosed on. The wheel is the vehicle's; no new wheel is
+  required for this PR (Python-only change).
+
+## 6. In-run verification (vehicle venv, wheel 265055a, gfx1201 GPU 1)
+
+All on `HIP_VISIBLE_DEVICES=1` (GPU 0 was 98% VRAM-occupied by another
+lane), ROCm 10.1 userland, `MLX_GDN_DEBUG=1`:
+
+1. Import probe: `hasattr(mx.fast, "gated_delta_update")` → True; doc
+   string shows `(q, k, v, gamma, beta, initial_state=None, mask=None,
+   stream=None)`. (Not in `mx.fast.__all__`; probe by attribute, which is
+   what the gate uses.)
+2. Direct fast call (27B geometry: B=1, T=1024, Hk=16, Dk=128, Hv=48,
+   Dv=128, bf16, per-head g, no mask): out (1,1024,48,128), state
+   (1,48,128,128); 285 ms first (JIT/init), 1.1 ms steady. Debug trace:
+   `cond qdt=1 scalar=1 cont=1` → kernel path, `post-out-set` /
+   `post-state-set`.
+3. Model-level dispatch, stock file (md5 bbe8bf851dabf5815f56583ec8c90c6f):
+   T=256 call = 365.7 ms (per-token Python loop — the wall).
+4. Same file after `apply-gdn-rocm-dispatch.py` (backup `.bak-gdn3b`,
+   post md5 3d3aaa0657d263e88d33d3d523e72a6e): T=1024 first = 270.5 ms,
+   steady = 0.2 ms (≈700x the stock per-call microbenchmark rate).
+   Out-of-coverage geometry (Dk=64) stayed on the Python fallback and
+   worked — the guard does not misroute.
+5. Numerical cross-check (identical seed 42 inputs, T=256, fallback vs
+   fast): outputs agree to 1-2 bf16 ulps over the printed prefix before
+   random-input recurrence divergence (bf16-state reference saturates at
+   the bf16 max; the fp32-state kernel does not) — expected for a
+   chaotic recurrence on random data; confirms same recurrence.
+6. Vehicle file restored to stock after the test (md5 bbe8bf85...);
+   the patch is applied by the script at serve time, not baked in.
