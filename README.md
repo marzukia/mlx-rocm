@@ -13,8 +13,7 @@ Hardware: **RX 9070 XT / gfx1201** (RDNA4), **ROCm 7.2.x** userland
 (the verified-toolchain guest — the ROCm 10.1-line core at
 `/opt/rocm/core-10.1`; see `docs/quickstart.md`).
 
-Stage: **alpha** (0.3.0-alpha) — API and performance are not stable, expect
-breaking changes. Public line: 0.0.0 → 0.1.0 → 0.1.1 → 0.1.2 (PyPI
+Stage: **alpha** (0.3.0-alpha) — API and performance are not stable, expect breaking changes. Public line: 0.0.0 → 0.1.0 → 0.1.1 → 0.1.2 (PyPI
 releases: `0.0.0` and `0.1.2`, uploaded 2026-10-30; the 0.1.0/0.1.1 tags
 are git-only, never published) → 0.2.0-alpha → 0.3.0-alpha (this cut).
 The 9B-hybrid target is ~120 tok/s (byte-identical vs autoregressive); the
@@ -148,8 +147,7 @@ Details, in-flight items, and caveats: `docs/limitations.md`.
   `docs/mtp-enablement.md`; every env flag in the tree is documented in
   `docs/env-flags.md`.
 - **Sustained-load box caveat (declared box state, not a software
-  defect)**: the GPU shader-clock boost is duty-dependent — the sustained
-  stream under continuous duty measures ~3% below the fixed-protocol
+  defect)**: the GPU shader-clock boost is duty-dependent — the sustained stream under continuous duty measures ~3% below the fixed-protocol
   headline (3558.63 vs 3683.1 t/s @4K prefill, same box and model; the
   "Benchmarks vs the llama.cpp reference" section below and
   `docs/limitations.md`).

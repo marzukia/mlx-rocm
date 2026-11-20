@@ -1,8 +1,6 @@
 # Lever 1 — lossless compressed 4-bit weight stream + in-CU decode (ent4)
 
-Re-dispatch of run-1039 (ended empty). Goal: shrink the 4-bit weight stream on the
-qmv path and reconstruct it bit-exactly on the GPU, so dequant is unchanged and
-the lever is lossless by construction.
+Re-dispatch of run-1039 (ended empty). Goal: shrink the 4-bit weight stream on the qmv path and reconstruct it bit-exactly on the GPU, so dequant is unchanged and the lever is lossless by construction.
 
 ## Result (the build VM, RX 9070 XT / gfx1201, ROCm 10.1, Qwen3 9B 4-bit)
 

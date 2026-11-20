@@ -5,8 +5,7 @@ Branch: `release/0.2.0`. PR: **#31** (opened; not tagged, not published — the
 release cut needs the tag `v0.2.0-alpha` + the operator tap). Head SHA at
 PR open: **9dc8e93** (this report lands as the follow-up commit on the PR).
 
-**Fix round (2026-11-13):** the accumulated reviewer findings (D1-D4, all
-terminal 23:0xZ) were fixed on this branch after this report — the
+**Fix round (2026-11-13):** the accumulated reviewer findings (D1-D4, all terminal 23:0xZ) were fixed on this branch after this report — the
 build-story re-pin (vendor.json → a resolvable sha; the committed partial
 tree documented as the reference, not the build input), the stage/version/
 numbers refresh, the checklist re-assessment + 0.2.0=alpha designation,
@@ -78,8 +77,7 @@ matrix; the vendor re-pin cadence) with the since-closed items noted
 PR: **marzukia/mlx-rocm #31** (base main aed6a25f, head `release/0.2.0` @
 9dc8e93 at PR open; this report = the follow-up commit). Body carries the op
 order citation, "worker: cloudyfromff7, reviewer pass to follow", the alpha
-designation, the build/tag flow (no tag, no publish), and the check-line
-results below.
+designation, the build/tag flow (no tag, no publish), and the check-line results below.
 
 ## 5. Check-line results
 
@@ -97,8 +95,7 @@ results below.
 - **W (line-wrap): PASS.** `scripts/line_wrap_check.py` is ABSENT at main
   (verified) — the manual equivalent detector (an indented continuation after
   a complete sentence, uppercase start) over the new + touched .md docs +
-  PKG-INFO + the PR body: 0 hits after fixing 2 (one in the new release
-  notes, one pre-existing in README mirrored to the PKG-INFO copy).
+  PKG-INFO + the PR body: 0 hits after fixing 2 (one in the new release notes, one pre-existing in README mirrored to the PKG-INFO copy).
 
 ## 6. Build/tag flow (stated, not executed)
 

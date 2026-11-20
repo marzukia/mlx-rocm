@@ -16,8 +16,7 @@ but different *inputs*:
 | /models/qwen3-9b-mlx (served; run-1042's input) | 2 | 927 | 250 | `language_model.*` |
 | /models/qwen3-9b-mlx-clean (run-1044's input) | 1 (5 GB) | 927 | 250 | `language_model.*` |
 
-Running run-1044's exact script (md5-verified 8ec0580) on the -clean build
-reproduces its log values exactly (lm_head 2.0498, l0.down 4.8877, l1.down
+Running run-1044's exact script (md5-verified 8ec0580) on the -clean build reproduces its log values exactly (lm_head 2.0498, l0.down 4.8877, l1.down
 2.0000, embed 4.8780). The -clean build contains degenerate (1–2 distinct
 symbol) and near-uniform tensors; the served build's 250 U32 tensors all have
 16 distinct symbols and per-tensor E in [3.537, 3.754]. The MTP shards

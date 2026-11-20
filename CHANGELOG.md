@@ -31,8 +31,7 @@ version bump (the alpha is expressed by the tag, not the version string).
   (pool-routed scratch in `mmq_q4k_g64`, killing the per-call
   `hipMalloc`/`hipFree` churn; `MLX_ROCM_MMQ_Q4K_ALLOC=0` raw
   fallback) + attention port. See the `[3.7K PP lane merge]` section
-  below for the record (3084.9 t/s @4K adopted / 2861.4 second axis vs
-  the 3683.1 bar).
+  below for the record (3084.9 t/s @4K adopted / 2861.4 second axis vs the 3683.1 bar).
 - **The 0.3.0-alpha release prep**: the `CHANGELOG` section, the version
   bump to `0.3.0` (the tag is the alpha carrier), the README pass
   (hardware line, known-limits, `BUILD-RECIPE.md` pointer, benchmark

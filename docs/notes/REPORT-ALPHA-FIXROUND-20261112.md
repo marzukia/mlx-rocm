@@ -19,8 +19,7 @@ the byte-verified *reference* (not the build input); `BUILD-RECIPE.md` is
 bannered as the 2026-11-01 historical provenance snapshot (80.93 tok/s)
 and the single canonical wheel recipe is `scripts/build-wheel.sh` +
 `vendor.json`. The alternative (restoring a build manifest into the
-committed tree) was not chosen: it would fabricate a build surface the
-proven tree never had (its README already documents "no build manifest"),
+committed tree) was not chosen: it would fabricate a build surface the proven tree never had (its README already documents "no build manifest"),
 and the repo root IS the buildable `pip wheel .` source with the ROCm
 backend grafted in — the pin can simply point at the public repo.
 
@@ -39,8 +38,7 @@ Evidence:
   an unresolvable pin) + `head_sha == $SHA` (exit 1 on a checkout
   mismatch). With the resolvable pin, the gate passes on the public repo;
   with a bad pin it fails loud with the correct error. The documented
-  wheel path now builds or fails loud with a CORRECT error. (The
-  empirical wheel build on the validated gfx1201 box is the follow-up
+  wheel path now builds or fails loud with a CORRECT error. (The empirical wheel build on the validated gfx1201 box is the follow-up
   box session — not possible on this host; the gate here is the
   code/doc consistency + the resolvable pin, per the brief.)
 - **README (A1):** the "python setup.py bdist_wheel from
