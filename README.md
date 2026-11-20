@@ -214,6 +214,28 @@ MIT (MLX upstream license; see `LICENSE`).
 - `scripts/size_ratchet.py` + `docs/notes/size-ratchet.json` — deterministic size gate (CI).
 - `tests/` — hermetic tests (CI) + `@pytest.mark.gpu` tests (guest-a only).
 
+## Benchmark (0.3.0-alpha)
+
+9B work model, Q4_K mmq, gfx1201. Reference = the llama.cpp Q4_K_M 4K-box line
+(same box). Provenance, verbatim: "the Q4_K_M 4K-box line is the llama.cpp
+reference (3683.1 / 85.16 / 96.62% / 100.98% / 130.4% / 111.01 t/s); the
+llama.cpp Q4_K_M 4K-box line = 85.16 t/s decode (MTP K=3), 3683.1 t/s
+prefill (the fixed record protocol); 3558.63 = sustained (continuous duty,
+96.62% of reference)" — see `docs/notes/REPORT-RELEASE020-20261112.md`,
+`docs/w1/`, and `docs/notes/WALL-NOTE.md`.
+
+- **Prefill @4K, fixed record protocol:** `3683.1` (llama.cpp) vs `3719.25`
+  (mlx-rocm) → **100.98% of reference**. ![prefill-4k](docs/diagrams/prefill-4k.svg)
+- **Prefill @4K, sustained (continuous duty):** `3683.1` (llama.cpp) vs
+  `3558.63` (mlx-rocm) → **96.62% of reference**. *Box-state caveat
+  (declared box state, not a software defect): the sustained-continuous-duty
+  box sits ~3% below the fixed-protocol headline line on duty-dependent
+  shader-clock boost — see `docs/notes/WALL-NOTE.md` 2026-11-19.*
+  ![prefill-4k-sustained](docs/diagrams/prefill-4k-sustained.svg)
+- **Decode @4K ctx, MTP K=3:** `85.16` (llama.cpp) vs `111.01` (mlx-rocm,
+  the `MTP=3` + `MTP6_PREFILL_FILL=1` env class; banked on main) →
+  **130.4% of reference**. ![decode-4k-mtp3](docs/diagrams/decode-4k-mtp3.svg)
+
 ## Commands
 
 ```bash
