@@ -44,7 +44,7 @@ assert s.shape == (N, K // 64), s.shape
 assert b.shape == (N, K // 64), b.shape
 # Cast scales/biases to bf16 (the model's dtype). The wide/MR gate checks
 # x.dtype() but the kernel hard-codes ScaleT=bf16; f32 scales are misread
-# (all-zero output on the current wheel) — see REPORT.md section 3.
+# (all-zero output on the current wheel) — see docs/notes/REPORT.md section 3.
 s = s.astype(mx.bfloat16)
 b = b.astype(mx.bfloat16)
 x = mx.random.normal((M, K)).astype(mx.bfloat16)

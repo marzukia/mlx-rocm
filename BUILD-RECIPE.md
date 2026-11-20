@@ -115,4 +115,4 @@ MLX_ROCM_GDN_FUSE=1 <venv>/bin/python <repo>/bench/mtp-bench3-side.py
 - The graft patch applies cleanly (dry-run) to base `75ca881`; its `gdn_fused_step.hip` is byte-identical (md5 `d8d4a30f…`) to the working-tree copy in the pre-build vendor snapshot, whose `*.orig` files are the pre-patch backups.
 - The built wheel's `libmlx.so` contains `GdnFusedStep` (34 symbol hits) and lacks `RMSNormResidual` (0) — the wheel was base + GDN patch, nothing else.
 - The model patch was extracted by diffing the installed venv `qwen3_5.py` against stock `mlx-lm==0.32.2` (`pip download mlx-lm==0.32.2 --no-deps`); it round-trips to a byte-identical install (25,912 bytes).
-- See the appended `REPORT.md` section for the vendor-tree ↔ repo relationship and the SHA comparison (`75ca881` / `9320ee9` / main `da9eeca`).
+- See the appended `docs/notes/REPORT.md` section for the vendor-tree ↔ repo relationship and the SHA comparison (`75ca881` / `9320ee9` / main `da9eeca`).

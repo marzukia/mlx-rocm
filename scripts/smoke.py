@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Phase 0 smoke (run ON guest-a after installing the built wheel).
 
-Exit criteria (PLAN.md Phase 0 / docs/plan.md):
+Exit criteria (docs/notes/PLAN.md Phase 0 / docs/plan.md):
   1. mx.rocm.is_available() == True
   2. matmul + softmax numerics correct vs the CPU fallback
   3. (opt, MLX_ROCM_SMOKE_LLM=1) Qwen3-0.6B bf16 + 8bit generates sane text

@@ -4,7 +4,7 @@
 Usage: uv run python scripts/size_ratchet.py [--update] [--base <git-ref>]
   --base: enable the AST export gate, comparing top-level exports vs that ref
   --base HEAD: commit time (pre-commit) — the changed set is what is staged
-  --update: rewrite size-ratchet.json from current state (run after a split)
+  --update: rewrite docs/notes/size-ratchet.json from current state (run after a split)
 
 Thresholds: 800 = flag (must be ratcheted), 2000 = hard stop (no new
 top-level exports). Test files (test_*.py / *_test.py / tests.py) get a x3
@@ -22,7 +22,7 @@ import sys
 FLAG = 800
 HARD = 2000
 TEST_MULT = 3
-RATCHET = "size-ratchet.json"
+RATCHET = os.path.join("docs", "notes", "size-ratchet.json")
 # Test files: test_*.py, *_test.py, and Django's per-app tests.py convention.
 TEST_FILE = re.compile(r"^(test_.*|.*_test|tests)\.py$")
 # Generated / non-live-code dirs (adjust per repo).

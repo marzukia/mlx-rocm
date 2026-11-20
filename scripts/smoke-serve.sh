@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Phase 1 serve smoke (run ON guest-a): qmlx-serve with a 9B-class dense Qwen3.
-# Exit criteria (PLAN.md Phase 1): served, no NaNs, no OOM->SEGV single-process.
+# Exit criteria (docs/notes/PLAN.md Phase 1): served, no NaNs, no OOM->SEGV single-process.
 set -euo pipefail
 
 : "${QMLX_SERVE_BIN:?path to the qmlx-serve entrypoint on guest-a}"
