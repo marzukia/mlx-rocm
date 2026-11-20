@@ -71,8 +71,7 @@ cleaner guard, byte-identical insert).
 
 Per-shape probes (t3294b, M = 1024, 3 warm + 5 timed,
 `mx.quantized_matmul`): 66-71 TFLOPS eff on this GPU. [b]'s "in-situ"
-GEMM bucket (0.17 s/chunk / 0.69 s per pass / 289 TFLOPS) is not an
-independent KPROF measurement:
+GEMM bucket (0.17 s/chunk / 0.69 s per pass / 289 TFLOPS) is not an independent KPROF measurement:
 
 1. The per-shape probe's `PASS_TOTAL` accumulator is a unit bug
    (`tot_s += cnt * fl / dt` accumulates FLOP counts, not seconds);
@@ -81,8 +80,7 @@ independent KPROF measurement:
 2. The 4096-token pass runs 4 x 1024 chunks per layer, so per-pass GEMM
    at probe speed is ~4 x 0.69 = 2.76 s => 199.8/72 TFLOPS class,
    consistent with the per-shape numbers. The "289 TFLOPS" is the
-   per-pass FLOP divided by per-chunk time: a 4x unit error that exactly
-   matches the 4 chunks. No L2-warm explanation is required.
+   per-pass FLOP divided by per-chunk time: a 4x unit error that exactly matches the 4 chunks. No L2-warm explanation is required.
 3. No KPROF log in `gauntlet-results/` shows an in-situ 0.17 s/chunk
    GEMM total; [b]'s 22.47 s GEMM bucket is a back-calc
    (227.104 TFLOP / 10.1 TFLOPS dense probe), not a measurement.
