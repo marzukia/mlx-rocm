@@ -1662,9 +1662,54 @@ size_t RocmAllocator::set_cache_limit(size_t limit) {
   return limit;
 }
 
+// t3298: trim-on-clear gate. The prewarm + pool-clear protocol (r9 class)
+// relies on a pre-decode clear actually returning driver-retained memory;
+// ON by default, MLX_ROCM_NO_TRIM_ON_CLEAR=1 A/B's the legacy behavior.
+static bool pool_trim_on_clear() {
+  static const bool on =
+      std::getenv("MLX_ROCM_NO_TRIM_ON_CLEAR") == nullptr;
+  return on;
+}
+
+void RocmAllocator::trim_pools() {
+  // A graph capture in flight: never sync/trim (the capturing stream can
+  // never complete; the trim would also race the capture's allocations).
+  if (g_decode_capturing.load(std::memory_order_relaxed)) {
+    return;
+  }
+  int n = 0;
+  (void)hipGetDeviceCount(&n);
+  int saved = 0;
+  (void)hipGetDevice(&saved);
+  for (int i = 0; i < n; ++i) {
+    (void)hipSetDevice(i);
+    // Sync first: outstanding (unobserved) async frees count as
+    // outstanding allocations the driver cannot release.
+    (void)hipDeviceSynchronize();
+    hipMemPool_t pool = nullptr;
+    if (hipDeviceGetDefaultMemPool(&pool, i) == hipSuccess && pool) {
+      (void)hipMemPoolTrimTo(pool, 0);
+    }
+    if (i < static_cast<int>(mem_pools_.size()) && mem_pools_[i]) {
+      (void)hipMemPoolTrimTo(static_cast<hipMemPool_t>(mem_pools_[i]), 0);
+    }
+  }
+  (void)hipSetDevice(saved);
+}
+
+void RocmAllocator::pool_trim() {
+  clear_cache();
+  trim_pools();
+}
+
 void RocmAllocator::clear_cache() {
-  std::lock_guard lk(mutex_);
-  buffer_cache_.clear();
+  {
+    std::lock_guard lk(mutex_);
+    buffer_cache_.clear();
+  }
+  if (pool_trim_on_clear()) {
+    trim_pools();
+  }
 }
 
 RocmAllocator& allocator() {
