@@ -2,8 +2,8 @@
   "note": "Pinned vendor source for the ROCm backend. ROCm 10.1 is the only verified toolchain (userland, core at /opt/rocm/core-10.1); 6.4 (early probe) and 7.7 (original target) are historical.",
   "primary": {
     "fork": "https://github.com/marzukia/mlx-rocm",
-    "ref": "t3309-mmq-cap-shrink",
-    "sha": "8eb30989f2a0111583a616b4cdcead3fb9e2c8b4",
+    "ref": "t3317-w31-per-chunk-release",
+    "sha": "08c02bac56c2173650b5862df952b356b622a683",
     "comment": "t3309: mmq staging-pool cap shrink (t3307 card lever (b)) - the g_wq4_cache default cap 8GB -> 2GB (existing MLX_ROCM_MMQ_REPACK_MAX_BYTES hook) + the g_xq81_cache 1GB compile const -> 256MB via a NEW MLX_ROCM_MMQ_XQ81_MAX_BYTES env hook; both prior values (8.59GB / 1.07GB) stay reachable via the overrides for A/B. The pin sha is the fix commit; the branch tip differs by the vendor.json re-pin only. The wheel builds from the fetched pinned tree (the repo root is the buildable `pip wheel .` source with the ROCm backend grafted in); the pin must resolve in the fork and `scripts/build-wheel.sh` fails loud otherwise. The committed vendor/mlx-rocm-upstream/ tree is a byte-verified PARTIAL reference snapshot - NOT the build input: it carries no build manifest (no setup.py/pyproject of its own, CMakeLists preserved as CMakeLists.upstream.txt, python/ holds only src/fast.cpp, no tests/). GDN tail fusion + graph-decode diagnostics on the decode path; launcher pointer fix (host Data* -> gpu_ptr<T>) for the deterministic HSA memory fault. Gates G1/G2 pass (maxdiff 0.0). See docs/quickstart.md."
   },
   "build": {
