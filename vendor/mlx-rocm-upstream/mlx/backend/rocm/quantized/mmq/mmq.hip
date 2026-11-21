@@ -1013,22 +1013,67 @@ struct mmq_scratch_cache {
   size_t max_entries;
   explicit mmq_scratch_cache(size_t c, size_t me = 0) : cap(c), max_entries(me) {}
 };
-// T3317 (W3.1, pin ruling 2026-11-21, cloudy): the wq4 cap default RESTORED
-// to the original P1B23 8GB (8589934592); the W4 2GB stays reachable via
-// MLX_ROCM_MMQ_REPACK_MAX_BYTES (=2147483648) for A/B. The env hook + SI
-// parse are UNCHANGED (the A/B reference). Label note on record: 'W3 class'
-// is loose (W3 carried no caps - the P1B4 per-call variant, symbols absent);
-// the VALUES 8GB/1GB are the pin. The shape count honors
-// MLX_ROCM_MMQ_REPACK_MAX_SHAPES (default: unlimited).
+// T3322 (W3.1.1, stamp adjudication cloudy 2026-11-21): the card-class
+// detection hook (the HIP device-query size class; read through the
+// existing ggml_cuda_info() shim - HIP_VISIBLE_DEVICES-aware, device 0
+// = the visible card; the same hipGetDeviceProperties family as
+// device.cpp/allocator.cpp). <20GB class (the neon 16GB) -> the
+// HOST-PINNED scratch + bounded P1B23 (the 265055a pre-fix shape: the
+// kernel-facing scratch VA is pinned host memory, bounded 8GB/1GB,
+// release OFF). >=20GB (the 20-32 middle + the helium 32GB) -> the
+// DEVICE scratch + the W4 2GB/256MB shape (the official 293.3/8.15
+// vehicle; the t3305 device pointer, release OFF). The A/B override
+// MLX_ROCM_MMQ_SCRATCH_LOC=host|device arms a specific path (the gate
+// use; default = the card class, arm-neutral, no env needed).
+static bool mmq_scratch_host() {
+  static const bool host = [] {
+    const char* e = std::getenv("MLX_ROCM_MMQ_SCRATCH_LOC");
+    if (e != nullptr) {
+      if (e[0] == 'h' || e[0] == 'H') return true;
+      if (e[0] == 'd' || e[0] == 'D') return false;
+    }
+    const unsigned long long gb =
+        (unsigned long long)(ggml_cuda_info().devices[0].total_vram >> 30);
+    return gb < 20;
+  }();
+  return host;
+}
+// T3322 (W3.1.1): the card-class-matched scratch alloc/free. Host class:
+// pinned host (hipHostMalloc/hipFreeHost - NOT the t3116 sync class,
+// which is the device hipFree whole-device sync; hipFreeHost does not
+// sync the device). Device class: raw HBM (hipMalloc/hipFree), the t3305
+// shape.
+static bool mmq_scratch_alloc(void** p, size_t bytes) {
+  if (mmq_scratch_host())
+    return hipHostMalloc(p, bytes) == hipSuccess && *p != nullptr;
+  return hipMalloc(p, bytes) == hipSuccess && *p != nullptr;
+}
+static void mmq_scratch_free(void* p) {
+  if (p == nullptr) return;
+  if (mmq_scratch_host())
+    CUDA_CHECK(hipFreeHost(p));
+  else
+    CUDA_CHECK(hipFree(p));
+}
+// T3322 (W3.1.1, stamp adjudication): the PER-BOX DEFAULT cap. The env
+// hook (unchanged, the A/B reference) wins when set; otherwise the card
+// class selects: host class (card <20GB) -> the 265055a bounded P1B23
+// 8GB (wq4) / 1GB (xq81); device class (card >=20GB) -> the W4 2GB /
+// 256MB caps (the official 293.3/8.15 vehicle). The W3.1 8GB/1GB and
+// W4 2GB/256MB values stay reachable via MLX_ROCM_MMQ_REPACK_MAX_BYTES /
+// MLX_ROCM_MMQ_XQ81_MAX_BYTES as before (SI parse unchanged). The shape
+// count honors MLX_ROCM_MMQ_REPACK_MAX_SHAPES (default: unlimited).
+static size_t mmq_wq4_default_cap() {
+  return mmq_scratch_host() ? (8ULL << 30) : (2ULL << 30);
+}
+static size_t mmq_xq81_default_cap() {
+  return mmq_scratch_host() ? (1ULL << 30) : (268435456);
+}
 static mmq_scratch_cache g_wq4_cache(
-    mmq_repack_max_bytes() ? mmq_repack_max_bytes() : (8ULL << 30),
+    mmq_repack_max_bytes() ? mmq_repack_max_bytes() : mmq_wq4_default_cap(),
     mmq_repack_max_shapes());
-// T3317 (W3.1, pin ruling 2026-11-21): the xq81 cap default RESTORED to the
-// original P1B23 1GB (1073741824); the W4 256MB stays reachable via
-// MLX_ROCM_MMQ_XQ81_MAX_BYTES (=268435456) for A/B. Hook + SI parse
-// UNCHANGED.
 static mmq_scratch_cache g_xq81_cache(
-    mmq_xq81_max_bytes() ? mmq_xq81_max_bytes() : (1ULL << 30));
+    mmq_xq81_max_bytes() ? mmq_xq81_max_bytes() : mmq_xq81_default_cap());
 // GEMM-1 3b-2' A/B v2: file-order (K, N/256, 144) transpose-requant cache.
 static mmq_scratch_cache g_bfile_cache(8ULL << 30);   // 8GB
 static bool mmq_scratch_enabled() {
@@ -1098,7 +1143,7 @@ static bool mmq_scratch_try(mmq_scratch_cache& c, uint64_t key, size_t need, voi
     return true;
   }
   if (it != c.m.end()) {  // grow in place
-    hipFree(it->second.first);
+    mmq_scratch_free(it->second.first);
     c.total -= it->second.second;
     c.m.erase(it);
   }
@@ -1111,19 +1156,20 @@ static bool mmq_scratch_try(mmq_scratch_cache& c, uint64_t key, size_t need, voi
     c.lru.pop_front();
     auto oit = c.m.find(old);
     if (oit == c.m.end()) continue;
-    hipFree(oit->second.first);
+    mmq_scratch_free(oit->second.first);
     c.total -= oit->second.second;
     c.m.erase(oit);
   }
   void* p = nullptr;
-  if (hipMalloc(&p, need) != hipSuccess || p == nullptr) return false;
+  if (!mmq_scratch_alloc(&p, need)) return false;
   c.m[key] = {p, need};
   c.total += need;
   c.lru.push_back(key);
   *out = p;
   return true;
 }
-// T3317 (W3.1, pin ruling 2026-11-21): per-chunk release of the
+// T3317 (W3.1, pin ruling 2026-11-21; T3322 W3.1.1: release-ON GATED, see
+// mmq_release_per_chunk below): per-chunk release of the
 // device-resident mmq scratch (the g_wq4_cache + g_xq81_cache raw
 // hipMalloc buffers) at the end of each prefill chunk. The persistent
 // P1B20/P1B23 caches + the LRU evict-oldest structure + the kqfg shim
@@ -1144,8 +1190,15 @@ static bool mmq_scratch_try(mmq_scratch_cache& c, uint64_t key, size_t need, voi
 // env hooks.
 static bool mmq_release_per_chunk() {
   static const bool en = [] {
+    // T3322 (W3.1.1, stamp adjudication): release-ON is GATED - OFF by
+    // default on every box. The host path (card <20GB, the 265055a
+    // pre-fix shape) is release-OFF regardless of the env. The device
+    // path arms on the explicit MLX_ROCM_MMQ_RELEASE_PER_CHUNK=1 only
+    // (W3.1's default-ON is withdrawn; the use is gated on the OOB fix
+    // + the both-box token checks). =0 = the explicit persistent A/B.
+    if (mmq_scratch_host()) return false;
     const char* e = std::getenv("MLX_ROCM_MMQ_RELEASE_PER_CHUNK");
-    return !(e != nullptr && e[0] == '0');
+    return e != nullptr && e[0] == '1';
   }();
   return en;
 }
@@ -1169,7 +1222,7 @@ static void mmq_release_scratch(int* nbuf_out) {
   auto release = [&](mmq_scratch_cache& c) {
     std::lock_guard<std::mutex> lk(c.mtx);
     for (auto& kv : c.m) {
-      hipFree(kv.second.first);
+      mmq_scratch_free(kv.second.first);
       ++nbuf;
     }
     c.m.clear();
@@ -1369,6 +1422,28 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
     const char* ae = std::getenv("MLX_ROCM_MMQ_Q4K_ALLOC");
     return (ae != nullptr && atoi(ae) == 0) ? 1 : 0;
   }();
+  // T3322 (W3.1.1): host class (card <20GB) -> host-pinned scratch in the
+  // fallback path too (the 265055a shape): hipHostMalloc/hipFreeHost -
+  // NOT the t3116 sync class (that is the device hipFree whole-device
+  // sync; hipFreeHost does not sync the device). alloc_raw (the explicit
+  // Q4K_ALLOC=0 A/B) stays the raw device hipMalloc on every card.
+  const int host_raw = !alloc_raw && mmq_scratch_host();
+  // T3322 (W3.1.1): the scratch-location policy + per-box default proof
+  // hook - one [das] line under MLX_MMQ_CFG on the first dispatch (the
+  // class + the default caps + the release state + the card VRAM; the
+  // canary is T3322-DAS-20261121).
+  {
+    static bool das_emitted = false;
+    if (!das_emitted && std::getenv("MLX_MMQ_CFG")) {
+      das_emitted = true;
+      fprintf(stderr,
+              "[das] scratch=%s cap_wq4=%zu cap_xq81=%zu release=%s "
+              "vram_gib=%llu (T3322-W3111-DAS)\n",
+              mmq_scratch_host() ? "host" : "device", g_wq4_cache.cap,
+              g_xq81_cache.cap, mmq_release_per_chunk() ? "on" : "off",
+              (unsigned long long)(ggml_cuda_info().devices[0].total_vram >> 30));
+    }
+  }
   mlx::core::allocator::Buffer wq4_b{nullptr}, xq81_b{nullptr};
   void* wq4 = nullptr;
   void* xq81 = nullptr;
@@ -1381,18 +1456,25 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
                                ? mmq_wkey(w, scales, biases, N, K, stream, x_bf16)
                                : mmq_key3(N, K, stream);
   const size_t need_wq4 = (size_t)w_total256 * sizeof(block_q4_K);
-  const bool wq4_valid = repack_cache &&
-                         (mmq_scratch_peek(g_wq4_cache, wq4_key, need_wq4) != nullptr);
-  // T3317: per-chunk release trigger (see the block above the hook entry).
-  // Runs BEFORE the scratch-try so the released cache is refilled by THIS
-  // dispatch (the new chunk's first weight). No per-dispatch syncs: the
-  // release fires only on the sequence wrap.
+  // T3322 (W3.1.1, the release-path OOB fix, the stamp adjudication):
+  // the release trigger runs BEFORE the validity peek. Free-after-last-use:
+  // the release's drain sync (hipDeviceSynchronize) completes every prior
+  // consumer of the released buffers before the hipFree loop, and the
+  // post-release peek sees the emptied cache, so the repack runs on the
+  // fresh buffer before the GEMM consumes it. The W3.1 order bug: the
+  // peek was pre-release, so a wrap-trigger dispatch read a stale
+  // wq4_valid and skipped the repack on the freshly-allocated
+  // (uninitialized) buffer - the 9B neon OOB warm-argmax 248044 (all 4
+  // DEFAULT stamp rounds; the 27B battery was rate-data-only). No
+  // per-dispatch syncs: the release fires only on the sequence wrap.
   if (mmq_release_per_chunk() && repack_cache) {
     if (M >= 256)
       mmq_chunk_epoch_step(stream, (int)M, wq4_key);
     else
       mmq_prefill_to_decode_step(stream);
   }
+  const bool wq4_valid = repack_cache &&
+                         (mmq_scratch_peek(g_wq4_cache, wq4_key, need_wq4) != nullptr);
   const bool from_cache =
       mmq_scratch_try(g_wq4_cache, wq4_key, need_wq4, &wq4) &&
       mmq_scratch_try(g_xq81_cache, mmq_key3(M, K, stream),
@@ -1401,6 +1483,9 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
     if (alloc_raw) {
       CUDA_CHECK(hipMalloc(&wq4, (size_t)w_total256 * sizeof(block_q4_K)));
       CUDA_CHECK(hipMalloc(&xq81, (size_t)x_tiles * 144));
+    } else if (host_raw) {
+      CUDA_CHECK(hipHostMalloc(&wq4, (size_t)w_total256 * sizeof(block_q4_K)));
+      CUDA_CHECK(hipHostMalloc(&xq81, (size_t)x_tiles * 144));
     } else {
       wq4_b = mlx::core::rocm::allocator().malloc_async(
           (size_t)w_total256 * sizeof(block_q4_K), 0, (void*)stream);
@@ -1422,6 +1507,18 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
   }
 
   const int tb = 256;
+  // T3322 (W3.1.1): the fresh-scratch free (alloc_raw = the raw device
+  // hipFree A/B; host_raw = hipFreeHost, not a device sync). The pool
+  // path frees via the RAII Buffers at scope end.
+  auto free_fresh = [&]() {
+    if (alloc_raw) {
+      CUDA_CHECK(hipFree(wq4));
+      CUDA_CHECK(hipFree(xq81));
+    } else {
+      CUDA_CHECK(hipFreeHost(wq4));
+      CUDA_CHECK(hipFreeHost(xq81));
+    }
+  };
   if (std::getenv("MLX_MMQ_DBG")) {
     fprintf(stderr, "[mmq-dbg] M=%ld N=%ld K=%ld wq4=%p(%ldB) xq81=%p(%ldB) out=%p(%ldB) w=%p x=%p\n",
             (long)M, (long)N, (long)K, wq4, (long)w_total256*sizeof(block_q4_K),
@@ -1504,10 +1601,7 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
                                        GGML_PREC_Q8);
   // The non-fallback config: full I-tiles of the N (x slot) rows.
   if (J_best < 8 || N % I_val != 0) {
-    if (alloc_raw && !from_cache) {
-      hipFree(wq4);
-      hipFree(xq81);
-    }
+    if ((alloc_raw || host_raw) && !from_cache) free_fresh();
     return;  // pool path: RAII release at scope end; P1B20 cached buffers persist
   }
   if (const char* cje = std::getenv("MLX_MMQ_CFG")) {
@@ -1534,10 +1628,7 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
     CUDA_CHECK(hipGetLastError());
   }
   stage4k("mmq", hipGetLastError());
-  if (alloc_raw && !from_cache) {
-    CUDA_CHECK(hipFree(wq4));
-    CUDA_CHECK(hipFree(xq81));
-  }
+  if ((alloc_raw || host_raw) && !from_cache) free_fresh();
   // pool path: the Buffers release to the allocator at scope end
   // P1B20: cached scratch persists across dispatches (no free)
 }
@@ -1639,6 +1730,24 @@ extern "C" const volatile char* mlx_rocm_plan_d_repackcap_canary() {
 static volatile char T3317_PCRL_CANARY[] = "T3317-PCREL-20261121";
 extern "C" const volatile char* mlx_rocm_mmq_t3317_pcrel_canary() {
   return T3317_PCRL_CANARY;
+}
+// T3322 (W3.1.1, stamp adjudication): the device-aware scratch-location
+// policy + per-box default canary (verify by strings|grep on the built
+// lib; the T3317-PCREL class - host volatile array, non-foldable; the
+// [das] emit under MLX_MMQ_CFG is the proof hook).
+static volatile char T3322_DAS_CANARY[] = "T3322-DAS-20261121";
+extern "C" const volatile char* mlx_rocm_mmq_t3322_das_canary() {
+  return T3322_DAS_CANARY;
+}
+// T3322 (W3.1.1): the release-path OOB fix canary (free-after-last-use:
+// the release trigger now runs BEFORE the wq4 validity peek, so a
+// release-trigger dispatch re-repacks on the fresh buffer before the GEMM
+// consumes it; the W3.1 order read the pre-release peek = a stale
+// wq4_valid = a skipped repack on the uninitialized fresh buffer = the
+// 9B neon OOB warm-argmax 248044).
+static volatile char T3322_OOBFIX_CANARY[] = "T3322-OOBFIX-20261121";
+extern "C" const volatile char* mlx_rocm_mmq_t3322_oobfix_canary() {
+  return T3322_OOBFIX_CANARY;
 }
 
 }  // namespace rocm
