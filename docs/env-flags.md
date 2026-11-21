@@ -75,7 +75,7 @@ is the recipe. The in-tree repro driver
 | `MLX_SDPA_NO_WMMA` | off | set = disable the WMMA flash dispatch (the S1 fix axis: `MLX_SDPA_NO_WMMA=1` = f32 prefill; see the bf16 WMMA Q-staging 1-ULP tie class, `docs/w1` record caveat). |
 | `MLX_SDPA_DECODE_FLASH` | off | set = enable the decode-flash SDPA path. |
 | `MLX_SDPA_FLASH_VJP` / `MLX_SDPA_NO_FLASH_VJP` | off | set = enable / disable the flash VJP (the LSE forward the VJP needs). |
-| `MLX_ROCM_SDPA_S4VA` | unset | set = the S=4 (K=3 spec-decode verify batch) 1-pass vector-kernel dispatch; default off, bit-identical with the env unset. |
+| `MLX_ROCM_SDPA_S4VA` | on (default) | the S=4 (K=3 spec-decode verify batch) 1-pass vector-kernel dispatch at qL == 4; default on (the T3336 lever at the 27B shape: hidden 5120 / kv ctx 4096 / vocab 248320), `0` = the explicit-OFF escape hatch (the stock `query_sequence_length < 4` gate exactly). |
 | `MLX_ROCM_KV_F16` | unset | set = the f16 KV gate (`fast.cpp` KV path). |
 
 ## GEMM / allocator / MoE

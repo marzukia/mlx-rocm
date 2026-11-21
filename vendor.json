@@ -2,9 +2,9 @@
   "note": "Pinned vendor source for the ROCm backend. ROCm 10.1 is the only verified toolchain (userland, core at /opt/rocm/core-10.1); 6.4 (early probe) and 7.7 (original target) are historical.",
   "primary": {
     "fork": "https://github.com/marzukia/mlx-rocm",
-    "ref": "main",
-    "sha": "aed6a25fb1d38bd3593845108f0243fc5aa015b2",
-    "comment": "The wheel builds from the fetched pinned tree (the repo root is the buildable `pip wheel .` source with the ROCm backend grafted in); the pin must resolve in the fork and `scripts/build-wheel.sh` fails loud otherwise. The committed vendor/mlx-rocm-upstream/ tree is a byte-verified PARTIAL reference snapshot — NOT the build input: it carries no build manifest (no setup.py/pyproject of its own, CMakeLists preserved as CMakeLists.upstream.txt, python/ holds only src/fast.cpp, no tests/). GDN tail fusion + graph-decode diagnostics on the decode path; launcher pointer fix (host Data* -> gpu_ptr<T>) for the deterministic HSA memory fault. Gates G1/G2 pass (maxdiff 0.0). See docs/quickstart.md."
+    "ref": "3340-bc-publish-slice",
+    "sha": "a6084706e25d122bd857e98bd997792e398c73c7",
+    "comment": "The wheel builds from the fetched pinned tree (the repo root is the buildable `pip wheel .` source with the ROCm backend grafted in); the pin must resolve in the fork and `scripts/build-wheel.sh` fails loud otherwise. The committed vendor/mlx-rocm-upstream/ tree is a byte-verified PARTIAL reference snapshot — NOT the build input: it carries no build manifest (no setup.py/pyproject of its own, CMakeLists preserved as CMakeLists.upstream.txt, python/ holds only src/fast.cpp, no tests/). Slice 3340 (b)+(c) publish: (b) S4VA default-ON qL==4 one-line (the T3336 lever at the 27B shape: hidden 5120 / kv ctx 4096 / vocab 248320; the read-once env gate default flips to ON, the escape hatch MLX_ROCM_SDPA_S4VA=0 stays reachable) + (c) int2w K-gen K 4096->5120 (the K = 5120 / NG = 40 16-lane-group kernel + the PI128 __constant__ table for the ROCm 7.2 clang mis-compile + the K-gate 4096/32 -> 5120/40, 5 chunks / 20.48 KB LDS / 2 blocks/CU; the kernel region byte-identical to the T3339 validated delta). See docs/quickstart.md."
   },
   "build": {
     "hip_architectures": "gfx1201",
