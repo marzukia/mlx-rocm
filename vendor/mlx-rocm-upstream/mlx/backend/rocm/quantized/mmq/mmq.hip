@@ -1223,6 +1223,24 @@ static void mmq_prefill_to_decode_step(hipStream_t stream) {
     mmq_release_scratch(nullptr);
   }
 }
+// T3317: the mx.clear_cache() hook (allocator.cpp). The gate harness
+// clears before decode (T3298_CLEAR_BEFORE_DECODE), and the GDN fused
+// step tape is the FIRST decode op - a first-decode-dispatch release
+// (mmq_prefill_to_decode_step) is too late (w31sync dev2: the tape
+// launch failed under the HBM wall, 99% VRAM peak vs the W4 2GB-cap
+// control's 81%): the LAST prefill chunk's 8GB wq4 + 1GB xq81 scratch
+// must be GONE before the tape launches. When RELEASE_PER_CHUNK is on,
+// clear_cache() releases the raw scratch + resets every chunk epoch.
+// When =0 (the A/B reference) clear_cache() keeps the W4 behavior
+// (persistent caches; only the driver-pool trim).
+void mmq_clear_scratch_on_cache_clear() {
+  if (!mmq_release_per_chunk())
+    return;
+  std::lock_guard<std::mutex> lk(g_epoch_mtx);
+  for (auto& kv : g_epochs)
+    kv.second.active = false;
+  mmq_release_scratch(nullptr);
+}
 // GEMM-1 3b-2' A/B hook entry (defined in kquant_file_gemm.hip;
 // cloudy ruling 3b-2', 2026-11-18).
 // GEMM-1 3b-2' TRIO: the six in-model weight classes (M=512 basis;
