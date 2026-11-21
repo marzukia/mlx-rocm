@@ -1234,8 +1234,19 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
       wq4_b = mlx::core::rocm::allocator().malloc_async(
           (size_t)w_total256 * sizeof(block_q4_K), 0, (void*)stream);
       xq81_b = mlx::core::rocm::allocator().malloc_async((size_t)x_tiles * 144, 0, (void*)stream);
-      wq4 = wq4_b.raw_ptr();
-      xq81 = xq81_b.raw_ptr();
+      // P1B4-DEVICE-SCRATCH (t3305, root-cause fix for the t3304 host-wall):
+      // hand the kernels the DEVICE (HBM) pointer. wq4/xq81 are GPU-written
+      // + GPU-read and are never CPU-read, so raw_ptr() was semantically
+      // wrong here: it staged a full-size pinned host shadow per scratch
+      // buffer (hipDeviceSynchronize + D2H round-trip per dispatch, shadows
+      // persisting in the pool). The device pointer removes the pinned
+      // shadows (the ~26G+ pinned wall), the D2H/H2D round-trips, and the
+      // per-dispatch syncs (the ~8% sync-cost class) in one change.
+      // alloc_raw (MLX_ROCM_MMQ_Q4K_ALLOC=0) = the raw hipMalloc/hipFree
+      // A/B reference (kept, NOT the default - hipFree = whole-device sync,
+      // t3116).
+      wq4 = static_cast<mlx::core::rocm::RocmBuffer*>(wq4_b.ptr())->data;
+      xq81 = static_cast<mlx::core::rocm::RocmBuffer*>(xq81_b.ptr())->data;
     }
   }
 
@@ -1389,7 +1400,10 @@ extern "C" bool mmq_ab_gemm(const void* x, bool x_bf16, const void* wbuf,
   if (!from_cache) {
     xq81_b = mlx::core::rocm::allocator().malloc_async(
         (size_t)x_tiles * 144, 0, (void*)stream);
-    xq81 = xq81_b.raw_ptr();
+    // P1B4-DEVICE-SCRATCH (t3305): xq81 is GPU-written (mmq_quant_in_q8_1_mmq)
+    // + GPU-read and never CPU-read - raw_ptr() would stage a pinned host
+    // shadow for this scratch (the t3304 host-wall lever). Device pointer.
+    xq81 = static_cast<mlx::core::rocm::RocmBuffer*>(xq81_b.ptr())->data;
   }
   const int tb = 256;
   if (x_bf16) {
