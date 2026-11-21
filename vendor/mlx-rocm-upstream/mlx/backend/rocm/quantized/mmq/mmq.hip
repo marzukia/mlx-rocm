@@ -1422,12 +1422,16 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
     const char* ae = std::getenv("MLX_ROCM_MMQ_Q4K_ALLOC");
     return (ae != nullptr && atoi(ae) == 0) ? 1 : 0;
   }();
-  // T3322 (W3.1.1): host class (card <20GB) -> host-pinned scratch in the
-  // fallback path too (the 265055a shape): hipHostMalloc/hipFreeHost -
-  // NOT the t3116 sync class (that is the device hipFree whole-device
-  // sync; hipFreeHost does not sync the device). alloc_raw (the explicit
-  // Q4K_ALLOC=0 A/B) stays the raw device hipMalloc on every card.
-  const int host_raw = !alloc_raw && mmq_scratch_host();
+  // T3326 (W3.1.2, cloudy ruling 2026-11-21 ~11:5xZ, msg 6xf2zr3XzeQY):
+  // the card <20GB host-class miss path is RESTORED to the f5e7cd88
+  // allocator-pool shape - the per-call hipHostMalloc/hipFreeHost branch
+  // (T3322 W3.1.1) is removed, so the host class falls into the pool
+  // else branch (Buffer pair + malloc_async + raw pointer; scope-end
+  // RAII release; no per-call hipFreeHost). The device-class miss path
+  // is byte-identical (the 27B fit fix stands). The class-matched caps,
+  // the [das] emit, and the release policy are unchanged. alloc_raw (the
+  // explicit Q4K_ALLOC=0 A/B) stays the raw device hipMalloc on every
+  // card.
   // T3322 (W3.1.1): the scratch-location policy + per-box default proof
   // hook - one [das] line under MLX_MMQ_CFG on the first dispatch (the
   // class + the default caps + the release state + the card VRAM; the
@@ -1483,9 +1487,6 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
     if (alloc_raw) {
       CUDA_CHECK(hipMalloc(&wq4, (size_t)w_total256 * sizeof(block_q4_K)));
       CUDA_CHECK(hipMalloc(&xq81, (size_t)x_tiles * 144));
-    } else if (host_raw) {
-      CUDA_CHECK(hipHostMalloc(&wq4, (size_t)w_total256 * sizeof(block_q4_K)));
-      CUDA_CHECK(hipHostMalloc(&xq81, (size_t)x_tiles * 144));
     } else {
       wq4_b = mlx::core::rocm::allocator().malloc_async(
           (size_t)w_total256 * sizeof(block_q4_K), 0, (void*)stream);
@@ -1507,16 +1508,13 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
   }
 
   const int tb = 256;
-  // T3322 (W3.1.1): the fresh-scratch free (alloc_raw = the raw device
-  // hipFree A/B; host_raw = hipFreeHost, not a device sync). The pool
-  // path frees via the RAII Buffers at scope end.
+  // T3326 (W3.1.2): the fresh-scratch free handles alloc_raw only (the
+  // raw device hipFree A/B). The pool path frees via the RAII Buffers
+  // at scope end (both classes).
   auto free_fresh = [&]() {
     if (alloc_raw) {
       CUDA_CHECK(hipFree(wq4));
       CUDA_CHECK(hipFree(xq81));
-    } else {
-      CUDA_CHECK(hipFreeHost(wq4));
-      CUDA_CHECK(hipFreeHost(xq81));
     }
   };
   if (std::getenv("MLX_MMQ_DBG")) {
@@ -1601,7 +1599,7 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
                                        GGML_PREC_Q8);
   // The non-fallback config: full I-tiles of the N (x slot) rows.
   if (J_best < 8 || N % I_val != 0) {
-    if ((alloc_raw || host_raw) && !from_cache) free_fresh();
+    if (alloc_raw && !from_cache) free_fresh();
     return;  // pool path: RAII release at scope end; P1B20 cached buffers persist
   }
   if (const char* cje = std::getenv("MLX_MMQ_CFG")) {
@@ -1628,7 +1626,7 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
     CUDA_CHECK(hipGetLastError());
   }
   stage4k("mmq", hipGetLastError());
-  if ((alloc_raw || host_raw) && !from_cache) free_fresh();
+  if (alloc_raw && !from_cache) free_fresh();
   // pool path: the Buffers release to the allocator at scope end
   // P1B20: cached scratch persists across dispatches (no free)
 }
@@ -1748,6 +1746,17 @@ extern "C" const volatile char* mlx_rocm_mmq_t3322_das_canary() {
 static volatile char T3322_OOBFIX_CANARY[] = "T3322-OOBFIX-20261121";
 extern "C" const volatile char* mlx_rocm_mmq_t3322_oobfix_canary() {
   return T3322_OOBFIX_CANARY;
+}
+// T3326 (W3.1.2, cloudy ruling 2026-11-21 ~11:5xZ, msg 6xf2zr3XzeQY):
+// the card <20GB host-class miss-path RESTORE canary (the per-call
+// hipHostMalloc/hipFreeHost branch is removed; the host class falls
+// into the allocator-pool shape - Buffer pair + malloc_async + raw
+// pointer, scope-end RAII release; the device-class miss path is
+// byte-identical). Verify by strings|grep on the built lib (the marker
+// alongside the T3322-DAS / T3322-OOBFIX / T3317-PCREL class).
+static volatile char T3326_RESTORE_CANARY[] = "T3326-RESTORE-20261121";
+extern "C" const volatile char* mlx_rocm_mmq_t3326_restore_canary() {
+  return T3326_RESTORE_CANARY;
 }
 
 }  // namespace rocm
