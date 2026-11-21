@@ -918,10 +918,11 @@ static void mmq_glu_q4k_g64(const float* x,
 // cache. MLX_ROCM_MMQ_REPACK_MAX_SHAPES = maximum number of cached
 // repacked weight buffers (the P1B23 LRU/drop-oldest eviction already
 // orders the entries; this adds a count bound). MLX_ROCM_MMQ_REPACK_MAX_BYTES
-// = optional byte-budget override for the same cache (the default is the
-// P1B23 8GB cap). Both unset = legacy (8GB byte cap, unlimited shapes).
-// The P1B24 repack-ON steady retention (+3.70GB vs repack OFF) is what
-// the cap bounds (~max_shapes x per-weight bytes, drop-oldest).
+// = optional byte-budget override for the same cache (the t3309 default
+// is the 2GB cap; the P1B23 8GB stays reachable via the override, e.g.
+// =8589934592, for A/B). Both unset = the shrunk defaults (2GB byte cap,
+// unlimited shapes). The P1B24 repack-ON steady retention is what the cap
+// bounds (~max_shapes x per-weight bytes, drop-oldest).
 static size_t mmq_repack_max_shapes() {
   static const size_t v = [] {
     const char* e = std::getenv("MLX_ROCM_MMQ_REPACK_MAX_SHAPES");
@@ -967,6 +968,39 @@ static size_t mmq_repack_max_bytes() {
   }();
   return v;
 }
+// t3309 (t3307 card lever (b)): the g_xq81_cache byte cap, env-overridable
+// (the pre-shrink 1GB stays reachable via =1073741824). Same SI (1000-
+// base) suffix parsing as mmq_repack_max_bytes (F1 fix, t3171 review).
+static size_t mmq_xq81_max_bytes() {
+  static const size_t v = [] {
+    const char* e = std::getenv("MLX_ROCM_MMQ_XQ81_MAX_BYTES");
+    if (!e) {
+      return static_cast<size_t>(0);
+    }
+    char* endp = nullptr;
+    unsigned long val = std::strtoul(e, &endp, 10);
+    if (endp != nullptr && *endp != '\0') {
+      switch (*endp) {
+        case 'k':
+        case 'K':
+          val *= 1000UL;
+          break;
+        case 'm':
+        case 'M':
+          val *= 1000UL * 1000UL;
+          break;
+        case 'g':
+        case 'G':
+          val *= 1000UL * 1000UL * 1000UL;
+          break;
+        default:
+          return static_cast<size_t>(0);
+      }
+    }
+    return val > 0 ? static_cast<size_t>(val) : static_cast<size_t>(0);
+  }();
+  return v;
+}
 struct mmq_scratch_cache {
   std::mutex mtx;
   std::unordered_map<uint64_t, std::pair<void*, size_t>> m;
@@ -979,13 +1013,17 @@ struct mmq_scratch_cache {
   size_t max_entries;
   explicit mmq_scratch_cache(size_t c, size_t me = 0) : cap(c), max_entries(me) {}
 };
-// Plan-D: the byte cap honors MLX_ROCM_MMQ_REPACK_MAX_BYTES (default:
-// the P1B23 8GB); the shape count honors MLX_ROCM_MMQ_REPACK_MAX_SHAPES
-// (default: unlimited).
+// Plan-D: the byte cap honors MLX_ROCM_MMQ_REPACK_MAX_BYTES (t3309
+// default: 2GB, the t3307 card lever (b) cap shrink; the P1B23 8GB is
+// reachable via the override for A/B); the shape count honors
+// MLX_ROCM_MMQ_REPACK_MAX_SHAPES (default: unlimited).
 static mmq_scratch_cache g_wq4_cache(
-    mmq_repack_max_bytes() ? mmq_repack_max_bytes() : (8ULL << 30),
+    mmq_repack_max_bytes() ? mmq_repack_max_bytes() : (2ULL << 30),
     mmq_repack_max_shapes());
-static mmq_scratch_cache g_xq81_cache(1ULL << 30);  // 1GB
+// t3309 (t3307 card lever (b)): 256MB default; the pre-shrink 1GB stays
+// reachable via MLX_ROCM_MMQ_XQ81_MAX_BYTES (=1073741824) for A/B.
+static mmq_scratch_cache g_xq81_cache(
+    mmq_xq81_max_bytes() ? mmq_xq81_max_bytes() : (256ULL << 20));
 // GEMM-1 3b-2' A/B v2: file-order (K, N/256, 144) transpose-requant cache.
 static mmq_scratch_cache g_bfile_cache(8ULL << 30);   // 8GB
 static bool mmq_scratch_enabled() {
