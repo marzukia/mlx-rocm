@@ -110,6 +110,10 @@ extern "C" const volatile char* mlx_rocm_plan_d_retaincap_canary() {
 #include <string>
 #include <vector>
 
+// T3317 (W3.1): forward declaration (defined in mmq.hip, the global
+// rocm namespace; no-op when MLX_ROCM_MMQ_RELEASE_PER_CHUNK=0).
+namespace rocm { void mmq_clear_scratch_on_cache_clear(); }
+
 namespace mlx::core {
 
 namespace rocm {
@@ -1813,8 +1817,15 @@ size_t get_cache_memory() {
 size_t set_cache_limit(size_t limit) {
   return rocm::allocator().set_cache_limit(limit);
 }
+// T3317 (W3.1): declared in mmq.hip (the global rocm namespace).
 void clear_cache() {
   rocm::allocator().clear_cache();
+  // T3317 (W3.1): the per-chunk-release vehicle also releases the
+  // device-resident mmq raw scratch on clear (the harness clears before
+  // decode; the GDN tape is the first decode op - the last prefill
+  // chunk's 8GB + 1GB scratch must be gone before it launches). No-op
+  // when MLX_ROCM_MMQ_RELEASE_PER_CHUNK=0 (the A/B reference).
+  ::rocm::mmq_clear_scratch_on_cache_clear();
 }
 
 size_t set_wired_limit(size_t) {
