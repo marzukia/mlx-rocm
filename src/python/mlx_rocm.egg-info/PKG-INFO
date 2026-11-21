@@ -28,8 +28,7 @@ Hardware: **RX 9070 XT / gfx1201** (RDNA4), **ROCm 7.2.x** userland
 (the verified-toolchain guest — the ROCm 10.1-line core at
 `/opt/rocm/core-10.1`; see `docs/quickstart.md`).
 
-Stage: **alpha** (0.3.0-alpha) — API and performance are not stable, expect
-breaking changes. Public line: 0.0.0 → 0.1.0 → 0.1.1 → 0.1.2 (PyPI
+Stage: **alpha** (0.3.0-alpha) — API and performance are not stable, expect breaking changes. Public line: 0.0.0 → 0.1.0 → 0.1.1 → 0.1.2 (PyPI
 releases: `0.0.0` and `0.1.2`, uploaded 2026-10-30; the 0.1.0/0.1.1 tags
 are git-only, never published) → 0.2.0-alpha → 0.3.0-alpha (this cut).
 The 9B-hybrid target is ~120 tok/s (byte-identical vs autoregressive); the
@@ -163,8 +162,7 @@ Details, in-flight items, and caveats: `docs/limitations.md`.
   `docs/mtp-enablement.md`; every env flag in the tree is documented in
   `docs/env-flags.md`.
 - **Sustained-load box caveat (declared box state, not a software
-  defect)**: the GPU shader-clock boost is duty-dependent — the sustained
-  stream under continuous duty measures ~3% below the fixed-protocol
+  defect)**: the GPU shader-clock boost is duty-dependent — the sustained stream under continuous duty measures ~3% below the fixed-protocol
   headline (3558.63 vs 3683.1 t/s @4K prefill, same box and model; the
   "Benchmarks vs the llama.cpp reference" section below and
   `docs/limitations.md`).
@@ -228,6 +226,28 @@ MIT (MLX upstream license; see `LICENSE`).
 - `scripts/smoke-serve.sh` — Phase 1 smoke: qmlx-serve with a 9B-class dense Qwen3.
 - `scripts/size_ratchet.py` + `docs/notes/size-ratchet.json` — deterministic size gate (CI).
 - `tests/` — hermetic tests (CI) + `@pytest.mark.gpu` tests (guest-a only).
+
+## Benchmark (0.3.0-alpha)
+
+9B work model, Q4_K mmq, gfx1201. Reference = the llama.cpp Q4_K_M 4K-box line
+(same box). Provenance, verbatim: "the Q4_K_M 4K-box line is the llama.cpp
+reference (3683.1 / 85.16 / 96.62% / 100.98% / 130.4% / 111.01 t/s); the
+llama.cpp Q4_K_M 4K-box line = 85.16 t/s decode (MTP K=3), 3683.1 t/s
+prefill (the fixed record protocol); 3558.63 = sustained (continuous duty,
+96.62% of reference)" — see `docs/notes/REPORT-RELEASE020-20261112.md`,
+`docs/w1/`, and `docs/notes/WALL-NOTE.md`.
+
+- **Prefill @4K, fixed record protocol:** `3683.1` (llama.cpp) vs `3719.25`
+  (mlx-rocm) → **100.98% of reference**. ![prefill-4k](docs/diagrams/prefill-4k.svg)
+- **Prefill @4K, sustained (continuous duty):** `3683.1` (llama.cpp) vs
+  `3558.63` (mlx-rocm) → **96.62% of reference**. *Box-state caveat
+  (declared box state, not a software defect): the sustained-continuous-duty
+  box sits ~3% below the fixed-protocol headline line on duty-dependent
+  shader-clock boost — see `docs/notes/WALL-NOTE.md` 2026-11-19.*
+  ![prefill-4k-sustained](docs/diagrams/prefill-4k-sustained.svg)
+- **Decode @4K ctx, MTP K=3:** `85.16` (llama.cpp) vs `111.01` (mlx-rocm,
+  the `MTP=3` + `MTP6_PREFILL_FILL=1` env class; banked on main) →
+  **130.4% of reference**. ![decode-4k-mtp3](docs/diagrams/decode-4k-mtp3.svg)
 
 ## Commands
 
