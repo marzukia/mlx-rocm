@@ -1038,23 +1038,6 @@ static bool mmq_scratch_host() {
   }();
   return host;
 }
-// T3322 (W3.1.1): the card-class-matched scratch alloc/free. Host class:
-// pinned host (hipHostMalloc/hipFreeHost - NOT the t3116 sync class,
-// which is the device hipFree whole-device sync; hipFreeHost does not
-// sync the device). Device class: raw HBM (hipMalloc/hipFree), the t3305
-// shape.
-static bool mmq_scratch_alloc(void** p, size_t bytes) {
-  if (mmq_scratch_host())
-    return hipHostMalloc(p, bytes) == hipSuccess && *p != nullptr;
-  return hipMalloc(p, bytes) == hipSuccess && *p != nullptr;
-}
-static void mmq_scratch_free(void* p) {
-  if (p == nullptr) return;
-  if (mmq_scratch_host())
-    CUDA_CHECK(hipFreeHost(p));
-  else
-    CUDA_CHECK(hipFree(p));
-}
 // T3322 (W3.1.1, stamp adjudication): the PER-BOX DEFAULT cap. The env
 // hook (unchanged, the A/B reference) wins when set; otherwise the card
 // class selects: host class (card <20GB) -> the 265055a bounded P1B23
@@ -1143,7 +1126,7 @@ static bool mmq_scratch_try(mmq_scratch_cache& c, uint64_t key, size_t need, voi
     return true;
   }
   if (it != c.m.end()) {  // grow in place
-    mmq_scratch_free(it->second.first);
+    hipFree(it->second.first);
     c.total -= it->second.second;
     c.m.erase(it);
   }
@@ -1156,12 +1139,12 @@ static bool mmq_scratch_try(mmq_scratch_cache& c, uint64_t key, size_t need, voi
     c.lru.pop_front();
     auto oit = c.m.find(old);
     if (oit == c.m.end()) continue;
-    mmq_scratch_free(oit->second.first);
+    hipFree(oit->second.first);
     c.total -= oit->second.second;
     c.m.erase(oit);
   }
   void* p = nullptr;
-  if (!mmq_scratch_alloc(&p, need)) return false;
+  if (hipMalloc(&p, need) != hipSuccess || p == nullptr) return false;
   c.m[key] = {p, need};
   c.total += need;
   c.lru.push_back(key);
@@ -1222,7 +1205,7 @@ static void mmq_release_scratch(int* nbuf_out) {
   auto release = [&](mmq_scratch_cache& c) {
     std::lock_guard<std::mutex> lk(c.mtx);
     for (auto& kv : c.m) {
-      mmq_scratch_free(kv.second.first);
+      hipFree(kv.second.first);
       ++nbuf;
     }
     c.m.clear();
