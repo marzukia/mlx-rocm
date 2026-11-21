@@ -205,11 +205,11 @@ __global__ void kernel_sdpav_1pass(
 
 } // namespace rocm
 
-// Forward declarations verify-attention: the S=4 (qL == 4, K=3 spec-decode verify batch) extension to the 1-pass vector kernel. DEFAULT OFF - engages only under MLX_ROCM_SDPA_S4VA=1; with the env unset the gate is the stock `query_sequence_length < 4` exactly.
+// Forward declarations verify-attention: the S=4 (qL == 4, K=3 spec-decode verify batch) extension to the 1-pass vector kernel. DEFAULT ON (the T3336 lever at the 27B shape: hidden 5120 / kv ctx 4096 / vocab 248320); the env escape hatch stays reachable - MLX_ROCM_SDPA_S4VA=0 forces OFF (with the env unset the gate engages the qL == 4 extension instead of the stock `query_sequence_length < 4` exactly).
 bool s4va_enabled() {
   static const bool en = [] {
     const char* e = std::getenv("MLX_ROCM_SDPA_S4VA");
-    return e != nullptr && e[0] == '1';
+    return e == nullptr || e[0] != '0';
   }();
   return en;
 }
@@ -258,7 +258,7 @@ bool supports_sdpa_vector(
       (query_head_dim == 64 || query_head_dim == 96 || query_head_dim == 128 ||
        query_head_dim == 256);
 
-  // verify-attention: the 1-pass kernel is row-independent (grid (H, qL, B)) and is T-invariant per row under the runtime-causal mask (m8 single- instantiation), so it can take qL == 4 (the K=3 spec-decode verify batch) instead of falling through to the scalar flash (prefill) kernel, which serializes the key scan into a handful of threads per head. DEFAULT OFF: the extension engages only under MLX_ROCM_SDPA_S4VA=1 (qL == 4 rows go to the vector kernel); with the env unset the gate is the stock `query_sequence_length < 4` exactly, so the no-graft behavior is bit-identical.
+  // verify-attention: the 1-pass kernel is row-independent (grid (H, qL, B)) and is T-invariant per row under the runtime-causal mask (m8 single- instantiation), so it can take qL == 4 (the K=3 spec-decode verify batch) instead of falling through to the scalar flash (prefill) kernel, which serializes the key scan into a handful of threads per head. DEFAULT ON: qL == 4 rows go to the vector kernel by default; the env escape hatch MLX_ROCM_SDPA_S4VA=0 forces OFF (it restores the stock `query_sequence_length < 4` gate exactly, the pre-graft behavior).
 const bool supported_vector_config =
       sdpa_supported_head_dim &&
       (query_sequence_length < 4 ||
