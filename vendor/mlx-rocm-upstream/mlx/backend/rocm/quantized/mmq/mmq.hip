@@ -1013,17 +1013,22 @@ struct mmq_scratch_cache {
   size_t max_entries;
   explicit mmq_scratch_cache(size_t c, size_t me = 0) : cap(c), max_entries(me) {}
 };
-// Plan-D: the byte cap honors MLX_ROCM_MMQ_REPACK_MAX_BYTES (t3309
-// default: 2GB, the t3307 card lever (b) cap shrink; the P1B23 8GB is
-// reachable via the override for A/B); the shape count honors
+// T3317 (W3.1, pin ruling 2026-11-21, cloudy): the wq4 cap default RESTORED
+// to the original P1B23 8GB (8589934592); the W4 2GB stays reachable via
+// MLX_ROCM_MMQ_REPACK_MAX_BYTES (=2147483648) for A/B. The env hook + SI
+// parse are UNCHANGED (the A/B reference). Label note on record: 'W3 class'
+// is loose (W3 carried no caps - the P1B4 per-call variant, symbols absent);
+// the VALUES 8GB/1GB are the pin. The shape count honors
 // MLX_ROCM_MMQ_REPACK_MAX_SHAPES (default: unlimited).
 static mmq_scratch_cache g_wq4_cache(
-    mmq_repack_max_bytes() ? mmq_repack_max_bytes() : (2ULL << 30),
+    mmq_repack_max_bytes() ? mmq_repack_max_bytes() : (8ULL << 30),
     mmq_repack_max_shapes());
-// t3309 (t3307 card lever (b)): 256MB default; the pre-shrink 1GB stays
-// reachable via MLX_ROCM_MMQ_XQ81_MAX_BYTES (=1073741824) for A/B.
+// T3317 (W3.1, pin ruling 2026-11-21): the xq81 cap default RESTORED to the
+// original P1B23 1GB (1073741824); the W4 256MB stays reachable via
+// MLX_ROCM_MMQ_XQ81_MAX_BYTES (=268435456) for A/B. Hook + SI parse
+// UNCHANGED.
 static mmq_scratch_cache g_xq81_cache(
-    mmq_xq81_max_bytes() ? mmq_xq81_max_bytes() : (256ULL << 20));
+    mmq_xq81_max_bytes() ? mmq_xq81_max_bytes() : (1ULL << 30));
 // GEMM-1 3b-2' A/B v2: file-order (K, N/256, 144) transpose-requant cache.
 static mmq_scratch_cache g_bfile_cache(8ULL << 30);   // 8GB
 static bool mmq_scratch_enabled() {
@@ -1117,6 +1122,85 @@ static bool mmq_scratch_try(mmq_scratch_cache& c, uint64_t key, size_t need, voi
   c.lru.push_back(key);
   *out = p;
   return true;
+}
+// T3317 (W3.1, pin ruling 2026-11-21): per-chunk release of the
+// device-resident mmq scratch (the g_wq4_cache + g_xq81_cache raw
+// hipMalloc buffers) at the end of each prefill chunk. The persistent
+// P1B20/P1B23 caches + the LRU evict-oldest structure + the kqfg shim
+// stay; the release empties both caches once per chunk. Trigger = the
+// weight-identity sequence wrap (the first per-chunk weight re-touched),
+// prefill chunks only (M >= 256 - the harness prefill-chunk class, 256/
+// 512; the single 4K forward touches each weight once = no wrap = no
+// release; decode M < 256 is excluded), the identity-keyed repack-cache
+// path only (REPACK=0's shared (N,K) key repeats within a chunk - the
+// wrap would misfire; the release stays off there).
+// DESIGN (the t3116 sync-class gate): the release adds NO per-dispatch
+// syncs - it runs ONCE per chunk: a single hipDeviceSynchronize (drain
+// the chunk) + a hipFree loop over the released entries (device idle, the
+// internal free-syncs are cheap). Per-chunk is ~1/8 the t3116 1992-syncs
+// per 4K pass count class, bounded + A/B measurable:
+// MLX_ROCM_MMQ_RELEASE_PER_CHUNK=0 restores the persistent-only behavior
+// (the A/B reference). The W4 caps stay reachable via the REPACK/XQ81
+// env hooks.
+static bool mmq_release_per_chunk() {
+  static const bool en = [] {
+    const char* e = std::getenv("MLX_ROCM_MMQ_RELEASE_PER_CHUNK");
+    return !(e != nullptr && e[0] == '0');
+  }();
+  return en;
+}
+struct mmq_chunk_epoch {
+  bool active = false;
+  int m = 0;
+  uint64_t first_key = 0;
+};
+static std::mutex g_epoch_mtx;
+static std::unordered_map<void*, mmq_chunk_epoch> g_epochs;
+// T3317: the per-chunk release. One hipDeviceSynchronize (the drain; the
+// ONLY explicit sync) + a hipFree loop (device idle = the internal
+// free-syncs are cheap, not the t3116 per-dispatch stall class). Emits the
+// proof hook under MLX_MMQ_CFG (the [pcr] line: one per chunk, nbuf = the
+// released entry count, syncs=1).
+static void mmq_release_scratch(int* nbuf_out) {
+  int nbuf = 0;
+  hipError_t rc = hipDeviceSynchronize();
+  if (rc != hipSuccess)
+    fprintf(stderr, "[pcr] drain rc=%d\n", (int)rc);
+  auto release = [&](mmq_scratch_cache& c) {
+    std::lock_guard<std::mutex> lk(c.mtx);
+    for (auto& kv : c.m) {
+      hipFree(kv.second.first);
+      ++nbuf;
+    }
+    c.m.clear();
+    c.lru.clear();
+    c.total = 0;
+  };
+  release(g_wq4_cache);
+  release(g_xq81_cache);
+  if (nbuf_out) *nbuf_out = nbuf;
+  if (const char* cje = std::getenv("MLX_MMQ_CFG"))
+    fprintf(stderr, "[pcr] chunk_release nbuf=%d syncs=1\n", nbuf);
+}
+static void mmq_chunk_epoch_step(hipStream_t stream, int M, uint64_t key) {
+  std::lock_guard<std::mutex> lk(g_epoch_mtx);
+  auto& e = g_epochs[(void*)stream];
+  if (!e.active) {
+    e.active = true;
+    e.m = M;
+    e.first_key = key;
+  } else if (e.m == M && key == e.first_key) {
+    e.active = false;
+    e.first_key = 0;
+    mmq_release_scratch(nullptr);
+  } else if (e.m != M) {
+    // M changed (the chunk size switched, e.g. a single 4K forward before
+    // the chunked prefill): restart the epoch, no release (the prior
+    // epoch never completed its wrap).
+    e.active = true;
+    e.m = M;
+    e.first_key = key;
+  }
 }
 // GEMM-1 3b-2' A/B hook entry (defined in kquant_file_gemm.hip;
 // cloudy ruling 3b-2', 2026-11-18).
@@ -1260,6 +1344,12 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
   const size_t need_wq4 = (size_t)w_total256 * sizeof(block_q4_K);
   const bool wq4_valid = repack_cache &&
                          (mmq_scratch_peek(g_wq4_cache, wq4_key, need_wq4) != nullptr);
+  // T3317: per-chunk release trigger (see the block above the hook entry).
+  // Runs BEFORE the scratch-try so the released cache is refilled by THIS
+  // dispatch (the new chunk's first weight). No per-dispatch syncs: the
+  // release fires only on the sequence wrap.
+  if (mmq_release_per_chunk() && repack_cache && M >= 256)
+    mmq_chunk_epoch_step(stream, (int)M, wq4_key);
   const bool from_cache =
       mmq_scratch_try(g_wq4_cache, wq4_key, need_wq4, &wq4) &&
       mmq_scratch_try(g_xq81_cache, mmq_key3(M, K, stream),
@@ -1498,6 +1588,14 @@ extern "C" const volatile char* mlx_rocm_mmq_p1b23_canary() {
 static volatile char PLAN_D_REPACKCAP_CANARY[] = "PLAND-REPACKCAP-20261118";
 extern "C" const volatile char* mlx_rocm_plan_d_repackcap_canary() {
   return PLAN_D_REPACKCAP_CANARY;
+}
+// T3317 (W3.1): per-chunk release canary - verify by strings|grep on the
+// built lib (the new release marker alongside REPACK_MAX_BYTES /
+// XQ81_MAX_BYTES / Q4K_ALLOC). The MLX_MMQ_CFG [pcr] emit is the
+// sync/dispatch proof hook (one line per chunk: nbuf + syncs=1).
+static volatile char T3317_PCRL_CANARY[] = "T3317-PCREL-20261121";
+extern "C" const volatile char* mlx_rocm_mmq_t3317_pcrel_canary() {
+  return T3317_PCRL_CANARY;
 }
 
 }  // namespace rocm
