@@ -27,11 +27,13 @@ Goal: byte-identical greedy ALLTOKS vs uncompressed AR at ctx=14 and ctx=29K; A/
 Projection @93% (595.2 GB/s): 5.95 → 100.0; 5.63 → **105.8 tok/s** (full stream). qmv-path only (codes+scale/bias = 4.72 vs 5.04 GB): 118.2 → **126.2 tok/s**. (run-1023 anchored at raw H=3.706 → 108.0; per-tensor E[L]=3.713 lands at 105.8.)
 
 ### Kernel design
+
 - qmv wide path (per WORKSTATE: row=blockIdx.y, grid=(N/8, M)): each (m, n) block owns one compressed weight row (≤5.7KB at K=12288). Block start: read its row's start bit offset from the L2-resident table; load the row's compressed bytes into LDS; cooperative sequential decode (warp lanes split each 64-code group 2-codes/lane, shfl-passed bit positions, 16-entry canonical codebook in registers) → decoded 4bit codes in LDS (≤6KB at K=12288; both fit the 64KB LDS budget); the EXISTING FMA loop then reads the decoded uint4 tile from LDS instead of global — identical FMA order, identical code values → lossless.
 - Fallback: separate decode pass writing unpacked per-layer scratch (≤3.2MB/layer, L2-resident) for small tiles or if inline decode ALU is measured to hurt; qmv then reads the scratch.
 - Env flag `MLX_ROCM_ENTROPY=1` selects the compressed path; default path + CI untouched. Compressed streams shipped as a side file (`*.ent4`) next to the safetensors; loader picks it up when the flag is set. Scale/bias tensors stay raw (unchanged).
 
 ### Work items (in order, commit after each verified step)
+
 1. Offline compressor (CPU): safetensors → per-tensor codebook + compressed stream + side table; in-tree format spec doc (docs/entropy4.md). FIRST commit.
 2. Loader + in-CU decoder in the 4bit qmv path (vendor patch), `MLX_ROCM_ENTROPY=1`.
 3. Lossless gate: ALLTOKS byte-identical @ ctx=14 and ctx=29K vs uncompressed AR.
@@ -40,59 +42,42 @@ Projection @93% (595.2 GB/s): 5.95 → 100.0; 5.63 → **105.8 tok/s** (full str
 
 ## Definition of minimum
 
-qmlx-serve runs a 9B-class dense Qwen3 on guest-a (RX 9070 XT / gfx1201, ROCm 10.1),
-correctly, at usable decode speed. MTP, disk KV, 27B+/122B-hybrid = Phase 2.
+qmlx-serve runs a 9B-class dense Qwen3 on guest-a (RX 9070 XT / gfx1201, ROCm 10.1), correctly, at usable decode speed. MTP, disk KV, 27B+/122B-hybrid = Phase 2.
 
-**ROCm version (single source of truth, 2026-10-26):** the verified guest toolchain on
-guest-a is **ROCm 10.1** (core at `/opt/rocm/core-10.1`,
-`CMAKE_PREFIX_PATH=/opt/rocm/core-10.1`, `amdrocm-*-dev10.1` packages; see
-docs/quickstart.md). Nothing else is verified: 6.4 was the early probe validation and
-7.7 the original target — both are historical, not the verified toolchain.
+**ROCm version (single source of truth, 2026-10-26):** the verified guest toolchain on guest-a is **ROCm 10.1** (core at `/opt/rocm/core-10.1`, `CMAKE_PREFIX_PATH=/opt/rocm/core-10.1`, `amdrocm-*-dev10.1` packages; see docs/quickstart.md). Nothing else is verified: 6.4 was the early probe validation and 7.7 the original target — both are historical, not the verified toolchain.
 
-## Current state (2026-11-19)
+## Current state (2026-11-20)
 
 - Research done (the earlier research pass): the backend is a complete, actively maintained ROCm base; newer forward-merge of the vendor ref. Effort: 2.5-5 person-weeks for the minimum (Phase 0+1).
-- guest-a is UP (RX 9070 XT; guest userland ROCm 10.1 - the only verified toolchain).
-  submitter is building the MVP on the guest-a guest VM (smoke unblocked, relayed to submitter).
-- Repo bootstrapped: hermetic CI (lint/format/pytest/size gate), vendor pin, build +
-  smoke scripts. GPU validation recorded on the validated guest (W1 107.56 t/s
-  @1024, #30 merged 2026-11-12); 0.2.0-alpha released (PR #31 merged 2026-11-13).
-- Active lane (2026-11-19): the 3.7K PP prefill lane - #36 consolidated + #37 pad merged by op call. Adopted record 3084.9 t/s @4K (the f2c zero-mode axis, x3,
-  the FLAG-OFF record state; record vehicle lib 070122d8), second axis 2861.4
-  t/s (the pcm bench class); bar 3683.1 t/s = the external 500x sustained stream.
-  MLX_SDPA_FATTN ON-by-default in the merged tree (op letter (a) = ADOPT);
-  MLX_ROCM_INPROJ_PAD default OFF (e2e unmeasured, no win claimed). The parity
-  merge-gate (measured like-for-like at/above the bar) is pending; the fixed
-  record protocol (22:2xZ) never changes. See CHANGELOG + the lane card.
+- guest-a is UP (RX 9070 XT; guest userland ROCm 10.1 - the only verified toolchain). submitter is building the MVP on the guest-a guest VM (smoke unblocked, relayed to submitter).
+- Repo bootstrapped: hermetic CI (lint/format/pytest/size gate), vendor pin, build + smoke scripts. GPU validation recorded on the validated guest (W1 107.56 t/s @1024, #30 merged 2026-11-12); 0.2.0-alpha released (PR #31 merged 2026-11-13); 0.3.0 released (published to PyPI 2026-11-20; main `3e84320e`, PR #40).
+- Lane (2026-11-20): the 3.7K PP prefill lane is **merged** — #36 ONE-PR consolidated stack to main `f5e7cd88` (2026-11-19 22:37Z) + #37 pad, by op call. Parity merge-gate cleared: fixed-protocol record 3719.25 t/s = 100.98% of the 3683.1 bar (the external 500x sustained stream; the fixed record protocol (22:2xZ) never changes). Axis records: 3084.9 t/s @4K (the f2c zero-mode axis, x3, the FLAG-OFF record state; record vehicle lib 070122d8) / 2861.4 t/s (the pcm bench class). MLX_SDPA_FATTN ON-by-default in the merged tree (op letter (a) = ADOPT); MLX_ROCM_INPROJ_PAD default OFF (e2e unmeasured, no win claimed). See CHANGELOG + the lane card.
 
 ## Phases
 
 ### Phase 0 — Adopt + build + smoke (0.5-1 person-week)
-1. Clone the pinned primary (vendor.json), build the wheel:
-   `CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=OpenBLAS"`.
-2. On guest-a: `mx.rocm.is_available()` true, matmul/softmax correct, Qwen3-0.6B (bf16 + 8bit)
-   generates sane text. (`scripts/smoke.py`)
+
+1. Clone the pinned primary (vendor.json), build the wheel: `CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=OpenBLAS"`.
+2. On guest-a: `mx.rocm.is_available()` true, matmul/softmax correct, Qwen3-0.6B (bf16 + 8bit) generates sane text. (`scripts/smoke.py`)
 - **Exit criteria:** is_available()==True; numerics correct; 0.6B sane.
 - **Gate:** if primary (rocm-current) does not build clean on ROCm 10.1, fall back to the ROCm base and record why (docs/plan.md open question 1).
 
-### Phase 1 — Validate gfx1201 + qmlx-serve minimum (1-2 person-weeks)
+### Phase 1 — Validate gfx1201 + qmlx-serve minimum (1-4 person-week)
+
 1. QMM 4bit on gfx1201 (Rdna4 tier + WMMA dense qmm) vs CPU numerics.
 2. SDPA decode (vector) + prefill (WMMA flash); verify prefill uses the WMMA path.
-3. fp8 GEMM: test the known gfx1201 fp8 prefill bug; ship `MLX_ROCM_GEMM_BF16=1` as the
-   default until proven clean (docs/plan.md).
+3. fp8 GEMM: test the known gfx1201 fp8 prefill bug; ship `MLX_ROCM_GEMM_BF16=1` as the default until proven clean (docs/plan.md).
 4. Allocator on a discrete GPU: host_shadow / pinned host_stage path (not APU fine-grained).
-5. Run qmlx-serve with a 9B-class dense Qwen3; check the `is_metal` error-classification
-   path in qmlx `vllm_mlx/engine_core.py:675` handles ROCm/hip runtime errors.
-- **Exit criteria:** 9B Qwen3 served on gfx1201; no NaNs; no OOM→SEGV single-process.
-  (`scripts/smoke-serve.sh`)
+5. Run qmlx-serve with a 9B-class dense Qwen3; check the `is_metal` error-classification path in qmlx `vllm_mlx/engine_core.py:675` handles ROCm/hip runtime errors.
+- **Exit criteria:** 9B Qwen3 served on gfx1201; no NaNs; no OOM→SEGV single-process. (`scripts/smoke-serve.sh`)
 
-### Phase 2 — Full qMLX stack (deferred; ~2-4 person-weeks)
+### Phase 2 — Full qMLX stack (deferred; ~2-4 person-week)
+
 GatedDeltaNet (9B hybrid), MoE (A10B/27B+), disk KV cache validation. MTP spec decode is adopted and merged (#26/#30) — see the supersession note in docs/plan.md §Open questions. Details in docs/plan.md §Phase 2.
 
 ## Open questions (operator's call)
 
 1. Base: rocm-current (preferred) vs rocm-support (fallback) — resolved by Phase 0 build.
-2. Wheel vs source: source-on-guest-a for now; PyPI wheel (`mlx-rocm` name slot already held
-   by us) is a Phase 2+ concern.
+2. Wheel vs source: source-on-guest-a for now; PyPI wheel (`mlx-rocm` name slot already held by us) is a Phase 2+ concern.
 3. fp8 default: `MLX_ROCM_GEMM_BF16=1` until the gfx1201 fp8 prefill is proven clean on 10.1.
 4. MTP: adopted and merged (#26/#30, the 107.56 t/s @1024 certified record) — the Phase 2 "strictly" framing is superseded (docs/plan.md §Open questions).

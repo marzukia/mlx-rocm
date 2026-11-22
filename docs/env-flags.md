@@ -1,22 +1,10 @@
 # Env flags in the tree
 
-Every env flag ACTUALLY read by code in this repo, as of 0.3.0-alpha
-(main `f5e7cd88` + this branch): the ROCm backend
-(`vendor/mlx-rocm-upstream/`, the partial byte-verified reference snapshot
-that the pinned build tree carries), the in-tree model
-(`models/qwen3_5.py`), and the `bench/` / `scripts/` harnesses. A "Default"
-is the value when the variable is unset (for presence-gates, `unset = off`).
-Only what is in the tree is listed — no invented flags. For a flag that is
-set by the harness (e.g. the record driver exporting `MLX_MTP=3`), the
-default is the code-side one.
+Every env flag ACTUALLY read by code in this repo, as of 0.3.0-alpha (released 2026-11-20; main `3e84320e`): the ROCm backend (`vendor/mlx-rocm-upstream/`, the partial byte-verified reference snapshot that the pinned build tree carries), the in-tree model (`models/qwen3_5.py`), and the `bench/` / `scripts/` harnesses. A "Default" is the value when the variable is unset (for presence-gates, `unset = off`). Only what is in the tree is listed — no invented flags. For a flag that is set by the harness (e.g. the record driver exporting `MLX_MTP=3`), the default is the code-side one.
 
 ## The 0.3.0 record protocol (MTP K=3 decode)
 
-The measured record protocol is the `MLX_MTP=3` + `MTP6_PREFILL_FILL=1`
-class (MTP K=3; 111.01 t/s decode banked on main; in-tree record
-`docs/w1/REPORT-W1-RECORD-11184-20261114.md`). `docs/mtp-enablement.md`
-is the recipe. The in-tree repro driver
-(`bench/gdn_seq1024_repro.sh`) exports the arm env verbatim.
+The measured record protocol is the `MLX_MTP=3` + `MTP6_PREFILL_FILL=1` class (MTP K=3; 111.01 t/s decode banked on main; in-tree record `docs/w1/REPORT-W1-RECORD-11184-20261114.md`). `docs/mtp-enablement.md` is the recipe. The in-tree repro driver (`bench/gdn_seq1024_repro.sh`) exports the arm env verbatim.
 
 | Flag | Default | Effect |
 |---|---|---|
