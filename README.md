@@ -6,7 +6,7 @@ Purpose: a ROCm backend for MLX-compatible weights — 9B-class dense Qwen3 mode
 
 Hardware: **RX 9070 XT / gfx1201** (RDNA4), **ROCm 7.2.x** userland (the verified-toolchain guest — the ROCm 10.1-line core at `/opt/rocm/core-10.1`; see `docs/quickstart.md`).
 
-Stage: **alpha** (0.3.0-alpha; released — published to PyPI as `0.3.0` on 2026-11-20, merged to main `3e84320e` (PR #40)) — API and performance are not stable, expect breaking changes. Public line: 0.0.0 → 0.1.0 → 0.1.1 → 0.1.2 (PyPI releases: `0.0.0` and `0.1.2`, uploaded 2026-10-30; the 0.1.0/0.1.1 tags are git-only, never published) → 0.2.0-alpha → 0.3.0-alpha (this cut; `pip install mlx-rocm` resolves `0.3.0` — verified on the PyPI simple index). The 9B-hybrid target is ~120 tok/s (byte-identical vs autoregressive); the 0.2.0 cut stood at the 107.56 t/s @1024 certified record, 84.8% of the same-GPU 126.9 t/s reference (in-tree repro: `bench/gdn_seq1024_repro.sh`). 0.3.0 adds the 3.7K PP prefill lane stack (#36/#37, merged 2026-11-19; adopted record 3084.9 t/s @4K) and the MTP K=3 record protocol (111.01 t/s decode banked on main; in-tree record `docs/w1/REPORT-W1-RECORD-11184-20261114.md`).
+Stage: **alpha** (0.3.0-alpha; released — published to PyPI as `0.3.0` on 2026-11-20, merged to main `3e84320e` (PR #40)) — API and performance are not stable, expect breaking changes. Public line: 0.0.0 → 0.1.0 → 0.1.1 → 0.1.2 (PyPI releases: `0.0.0` uploaded 2026-10-24, `0.1.2` uploaded 2026-10-30; the 0.1.0/0.1.1 tags are git-only, never published) → 0.2.0-alpha → 0.3.0-alpha (this cut; `pip install mlx-rocm` resolves `0.3.0` — verified on the PyPI simple index). The 9B-hybrid target is ~120 tok/s (byte-identical vs autoregressive); the 0.2.0 cut stood at the 107.56 t/s @1024 certified record, 84.8% of the same-GPU 126.9 t/s reference (in-tree repro: `bench/gdn_seq1024_repro.sh`). 0.3.0 adds the 3.7K PP prefill lane stack (#36/#37, merged 2026-11-19; adopted record 3084.9 t/s @4K) and the MTP K=3 record protocol (111.01 t/s decode banked on main; in-tree record `docs/w1/REPORT-W1-RECORD-11184-20261114.md`).
 
 Lane state (2026-11-20): the **3.7K PP prefill lane** is **merged** — #36 (the ONE-PR consolidated lane stack) to main `f5e7cd88` at 2026-11-19 22:37Z, clearing the parity merge-gate: fixed-protocol record **3719.25 t/s = 100.98% of the 3683.1 bar** (the external 500x sustained stream; the fixed record protocol (22:2xZ) never changes). Axis records: 3084.9 t/s @4K (the f2c zero-mode axis, x3, the FLAG-OFF record state; record vehicle lib 070122d8) and 2861.4 t/s (the pcm bench class). The W1 decode record (107.56 t/s @1024, #30) remains the decode-axis record.
 
@@ -110,7 +110,7 @@ Or use a pre-converted `mlx-community/*` ref (e.g. `mlx-community/Qwen3-0.6B-8bi
 
 ## Python package
 
-`pip install mlx-rocm` (`pyproject.toml`, `src/python/mlx_rocm/`): ctypes bindings to `libmlx_rocm.so` (host GEMM always; GPU GEMM + fp8 probe in ROCm builds) with a pure-numpy bf16 fallback. The published wheels (PyPI `0.0.0`, `0.1.2`, and `0.3.0` — published 2026-11-20; `pip install mlx-rocm` resolves `0.3.0`, verified on the PyPI simple index) are this package; the full `mlx` wheel (the pinned tree with the ROCm backend, `scripts/build-wheel.sh`) is built and validated per workload — the 9B-class and 9B-hybrid serve paths are validated on the guest.
+`pip install mlx-rocm` (`pyproject.toml`, `src/python/mlx_rocm/`): ctypes bindings to `libmlx_rocm.so` (host GEMM always; GPU GEMM + fp8 probe in ROCm builds) with a pure-numpy bf16 fallback. The published wheels (PyPI `0.0.0` [2026-10-24], `0.1.2` [2026-10-30], `0.3.0` [2026-11-20]; `pip install mlx-rocm` resolves `0.3.0`, verified on the PyPI simple index) are this package; the full `mlx` wheel (the pinned tree with the ROCm backend, `scripts/build-wheel.sh`) is built and validated per workload — the 9B-class and 9B-hybrid serve paths are validated on the guest.
 
 ## License
 
@@ -132,7 +132,7 @@ MIT (MLX upstream license; see `LICENSE`).
 
 ## Release
 
-Release publishing is tag-driven (`.github/workflows/release.yml`): a `v*` tag push runs `uv build` (sdist + wheel), then a guard that refuses to publish when the `pyproject.toml` version does not equal the tag (leading `v` stripped), then `uvx twine upload --non-interactive --skip-existing dist/*` to PyPI using the repo's PyPI secret (`TWINE_PASSWORD` = `secrets.PYPI_API_TOKEN`, `TWINE_USERNAME` = `__token__`). Tag pushes are the owner's action — workers never tag or publish. The 0.3.0 cut (released) published to PyPI on 2026-11-20 via this path.
+Release publishing is tag-driven (`.github/workflows/release.yml`): a `v*` tag push runs `uv build` (sdist + wheel), then a guard that refuses to publish when the `pyproject.toml` version does not equal the tag (leading `v` stripped), then `uvx twine upload --non-interactive --skip-existing dist/*` to PyPI using the repo's PyPI secret (`TWINE_PASSWORD` = `secrets.PYPI_API_TOKEN`, `TWINE_USERNAME` = `__token__`). Tag pushes are the owner's action — workers never tag or publish. The 0.3.0 cut (released) published to PyPI on 2026-11-20 (04:40 UTC) as a direct wheel upload; the v0.3.0 tag is pending the owner's push, and the tag-push path above is the standing mechanism for future cuts.
 
 ## Benchmark (0.3.0-alpha)
 
