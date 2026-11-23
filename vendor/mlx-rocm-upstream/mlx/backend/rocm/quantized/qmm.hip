@@ -23,6 +23,7 @@ __device__ inline float load_scale_value(ScaleT raw);
 #include "mlx/backend/rocm/quantized/qmv_rows_msg_kernel.hip"
 #include "mlx/backend/rocm/quantized/qmv_wide_mr3_kernel.hip"
 #include "mlx/backend/rocm/quantized/qmv_wide_mr3_pref_kernel.hip"
+#include "mlx/backend/rocm/quantized/qmv_wide_dp4a_kernel.hip"
 #include "mlx/primitives.h"
 
 #include <hip/hip_bfloat16.h>
@@ -4444,6 +4445,79 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
         if (m3ok) {
           dim3 m3block(32, 16);
           dim3 m3grid((N + 15) / 16, (M + 3) / 4);
+          // T3388: M=4 dp4a-class port (the ggml mmq Q4_K pattern set,
+          // T3381 SASS spec): integer-exact int8 dot (the reference
+          // v_dot4c unit is gfx1036-only; native gfx1201 has no int8
+          // dot unit, so the dot is a v_mad_i32_i32 chain, same
+          // 4-MAC-per-group structure, exact), LDS double-buffered
+          // staging, 4B global loads (zero b128), in-order K lanes.
+          // OPT-IN ONLY (MLX_ROCM_M4DP4A, DEFAULT OFF - the default
+          // dispatch is byte-identical when unset).
+          // M = 4, 4-bit, bf16 x, K % 256 == 0, gs64 only; anything
+          // else falls through to the mr3 path verbatim.
+          static const char* dp4a_env = std::getenv("MLX_ROCM_M4DP4A");
+          static bool use_m4dp4a =
+              (dp4a_env != nullptr) && (dp4a_env[0] != '0');
+          bool m4dp4a_ok = use_m4dp4a && (M == 4) &&
+              (x.dtype() == bfloat16) && (K % 256 == 0) &&
+              (group_size_ == 64);
+          void* xq_base = nullptr;
+          if (m4dp4a_ok) {
+            // persistent xq workspace keyed (M,K), pool-routed (the
+            // mmq t3339 pattern: per-call hipMalloc = whole-device
+            // sync; persistent, never freed).
+            static std::unordered_map<uint64_t, void*> g_m4dp4a_xq;
+            static std::mutex g_m4dp4a_mu;
+            uint64_t kkey = (static_cast<uint64_t>(M) << 32) |
+                static_cast<uint64_t>(K);
+            {
+              std::lock_guard<std::mutex> lk(g_m4dp4a_mu);
+              auto it = g_m4dp4a_xq.find(kkey);
+              if (it != g_m4dp4a_xq.end()) {
+                xq_base = it->second;
+              } else {
+                size_t xq_bytes = static_cast<size_t>(M) * K;
+                size_t sc_bytes = static_cast<size_t>(M) * (K / 256) * 4;
+                mlx::core::allocator::Buffer b =
+                    mlx::core::rocm::allocator().malloc_async(
+                        xq_bytes + sc_bytes, 0,
+                        static_cast<hipStream_t>(enc.stream()));
+                xq_base = b.raw_ptr();
+                if (xq_base != nullptr)
+                  g_m4dp4a_xq[kkey] = xq_base;
+              }
+            }
+            if (xq_base == nullptr) {
+              // alloc failed: fall through to the mr3 path verbatim.
+              static int dp4a_warn = 0;
+              if (dp4a_warn++ == 0)
+                fprintf(stderr,
+                    "[m4dp4a] xq workspace alloc failed, fallback to mr3\n");
+              m4dp4a_ok = false;
+            }
+          }
+          if (m4dp4a_ok) {
+            int8_t* xq2 = reinterpret_cast<int8_t*>(xq_base);
+            float* xsc2 = reinterpret_cast<float*>(
+                reinterpret_cast<uint8_t*>(xq_base) +
+                static_cast<size_t>(M) * K);
+            dim3 xqblock(32);
+            dim3 xqgrid(K / 256, M);
+            enc.add_kernel_node(
+                &rocm::qmv_wide_dp4a_xquant_kernel<hip_bfloat16>,
+                xqgrid, xqblock, 0u, (const hip_bfloat16*)x_ptr, xq2,
+                xsc2, M, K);
+            size_t dp4a_lds = 2 * (4096 + 1024 + 16);
+            dim3 d4block(128);
+            dim3 d4grid((N + 15) / 16, 1);
+            enc.add_kernel_node(
+                &rocm::qmv_wide_dp4a_kernel<hip_bfloat16, hip_bfloat16, 64>,
+                d4grid, d4block, (uint32_t)dp4a_lds, xq2, xsc2,
+                (const uint8_t*)w_ptr, (const hip_bfloat16*)scales_ptr,
+                (const hip_bfloat16*)biases_ptr, (hip_bfloat16*)out_ptr,
+                M, N, K, has_bias);
+            return;
+          }
           // F3-M4X B(a): M = 4 x-load prefetch kernel (bf16 only — the
           // double buffer is 16 uint4 = 64 VGPR per buffer).
           if (m4pref && M == 4 && x.dtype() == bfloat16) {

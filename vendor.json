@@ -2,9 +2,9 @@
   "note": "Pinned vendor source for the ROCm backend. ROCm 10.1 is the only verified toolchain (userland, core at /opt/rocm/core-10.1); 6.4 (early probe) and 7.7 (original target) are historical.",
   "primary": {
     "fork": "https://github.com/marzukia/mlx-rocm",
-    "ref": "main",
-    "sha": "aed6a25fb1d38bd3593845108f0243fc5aa015b2",
-    "comment": "The wheel builds from the fetched pinned tree (the repo root is the buildable `pip wheel .` source with the ROCm backend grafted in); the pin must resolve in the fork and `scripts/build-wheel.sh` fails loud otherwise. The committed vendor/mlx-rocm-upstream/ tree is a byte-verified PARTIAL reference snapshot — NOT the build input: it carries no build manifest (no setup.py/pyproject of its own, CMakeLists preserved as CMakeLists.upstream.txt, python/ holds only src/fast.cpp, no tests/). GDN tail fusion + graph-decode diagnostics on the decode path; launcher pointer fix (host Data* -> gpu_ptr<T>) for the deterministic HSA memory fault. Gates G1/G2 pass (maxdiff 0.0). See docs/quickstart.md."
+    "ref": "t3388-decode-dp4a-port",
+    "sha": "b363e9b8f27434e81ebbbc873046213325ae4ac7",
+    "comment": "T3388 M=4 dp4a-class decode port (opt-in MLX_ROCM_M4DP4A, default off; default dispatch byte-identical). Integer-exact int8 dot on the integer ALU (v_mad_i32_i24 chain; the reference v_dot4c is gfx1036-only), LDS double-buffered Q8_1 staging, 4B global loads, in-order K lanes. CPU validation vs true GEMM 100% bf16-identical. The wheel builds from the fetched pinned tree (the repo root is the buildable `pip wheel .` source with the ROCm backend grafted in); the pin must resolve in the fork and `scripts/build-wheel.sh` fails loud otherwise. The committed vendor/mlx-rocm-upstream/ tree is a byte-verified PARTIAL reference snapshot — NOT the build input. GDN tail fusion + graph-decode diagnostics on the decode path; launcher pointer fix (host Data* -> gpu_ptr<T>) for the deterministic HSA memory fault. Gates G1/G2 pass (maxdiff 0.0). See docs/quickstart.md."
   },
   "build": {
     "hip_architectures": "gfx1201",
