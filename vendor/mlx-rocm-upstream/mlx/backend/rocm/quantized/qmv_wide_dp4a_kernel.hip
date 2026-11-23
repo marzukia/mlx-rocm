@@ -71,11 +71,16 @@ __global__ void __launch_bounds__(32) qmv_wide_dp4a_xquant_kernel(
 #pragma unroll
   for (int j = 0; j < 8; ++j)
     mx = fmaxf(mx, fabsf(static_cast<float>(pv[j])));
-  // 8-lane column group: in-group butterfly (o=4,2,1); a wider offset
-  // (16/8) would cross the group boundary. All 8 lanes then hold the
-  // group max - no smem round-trip (kept out of the O3 smem-fold path).
+  // full 32-lane butterfly (o=16,8,4,2,1): the block is one 32-lane
+  // wave, each lane holds 8 of the 256 tile values, so the abs-max
+  // must reduce across all 32 lanes. (The T3388 earlier in-group
+  // o=4/2/1 form was a misread of the geometry - the 8-lane column
+  // group belongs to the main kernel, not to xquant; the truncated
+  // reduction made sx a group max, clipped the int8 values, and
+  // garbled the output. The 5-stage form is the one the CPU model
+  // validated.)
 #pragma unroll
-  for (int o = 4; o > 0; o >>= 1)
+  for (int o = 16; o > 0; o >>= 1)
     mx = fmaxf(mx, __shfl_down(mx, o));
   float sx = (mx > 0.0f) ? (mx / 127.0f) : 1.0f;
   float inv = 1.0f / sx;
