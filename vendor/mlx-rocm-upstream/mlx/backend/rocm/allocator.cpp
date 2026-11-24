@@ -1492,6 +1492,17 @@ static size_t host_shadow_chunk_bytes() {
   return chunk;
 }
 
+// T3434 (pool fix, release-on-completion): with MLX_ROCM_RELEASE_SHADOW=1 the
+// pinned host shadow is freed at H2D completion (the flush paths below), so the
+// driver memfd arena (system Shmem) does not hold weight bytes for the buffer
+// lifetime. The next D2H need re-allocates via ensure_host_shadow. Default off
+// = stock behavior (the unpatched control arm runs this lib with the env unset
+// or with the pre-patch lib).
+static bool g_release_shadow = [] {
+  const char* e = getenv("MLX_ROCM_RELEASE_SHADOW");
+  return e != nullptr && e[0] == '1';
+}();
+
 // run-515 (k3): chunked host-shadow staging copy. Each chunk is issued on its own freshly created stream (hipMemcpyAsync + hipStreamSynchronize) so no chunk inherits a queue with a pending un-retired KFD completion event — the per-chunk queue reset is the hang-avoidance property (run-460).
 // run-461-class segfault fix: the run-460 design also DESTROYED the per-chunk stream (hipStreamDestroy). On gfx1201 the KFD completion event of an async copy is not retired promptly; destroying the per-chunk stream while that event is still pending races the runtime stream/event bookkeeping and segfaults in this function (run-506: core x4 in the GDN bf16 D2H, backtrace at the chunked-copy region). The stream is therefore intentionally NOT destroyed: one small bounded leak per chunk per shadow copy (a 1.2 GB copy leaks 12 streams; negligible for a server process) in exchange for no stream-lifecycle race.
 static hipError_t shadow_chunked_copy(void* dst, const void* src, size_t size,
@@ -1565,6 +1576,7 @@ void RocmAllocator::ensure_host_shadow(RocmBuffer& buf) {
   if (buf.host_shadow == nullptr) {
     hipError_t err =
         hipHostMalloc(&buf.host_shadow, buf.size, hipHostMallocDefault);
+    buf.shadow_release_pending = false; // fresh backing supersedes any pending
     if (err != hipSuccess) {
       buf.host_shadow = nullptr;
       std::ostringstream oss;
@@ -1601,10 +1613,24 @@ void RocmAllocator::flush_host_shadow(RocmBuffer& buf) {
     hipError_t mc = hipMemcpyAsync(buf.data, buf.host_shadow, buf.size,
                                   hipMemcpyHostToDevice, cs);
     g1_check_hip("hipMemcpyAsync H2D (flush_host_shadow in-capture)", mc);
+    if (g_release_shadow) {
+      buf.shadow_release_pending = true;
+      mark_dirty_shadow(&buf); // T3435: stay tracked until the non-capture
+                              // pass frees it
+    }
   } else {
     hipError_t mc = shadow_chunked_copy(buf.data, buf.host_shadow, buf.size,
                                        hipMemcpyHostToDevice);
     g1_check_hip("shadow_chunked_copy H2D (flush_host_shadow)", mc);
+    // T3434: release-on-completion. The H2D copy above is synced; the pinned
+    // shadow no longer holds live bytes. Free it here (the in-capture path
+    // keeps the shadow for launch-time re-delivery, so it is not released
+    // there). The next ensure_host_shadow re-allocates + D2H on demand.
+    if (g_release_shadow) {
+      hipError_t fr = hipFreeHost(buf.host_shadow);
+      buf.host_shadow = nullptr;
+      g1_check_hip("hipFreeHost (shadow release-on-completion)", fr);
+    }
   }
   buf.host_dirty = false;
 }
@@ -1616,15 +1642,32 @@ void RocmAllocator::mark_dirty_shadow(RocmBuffer* buf) {
 
 void RocmAllocator::flush_all_dirty_shadows() {
   std::lock_guard lock(mutex_);
-  for (auto* buf : dirty_shadows_) {
-    if (buf && buf->host_shadow && buf->host_dirty) {
-      hipError_t mc = shadow_chunked_copy(buf->data, buf->host_shadow, buf->size,
-                                         hipMemcpyHostToDevice);
-      g1_check_hip("shadow_chunked_copy H2D (flush_all_dirty_shadows)", mc);
-      buf->host_dirty = false;
+  const bool capturing = g_decode_capturing.load(std::memory_order_relaxed);
+  auto it = dirty_shadows_.begin();
+  while (it != dirty_shadows_.end()) {
+    auto* buf = *it;
+    if (buf && buf->host_shadow &&
+        (buf->host_dirty || buf->shadow_release_pending)) {
+      if (buf->host_dirty) {
+        hipError_t mc = shadow_chunked_copy(buf->data, buf->host_shadow,
+                                            buf->size, hipMemcpyHostToDevice);
+        g1_check_hip("shadow_chunked_copy H2D (flush_all_dirty_shadows)", mc);
+        buf->host_dirty = false;
+        if (capturing && g_release_shadow)
+          buf->shadow_release_pending = true; // T3435: node recorded
+                                             // in-graph: free later
+      }
+      if (g_release_shadow && !capturing) {
+        hipError_t fr = hipFreeHost(buf->host_shadow);
+        buf->host_shadow = nullptr;
+        buf->shadow_release_pending = false;
+        g1_check_hip("hipFreeHost (shadow release-on-completion, bulk)", fr);
+        it = dirty_shadows_.erase(it);
+        continue;
+      }
     }
+    ++it;
   }
-  dirty_shadows_.clear();
 }
 
 size_t RocmAllocator::get_active_memory() const {

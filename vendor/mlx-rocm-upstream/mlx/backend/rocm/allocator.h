@@ -42,6 +42,9 @@ struct RocmBuffer {
   // fallback (async pool failed to extend); free must use hipFree,
   // not hipFreeAsync (pool-memory-only).
   bool sync_alloc;
+  // T3435: flushed in-capture, free on the next non-capture
+  // pass. LAST member: positional brace-init sites (allocator.cpp 597/652/668/766/966/1385) keep their layout.
+  bool shadow_release_pending;
 };
 
 // ---------------------------------------------------------------------------
