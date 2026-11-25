@@ -2457,13 +2457,22 @@ void CommandEncoder::synchronize() {
     (void)hipGetLastError();
     return;
   }
-  (void)hipStreamSynchronize(stream_);
+  // S5 (t34XX repack-hunt): surface the sync result — an eval-1 runtime
+  // kernel fault (HSA memory fault) must throw at the eval boundary, not
+  // linger in the per-thread error slot to be misattributed to eval-2.
+  hipError_t se = hipStreamSynchronize(stream_);
+  if (se != hipSuccess)
+    throw std::runtime_error(std::string("[rocm] eval sync: hip error ") +
+                            std::to_string((int)se));
   auto p = std::make_shared<std::promise<void>>();
   std::future<void> f = p->get_future();
   add_completed_handler([p = std::move(p)]() { p->set_value(); });
   commit();
   f.wait();
-  (void)hipStreamSynchronize(stream_);
+  hipError_t se2 = hipStreamSynchronize(stream_);
+  if (se2 != hipSuccess)
+    throw std::runtime_error(std::string("[rocm] eval sync: hip error ") +
+                            std::to_string((int)se2));
   // Stream is fully drained. Non-cached (no-reuse) execs reference these Packs
   // until now; cached-exec Packs live in their ExecSlot (clr#138) and are NOT
   // in these vectors, so clearing here is safe.
