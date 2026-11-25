@@ -1268,7 +1268,16 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
           reinterpret_cast<block_q4_K*>(wq4));
     }
   }
-  stage4k("repack", hipGetLastError());
+  // S5 (t34XX repack-hunt): read the error slot ONCE and throw — the
+  // stage4k print is fprintf-only, and a swallowed repack failure would
+  // GEMM-on-garbage. wq4 is a valid buffer (the pool malloc_async throws
+  // on OOM; scratch miss falls to pool), so a failing repack launch must
+  // abort cleanly.
+  hipError_t repack_rc = hipGetLastError();
+  if (repack_rc != hipSuccess) {
+    throw std::runtime_error("[mmq] repack launch failed: hip error " +
+                            std::to_string((int)repack_rc));
+  }
   // GEMM-1 3b-2' TRIO: one-time wq4 byte dump per 6-class representative
   // (MMQ_AB_DUMP=1) = S1 input for the standalone trio. Dump after the
   // repack stage: the buffer is content-valid (fresh or cache-hit).
@@ -1349,7 +1358,10 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
   hipError_t rc = hipGetLastError();
   if (rc != hipSuccess) {
     fprintf(stderr, "[stage4k] mmq rc=%d\n", (int)rc);
-    CUDA_CHECK(hipGetLastError());
+    // S5 (t34XX repack-hunt): the old CUDA_CHECK(hipGetLastError()) re-read
+    // the per-thread slot (already consumed by the read into rc) and always
+    // saw hipSuccess — dead check. Check the same variable (single read).
+    CUDA_CHECK(rc);
   }
   stage4k("mmq", hipGetLastError());
   if (alloc_raw && !from_cache) {
