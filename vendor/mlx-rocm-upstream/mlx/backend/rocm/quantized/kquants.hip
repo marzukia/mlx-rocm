@@ -113,15 +113,18 @@ __global__ void kq_dequant_q2k(const uint8_t* __restrict__ in,
       float ml = minv * (s >> 4);
       #pragma unroll
       for (int l = 0; l < 16; ++l) {
-        // C: *y++ = dl * ((int8_t)((q[l] >> shift) & 3)) - ml;
-        o[n + l] = dl * ((q[l] >> shift) & 3) - ml;
+        // C: *y++ = dl * ((int8_t)((q[l] >> shift) & 3)) - ml; the y
+        // pointer streams 32 elements per j (o[n + 32*j + l]); the
+        // j term is required or j=3 overwrites j=0..2 and 192/256
+        // elements are never written (G1, NEON 2.5-bit lane).
+        o[n + 32 * j + l] = dl * ((q[l] >> shift) & 3) - ml;
       }
       s = sc[is++];
       dl = d * (s & 0xF);
       ml = minv * (s >> 4);
       #pragma unroll
       for (int l = 0; l < 16; ++l) {
-        o[n + 16 + l] = dl * ((q[16 + l] >> shift) & 3) - ml;
+        o[n + 32 * j + 16 + l] = dl * ((q[16 + l] >> shift) & 3) - ml;
       }
       shift += 2;
     }
