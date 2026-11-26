@@ -24,8 +24,7 @@ All line refs are origin/main unless prefixed `pin:` or `master:`.
   `gguf_tensor_to_f16`): exactly F32/F16/BF16/Q8_0/Q4_K/Q6_K/Q2_K/Q4_0/Q4_1;
   any other
   type hits `else { free(f16); errno = EINVAL; return NULL; }`. Claim (1)
-  VERIFIED: the card's fault string, type table, and ~5s pre-GEMM failure are
-  all reproducible from source.
+  VERIFIED: the card's fault string, type table, and ~5s pre-GEMM failure are all reproducible from source.
 - Note (bonus finding): the pin's gguflib.c block-size table (line 42) says
   `q2_k 256, 82` — the WRONG Q2_K size (84 B is correct); upstream fixed it in
   c495778 (2026-05-16, "fix Q2_K block size"). Inert for the in-tree raw path
