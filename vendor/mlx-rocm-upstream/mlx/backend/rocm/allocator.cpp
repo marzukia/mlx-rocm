@@ -1074,6 +1074,12 @@ RocmBuffer* RocmAllocator::arena_alloc(size_t size) {
   rb->host_backed = a.base_host;
   rb->host_shadow = nullptr;
   rb->host_dirty = false;
+  // PR #55 review F1: a reused arena wrapper owes no stale shadow tracking
+  // (the step-0 fix reset these on the malloc_async handout + the free
+  // paths; this fourth handout path was missed).
+  rb->host_flush_fails = 0;
+  rb->host_dead = false;
+  rb->shadow_release_pending = false;
   rb->alloc_stream = nullptr;
   a.offset += aligned;
   a.high_water = std::max(a.high_water, a.offset);
