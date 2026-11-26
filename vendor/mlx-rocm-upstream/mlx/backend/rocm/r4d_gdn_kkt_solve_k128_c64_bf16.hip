@@ -338,6 +338,12 @@ extern "C" int r4d_gdn_kkt_solve_k128_c64_bf16(const void* k, const void* beta, 
 {
   if (K != KD || bt != BT) return -1;
   if (H % Hg) return -2;
+  // T3531 / T34XX step-0 (c): drain the main-thread last-error slot
+  // BEFORE this launch. The flush path's check is record-only
+  // (non-consuming); a stale code left there used to be read here and
+  // thrown as "gate prep launch failed (N)" for a launch that never
+  // failed. The post-launch read below now sees only this launch's error.
+  (void)hipGetLastError();
   const int nchunk = B * ((T + BT - 1) / BT);
   dim3 grid(nchunk, Hg), blk(NTHR);
 #define KK_LAUNCH(R)                                                                          \
