@@ -6,14 +6,15 @@
 // and dequantizes INSIDE the op — no f32/bf16 weight materialization,
 // no f32 weight cache. The dequant math is the single-sourced,
 // G1-verified per-class k-quant math (Q4_K: kquant_q4k_math.hpp;
-// Q5_K/Q6_K/Q8_0: the WS3-verified ggml 6023692 ports); the file-layout
+// Q2_K/Q5_K/Q6_K/Q8_0: the WS3-verified ggml 6023692 ports); the file-layout
 // part is the access/iteration pattern (the 32-unit 4096-element window
 // even/odd unscramble, if present in the file), not the math.
 //
 // Layout parameters (supplied from the pinned per-tensor tables; format
 // semantics, not per-file constants in the kernels):
-//   ktype:      8 = Q8_0 (8 x 34 B 32-elem blocks per 256), 12 = Q4_K
-//               (144 B), 13 = Q5_K (176 B), 14 = Q6_K (210 B);
+//   ktype:      8 = Q8_0 (8 x 34 B 32-elem blocks per 256), 10 = Q2_K
+//               (84 B), 12 = Q4_K (144 B), 13 = Q5_K (176 B), 14 = Q6_K
+//               (210 B);
 //   mode:       0 = identity (super-blocks in canonical engine order),
 //               1 = mid_transpose (the 32-unit 4096-element window holds
 //               [unit 0][even engine units 2,4..,M][odd 1,3..,M-1][last]

@@ -56,6 +56,8 @@ inline int block_bytes_for(int ktype) {
   switch (ktype) {
     case 8:
       return 272;  // Q8_0: 8 x 34 B 32-element blocks
+    case 10:
+      return 84;  // Q2_K: 84 B / 256 elements (WS3 table)
     case 12:
       return 144;  // Q4_K
     case 13:
@@ -183,6 +185,22 @@ __device__ __forceinline__ float sub_exact(float a, float b) {
 template <int ktype>
 __device__ __forceinline__ float deq_elem(const uint8_t* __restrict__ blk,
                                int e) {
+  if (ktype == 10) {
+    // Q2_K: 84 B / 256 elements: sc[16] @0 (one byte per 16-element
+    // sub-block: low nibble = scale index, high nibble = min index),
+    // qs[64] @16 (2 bits / element: element e reads byte 16 +
+    // 32*(e/128) + (e%32), shift 2*((e/32)&3)), d f16 @80, min f16 @82.
+    // The WS3-verified kq_dequant_q2k (kquants.hip:95) op order:
+    // mul, mul, sub - each rounded once.
+    const float d = f16w(blk + 80);
+    const float minv = f16w(blk + 82);
+    const uint8_t s = blk[e / 16];
+    const int qv = (blk[16 + 32 * (e / 128) + (e % 32)]
+                    >> (2 * ((e / 32) & 3))) & 3;
+    const float dl = d * (float)(s & 0xF);
+    const float ml = minv * (float)(s >> 4);
+    return sub_exact(dl * (float)qv, ml);
+  }
   if (ktype == 12) {
     return rocm::kquant::dequant_elem(blk, e);
   }
@@ -489,6 +507,28 @@ __global__ void kqfg_mr_gemm_kernel(
           const int code = sub ? (qb[j] >> 4) : (qb[j] & 0xF);
           wv[j] = d1 * (float)code - m1;
         }
+      } else if (ktype == 10) {
+        // Q2_K: 84 B / 256: sc[16] @0 (low nibble = scale, high nibble =
+        // min; one byte per 16-element sub-block), qs[64] @16 (2 bits /
+        // element: element 16m+j reads byte 16 + 32*(m/8) + 16*(m%2) + j,
+        // one common shift 2*((m/2)&3) over the 16), d f16 @80, min f16
+        // @82. NVEC=16 = exactly one sub-block (e0 % 16 == 0): one uint4
+        // of quant bytes + one scale byte. The WS3-verified
+        // kq_dequant_q2k (kquants.hip:95) op order (mul, mul, sub).
+        const int m = e0 / 16;
+        const uint8_t s = sb[m];
+        const uint8_t* qb = sb + 16 + 32 * (m / 8) + 16 * (m % 2);
+        const uint4 q16 = *reinterpret_cast<const uint4*>(qb);
+        const uint8_t* q8 = reinterpret_cast<const uint8_t*>(&q16);
+        const int sh = 2 * ((m / 2) & 3);
+        const float d = f16w(sb + 80);
+        const float minv = f16w(sb + 82);
+        const float d1 = d * (float)(s & 0xF);
+        const float m1v = minv * (float)(s >> 4);
+        #pragma unroll
+        for (int j = 0; j < NVEC; ++j) {
+          wv[j] = sub_exact(d1 * (float)((q8[j] >> sh) & 3), m1v);
+        }
       } else {
         // ktype 8: Q8_0 - 8 x 34B sub-blocks (d f16 @0, 32 x int8 @2).
         const uint8_t* qsb = sb + 34 * q8sub + 2 + l0;
@@ -670,6 +710,8 @@ bool launch_gemm(const XT* x,
       } while (0)
     if (ktype == 8) {
       KQFG_MR_LAUNCH(8);
+    } else if (ktype == 10) {
+      KQFG_MR_LAUNCH(10);
     } else if (ktype == 12) {
       KQFG_MR_LAUNCH(12);
     } else if (ktype == 13) {
@@ -685,6 +727,9 @@ bool launch_gemm(const XT* x,
   dim3 grid((M + 63) / 64, (unsigned)NBS, 1);
   if (ktype == 8) {
     kqfg_gemm_kernel<XT, 8><<<grid, 256, 0, stream>>>(
+        x, wp, op, M, K, NBS, bb, mode, axis, group, keep_ends, pairs);
+  } else if (ktype == 10) {
+    kqfg_gemm_kernel<XT, 10><<<grid, 256, 0, stream>>>(
         x, wp, op, M, K, NBS, bb, mode, axis, group, keep_ends, pairs);
   } else if (ktype == 12) {
     kqfg_gemm_kernel<XT, 12><<<grid, 256, 0, stream>>>(
@@ -755,6 +800,9 @@ void launch_gather(const int32_t* idx,
   if (ktype == 8) {
     kqfg_gather_kernel<OutT, 8><<<dim3(blocks), 256, 0, stream>>>(
         idx, wp, op, B, K, NBS, bb, mode, axis, group, keep_ends, pairs);
+  } else if (ktype == 10) {
+    kqfg_gather_kernel<OutT, 10><<<dim3(blocks), 256, 0, stream>>>(
+        idx, wp, op, B, K, NBS, bb, mode, axis, group, keep_ends, pairs);
   } else if (ktype == 12) {
     kqfg_gather_kernel<OutT, 12><<<dim3(blocks), 256, 0, stream>>>(
         idx, wp, op, B, K, NBS, bb, mode, axis, group, keep_ends, pairs);
@@ -785,6 +833,9 @@ void launch_dequant(const uint8_t* wp,
   const int64_t blocks = (total + 255) / 256;
   if (ktype == 8) {
     kqfg_dequant_kernel<8><<<dim3(blocks), 256, 0, stream>>>(
+        wp, op, K, NBS, bb, mode, axis, group, keep_ends, pairs);
+  } else if (ktype == 10) {
+    kqfg_dequant_kernel<10><<<dim3(blocks), 256, 0, stream>>>(
         wp, op, K, NBS, bb, mode, axis, group, keep_ends, pairs);
   } else if (ktype == 12) {
     kqfg_dequant_kernel<12><<<dim3(blocks), 256, 0, stream>>>(
@@ -835,8 +886,8 @@ void check_layout(
   out.bb = block_bytes_for(ktype);
   if (out.bb < 0) {
     throw std::invalid_argument(
-        "kquant_file_*: ktype must be 8 (Q8_0), 12 (Q4_K), 13 (Q5_K) "
-        "or 14 (Q6_K).");
+        "kquant_file_*: ktype must be 8 (Q8_0), 10 (Q2_K), 12 (Q4_K), "
+        "13 (Q5_K) or 14 (Q6_K).");
   }
   if (w.dtype() != uint8 || w.shape().size() != 3) {
     throw std::invalid_argument(

@@ -41,7 +41,7 @@ void init_kquant_file(nb::module_& m) {
       R"pbdoc(
 y = x @ W with W dequantized IN-KERNEL from the file's raw 256-element
 super-block stream: x (..., M, K) f32/bf16 (N-D leading dims fold into
-M), w (K, N/256, block_bytes) uint8, y (..., M, N) in x's dtype. ktype: 8 = Q8_0 (BB 272), 12 = Q4_K (BB 144),
+M), w (K, N/256, block_bytes) uint8, y (..., M, N) in x's dtype. ktype: 8 = Q8_0 (BB 272), 10 = Q2_K (BB 84), 12 = Q4_K (BB 144),
 13 = Q5_K (BB 176), 14 = Q6_K (BB 210). mode: 0 = identity, 1 =
 mid_transpose (the 32-unit 4096-element window even/odd map). f32
 accumulation in k-order; per-element dequant bit-exact vs the pinned GGUF
