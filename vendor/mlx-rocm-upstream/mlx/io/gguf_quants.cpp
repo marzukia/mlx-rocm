@@ -226,7 +226,15 @@ void gguf_load_kquant_raw(
            "corrupt file?";
     throw std::runtime_error(msg.str());
   }
-  if (tensor.bsize != nblocks * (uint64_t)bpb) {
+  uint64_t nbytes64 = nblocks * (uint64_t)bpb;
+  // gguflib (pinned 8fa6eb65) derives bsize from its own type table,
+  // whose Q2_K entry is 82 B/block; the ggml block is 84 B (16 scales +
+  // 64 qs + 2 x f16; static_assert in ggml-common.h). Q5_K/Q6_K entries
+  // are correct (176/210). Accept the 82-based size for Q2_K only; the
+  // data region is contiguous and the exact geometry is fixed by the
+  // nelem % epb check above (corruption guard = the file sha256).
+  if (tensor.bsize != nbytes64 &&
+      !(bpb == 84 && tensor.bsize == nblocks * (uint64_t)(bpb - 2))) {
     std::ostringstream msg;
     msg << "[load_gguf] K-quant tensor '" << name
         << "' has a compressed byte size that does not match the "
@@ -234,11 +242,12 @@ void gguf_load_kquant_raw(
            "corrupt file?";
     throw std::runtime_error(msg.str());
   }
-  size_t nbytes = (size_t)nblocks * (size_t)bpb;
+  size_t nbytes = (size_t)nbytes64;
   array loaded_array(
       allocator::malloc(nbytes),
       Shape{(ShapeElem)nblocks, (ShapeElem)bpb},
       uint8);
+  std::memcpy(loaded_array.data<uint8_t>(), tensor.weights_data, nbytes);
   a.insert({name, loaded_array});
 }
 
