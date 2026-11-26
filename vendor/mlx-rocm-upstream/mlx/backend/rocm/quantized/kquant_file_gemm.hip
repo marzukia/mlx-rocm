@@ -41,6 +41,13 @@
 #include "mlx/kquant_file_gemm.h"
 #include "mlx/backend/rocm/quantized/kquant_file_gemm.h"
 
+// W1 Q2_K file path (wave-13 P1): the in-tree rdna4 mmq launcher for the raw
+// file bytes (defined in mmq/mmq.hip, same backend library).
+namespace rocm {
+bool mmq_q2k_file(const void* x, bool x_bf16, const void* w, void* out,
+                  bool dst_f32, int M, int N, int K, hipStream_t stream);
+}  // namespace rocm
+
 #include <hip/hip_bfloat16.h>
 #include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
@@ -1191,6 +1198,20 @@ void KQuantFileGemm::eval_gpu(
       }
       return 1;
     }();
+    // W1 Q2_K file path (wave-13 P1): decode (M <= mr_gate) Q2_K GEMV ->
+    // the in-tree rdna4 mmq dp4a (the 41.2 t/s control class). Raw-bytes
+    // feed requires the identity layout (mode 0, axis 0); any gate fail
+    // falls through to the kqfg path below.
+    if (ktype_ == 10 && mode == 0 && axis == 0 && M <= mr_gate) {
+      const int Nq = NBS * 256;
+      const bool ok_mmq = ::rocm::mmq_q2k_file(
+          xp, x.dtype() == bfloat16, wp,
+          out.dtype() == bfloat16 ? gpu_ptr<void>(out) : (void*)op,
+          out.dtype() == float32, M, Nq, K, stream);
+      if (ok_mmq) {
+        return;
+      }
+    }
     bool ok = (x.dtype() == float32)
         ? launch_gemm<float>(
               (const float*)xp, wp, op, M, K, NBS, bb, ktype_, mode, axis,

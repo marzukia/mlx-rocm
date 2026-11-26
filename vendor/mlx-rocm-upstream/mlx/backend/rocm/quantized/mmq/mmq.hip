@@ -313,7 +313,8 @@ __global__ void mmq_quant_g64_q8_0(const uint32_t* __restrict__ w,
 template <typename InT>
 __global__ void mmq_quant_in_q8_1_mmq(const InT* __restrict__ x,
                                      char* __restrict__ y, int M, int K,
-                                     int64_t total, bool ds4) {
+                                     int64_t total, bool ds4,
+                                     bool d2s6 = false) {
   int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= total) return;
   const int kb128 = K / 128;
@@ -324,6 +325,46 @@ __global__ void mmq_quant_in_q8_1_mmq(const InT* __restrict__ x,
 #pragma unroll
   for (int i = 0; i < 128; ++i) v[i] = static_cast<float>(xr[i]);
   char* yb = y + ((int64_t)k128 * M + m) * 144;
+  if (d2s6) {
+    // D2S6 header (upstream quantize_mmq_q8_1, MMQ_Q8_1_DS_LAYOUT_D2S6):
+    // d2s6[8] = {d0(0..63), d1(64..127), s1..s6}, vals_per_scale=64,
+    // vals_per_sum=16, s_g = d*sum(q) for 0..95 only; the Q2_K mma vecdot
+    // reads y_ds[0].x/.y as the two 64-scales, y_ds[1+k01/8] as the per-16
+    // sums, last-32 via mma(1,B). (W13 P1 fix, 2026-11-27: the DS4 header
+    // zeroes the min term and mis-scales the k01>=16 q term.)
+    float amax0 = 0.f;
+    float amax1 = 0.f;
+#pragma unroll
+    for (int i = 0; i < 64; ++i) amax0 = fmaxf(amax0, fabsf(v[i]));
+#pragma unroll
+    for (int i = 0; i < 64; ++i) amax1 = fmaxf(amax1, fabsf(v[64 + i]));
+    const float d_inv0 = amax0 > 0.f ? 127.f / amax0 : 0.f;
+    const float d_inv1 = amax1 > 0.f ? 127.f / amax1 : 0.f;
+    const float d0 = amax0 > 0.f ? 1.f / d_inv0 : 0.f;
+    const float d1 = amax1 > 0.f ? 1.f / d_inv1 : 0.f;
+    int qsum[6] = {0, 0, 0, 0, 0, 0};
+    int8_t q[128];
+#pragma unroll
+    for (int i = 0; i < 128; ++i) {
+      const float d_inv = i < 64 ? d_inv0 : d_inv1;
+      int t = (int)rintf(v[i] * d_inv);
+      t = max(-127, min(127, t));
+      q[i] = (int8_t)t;
+      if (i < 96) qsum[i / 16] += t;
+    }
+    *reinterpret_cast<half2*>(yb + 0) = __floats2half2_rn(d0, d1);
+    // d2s6[2+g] = (16g<64 ? d0 : d1)*qsum[g], g=0..5.
+#pragma unroll
+    for (int g = 0; g < 3; ++g) {
+      const float d_g0 = (2 * g < 4) ? d0 : d1;
+      const float d_g1 = (2 * g + 1 < 4) ? d0 : d1;
+      *reinterpret_cast<half2*>(yb + 4 + g * 4) =
+          __floats2half2_rn(d_g0 * (float)qsum[2 * g], d_g1 * (float)qsum[2 * g + 1]);
+    }
+    int8_t* qp = reinterpret_cast<int8_t*>(yb + 16);
+#pragma unroll
+    for (int i = 0; i < 128; ++i) qp[i] = q[i];
+  } else {
 #pragma unroll
   for (int sub = 0; sub < 4; ++sub) {
     float amax = 0.f;
@@ -360,6 +401,7 @@ __global__ void mmq_quant_in_q8_1_mmq(const InT* __restrict__ x,
     int8_t* qp = reinterpret_cast<int8_t*>(yb + 16 + sub * 32);
 #pragma unroll
     for (int i = 0; i < 32; ++i) qp[i] = q[i];
+  }
   }
 }
 
@@ -647,94 +689,6 @@ __global__ void mmq_repack_g64_q4k(const uint32_t* __restrict__ w,
   }
 }
 
-// GEMM-1 3b-2' A/B (jimmy 2026-11-19): transpose-requant. G64 (N,K)
-// K-fastest source -> FILE-order canonical q4_K blocks (K, N/256, 144):
-// file block (k, nblock) = 256 consecutive n at fixed k (the kqfg op's w
-// layout; the mmq repack is the transposed grouping, storage order). Same
-// requant math + qkx2/qs pack as mmq_repack_g64_q4k (the per-32
-// sub-blocks run over the n axis here; per-n-row G64 scale/bias - no
-// per-warp share). One 256-thread block per file block; one-time fill,
-// identity-cached by the caller.
-template <typename ST>
-__global__ void kqfg_ab_transpose_requant(const uint32_t* __restrict__ w,
-                                          const ST* __restrict__ s,
-                                          const ST* __restrict__ b,
-                                          block_q4_K* __restrict__ out,
-                                          int N, int K) {
-  const int nblock = blockIdx.x;
-  const int k = blockIdx.y;
-  const int tid = threadIdx.x;
-  const int n = nblock * 256 + tid;
-  __shared__ float s32[8], m32[8];
-  __shared__ uint8_t qs128[128];
-  const int warp = tid / 32;
-  const int lane = tid % 32;
-  block_q4_K* outb = out + (size_t)nblock + (size_t)k * (N / 256);
-  // source element (n, k): G64 nibble + per-n-row 64-group scale/bias
-  const uint32_t wv = w[(size_t)n * (K / 8) + (k / 8)];
-  const int q = (int)((wv >> (4 * (k % 8))) & 0xF);
-  const int64_t sb = (int64_t)n * (K / 64) + (k / 64);
-  const float sv = static_cast<float>(s[sb]);
-  const float bv = b ? static_cast<float>(b[sb]) : 0.f;
-  const float v = (float)q * sv + bv;
-  float vmin = v, vmax = v;
-  #pragma unroll
-  for (int o = 16; o > 0; o /= 2) {
-    vmin = fminf(vmin, __shfl_xor(vmin, o));
-    vmax = fmaxf(vmax, __shfl_xor(vmax, o));
-  }
-  if (lane == 0) {
-    s32[warp] = (vmax - vmin) / 15.0f;
-    m32[warp] = -vmin;
-  }
-  __syncthreads();
-  if (warp == 0) {
-    float dmax = 0.0f, mmax = 0.0f;
-    #pragma unroll
-    for (int c = 0; c < 8; ++c) {
-      dmax = fmaxf(dmax, s32[c]);
-      mmax = fmaxf(mmax, m32[c]);
-    }
-    const float d_super = dmax > 0.0f ? dmax / 63.0f : 1.0f;
-    const float dmin_super = mmax > 0.0f ? mmax / 63.0f : 1.0f;
-    uint8_t sc8[8], mn8[8];
-    #pragma unroll
-    for (int c = 0; c < 8; ++c) {
-      sc8[c] = (uint8_t) min(63, (int)roundf(s32[c] / d_super));
-      mn8[c] = (uint8_t) min(63, (int)roundf(m32[c] / dmin_super));
-    }
-    if (lane < 4) {
-      outb->scales[lane] = (uint8_t)((sc8[lane] & 0x3F) | (((sc8[lane + 4] >> 4) & 0x03) << 6));
-      outb->scales[4 + lane] = (uint8_t)((mn8[lane] & 0x3F) | (((mn8[lane + 4] >> 4) & 0x03) << 6));
-      outb->scales[8 + lane] = (uint8_t)((sc8[lane + 4] & 0x0F) | ((mn8[lane + 4] & 0x0F) << 4));
-    }
-    if (lane == 0) {
-      outb->dm = __floats2half2_rn(d_super, dmin_super);
-    }
-  }
-  __syncthreads();
-  const float s32c = s32[warp];
-  const float m32c = m32[warp];  // = -vmin
-  const int q4k = (s32c > 0.f)
-      ? (int) rintf((v + m32c) / s32c)
-      : 0;
-  const int q4kc = max(0, min(15, q4k));
-  if ((warp % 2) == 0) {
-    qs128[32 * (warp / 2) + lane] = (uint8_t)q4kc;
-  }
-  __syncthreads();
-  if ((warp % 2) == 1) {
-    qs128[32 * (warp / 2) + lane] =
-        (uint8_t)(qs128[32 * (warp / 2) + lane] | (q4kc << 4));
-  }
-  __syncthreads();
-  if (warp == 0) {
-    for (int l = lane; l < 128; l += 32) {
-      outb->qs[l] = qs128[l];
-    }
-  }
-}
-
 // Host launcher: the Q4_K-weight GLU fused mmq (the R6 recipe weight path).
 // x (M,K) f32 -> Q8_1-mmq activations (y slot); the G64 weights -> block_q4_K
 // (x slot, up + gate); the mmq Q4_K x Q8_1 dp4a kernel with the has_fusion
@@ -914,80 +868,16 @@ static void mmq_glu_q4k_g64(const float* x,
 // Fix: persistent raw-hipMalloc buffers keyed (N,K,stream)/(M,K,stream),
 // LRU-evicted past the cap - no per-dispatch alloc, no free, outside the pool
 // (no HWM retention). MLX_ROCM_MMQ_Q4K_SCRATCH=0 restores the legacy path.
-// Plan-D (2026-11-18, 3.7K lane): per-shape cap on the repack content
-// cache. MLX_ROCM_MMQ_REPACK_MAX_SHAPES = maximum number of cached
-// repacked weight buffers (the P1B23 LRU/drop-oldest eviction already
-// orders the entries; this adds a count bound). MLX_ROCM_MMQ_REPACK_MAX_BYTES
-// = optional byte-budget override for the same cache (the default is the
-// P1B23 8GB cap). Both unset = legacy (8GB byte cap, unlimited shapes).
-// The P1B24 repack-ON steady retention (+3.70GB vs repack OFF) is what
-// the cap bounds (~max_shapes x per-weight bytes, drop-oldest).
-static size_t mmq_repack_max_shapes() {
-  static const size_t v = [] {
-    const char* e = std::getenv("MLX_ROCM_MMQ_REPACK_MAX_SHAPES");
-    if (!e) {
-      return static_cast<size_t>(0);
-    }
-    long v = std::atol(e);
-    return v > 0 ? static_cast<size_t>(v) : static_cast<size_t>(0);
-  }();
-  return v;
-}
-static size_t mmq_repack_max_bytes() {
-  static const size_t v = [] {
-    const char* e = std::getenv("MLX_ROCM_MMQ_REPACK_MAX_BYTES");
-    if (!e) {
-      return static_cast<size_t>(0);
-    }
-    // F1 fix (t3171 review): plain atol only accepted a bare integer; add
-    // case-insensitive SI (1000-base) k/m/g suffixes so production arms can
-    // use a suffixed byte cap (8g = 8*1000^3, 500M = 500*1000^2). Unknown
-    // suffix or non-numeric = 0 (the legacy default path).
-    char* endp = nullptr;
-    unsigned long val = std::strtoul(e, &endp, 10);
-    if (endp != nullptr && *endp != '\0') {
-      switch (*endp) {
-        case 'k':
-        case 'K':
-          val *= 1000UL;
-          break;
-        case 'm':
-        case 'M':
-          val *= 1000UL * 1000UL;
-          break;
-        case 'g':
-        case 'G':
-          val *= 1000UL * 1000UL * 1000UL;
-          break;
-        default:
-          return static_cast<size_t>(0);
-      }
-    }
-    return val > 0 ? static_cast<size_t>(val) : static_cast<size_t>(0);
-  }();
-  return v;
-}
 struct mmq_scratch_cache {
   std::mutex mtx;
   std::unordered_map<uint64_t, std::pair<void*, size_t>> m;
   std::deque<uint64_t> lru;  // back = MRU
   size_t total = 0;
   size_t cap;
-  // Plan-D (2026-11-18, 3.7K lane): 0 = unlimited (legacy); otherwise
-  // the maximum number of cached shapes (eviction drops the LRU-oldest
-  // entry first, i.e. the deque front).
-  size_t max_entries;
-  explicit mmq_scratch_cache(size_t c, size_t me = 0) : cap(c), max_entries(me) {}
+  explicit mmq_scratch_cache(size_t c) : cap(c) {}
 };
-// Plan-D: the byte cap honors MLX_ROCM_MMQ_REPACK_MAX_BYTES (default:
-// the P1B23 8GB); the shape count honors MLX_ROCM_MMQ_REPACK_MAX_SHAPES
-// (default: unlimited).
-static mmq_scratch_cache g_wq4_cache(
-    mmq_repack_max_bytes() ? mmq_repack_max_bytes() : (8ULL << 30),
-    mmq_repack_max_shapes());
+static mmq_scratch_cache g_wq4_cache(8ULL << 30);   // 8GB
 static mmq_scratch_cache g_xq81_cache(1ULL << 30);  // 1GB
-// GEMM-1 3b-2' A/B v2: file-order (K, N/256, 144) transpose-requant cache.
-static mmq_scratch_cache g_bfile_cache(8ULL << 30);   // 8GB
 static bool mmq_scratch_enabled() {
   static const bool en = [] {
     const char* e = std::getenv("MLX_ROCM_MMQ_Q4K_SCRATCH");
@@ -1059,11 +949,7 @@ static bool mmq_scratch_try(mmq_scratch_cache& c, uint64_t key, size_t need, voi
     c.total -= it->second.second;
     c.m.erase(it);
   }
-  // Plan-D: the per-shape cap evicts the LRU-oldest entries first
-  // (drop-oldest = deque front) when the cache holds max_entries shapes.
-  while (!c.lru.empty() &&
-         (c.total + need > c.cap ||
-          (c.max_entries > 0 && c.lru.size() >= c.max_entries))) {
+  while (!c.lru.empty() && c.total + need > c.cap) {
     uint64_t old = c.lru.front();
     c.lru.pop_front();
     auto oit = c.m.find(old);
@@ -1080,27 +966,6 @@ static bool mmq_scratch_try(mmq_scratch_cache& c, uint64_t key, size_t need, voi
   *out = p;
   return true;
 }
-// GEMM-1 3b-2' A/B hook entry (defined in kquant_file_gemm.hip;
-// cloudy ruling 3b-2', 2026-11-18).
-// GEMM-1 3b-2' TRIO: the six in-model weight classes (M=512 basis;
-// LEG2 cfgq4k composition). Representative dumps: one tensor per class.
-static inline bool mmq_ab_class(int N, int K) {
-  return (N == 1024 && K == 4096) || (N == 4096 && K == 4096) ||
-         (N == 8192 && K == 4096) || (N == 12288 && K == 4096) ||
-         (N == 4096 && K == 12288) || (N == 248320 && K == 4096);
-}
-static inline int mmq_ab_class_idx(int N, int K) {
-  if (N == 1024 && K == 4096) return 0;
-  if (N == 4096 && K == 4096) return 1;
-  if (N == 8192 && K == 4096) return 2;
-  if (N == 12288 && K == 4096) return 3;
-  if (N == 4096 && K == 12288) return 4;
-  if (N == 248320 && K == 4096) return 5;
-  return -1;
-}
-extern "C" bool kqfg_ab_gemm(const void* x, bool x_bf16, const uint8_t* w,
-                             void* out, bool dst_f32, int M, int K, int NBS,
-                             hipStream_t stream);
 void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
                        const void* scales, const void* biases, void* out,
                        bool dst_f32, int M, int N, int K,
@@ -1111,93 +976,6 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
 
   const int64_t w_total256 = (int64_t)N * K / 256;  // q4_K blocks per weight
   const int64_t x_tiles = (int64_t)M * (K / 128);
-  // GEMM-1 3b-2' A/B hook v2 (jimmy 2026-11-19): MLX_ROCM_MMQ_Q4K_KQFILE=1
-  // -> swap the GEMM op ONLY. The W1 kqfg op needs FILE-order 144B blocks
-  // (256 consecutive n at fixed k); the G64 storage is (N, K) K-fastest
-  // (layout test: storage-order cos 0.998 vs file-order cos -0.000), so a
-  // transpose-requant fill (kqfg_ab_transpose_requant) produces the
-  // file-order buffer, cached per weight identity (LRU 8GB, same
-  // structure as the repack cache; one-time fill lands in the WARM pass)
-  // and feeds the W1 kernel (k-order f32 accumulation, in-kernel dequant,
-  // in-kernel RNE output cast). The wq4 repack + xq81 quant + the ported
-  // mmq are all skipped in this branch (HBM class <= the control arm).
-  // Default off = bit-identical mmq path (the A/B control self-check vs
-  // leg-2 CTRL).
-  static const bool kqfile_env = [] {
-    const char* e = std::getenv("MLX_ROCM_MMQ_Q4K_KQFILE");
-    return e != nullptr && e[0] == '1';
-  }();
-  if (kqfile_env) {
-    const size_t need_bf = (size_t)w_total256 * 144;
-    const uint64_t bf_key = mmq_wkey(w, scales, biases, N, K, stream, x_bf16);
-    const bool bf_valid =
-        mmq_scratch_peek(g_bfile_cache, bf_key, need_bf) != nullptr;
-    void* bfile = nullptr;
-    if (!mmq_scratch_try(g_bfile_cache, bf_key, need_bf, &bfile) || !bfile) {
-      fprintf(stderr, "[kqfg-ab] bfile alloc fail M=%d N=%d K=%d\n", M, N, K);
-      return;
-    }
-    if (!bf_valid) {
-      dim3 gridbf(N / 256, K, 1);
-      if (x_bf16) {
-        kqfg_ab_transpose_requant<hip_bfloat16><<<gridbf, 256, 0, stream>>>(
-            reinterpret_cast<const uint32_t*>(w),
-            reinterpret_cast<const hip_bfloat16*>(scales),
-            reinterpret_cast<const hip_bfloat16*>(biases),
-            reinterpret_cast<block_q4_K*>(bfile), N, K);
-      } else {
-        kqfg_ab_transpose_requant<float><<<gridbf, 256, 0, stream>>>(
-            reinterpret_cast<const uint32_t*>(w),
-            reinterpret_cast<const float*>(scales),
-            reinterpret_cast<const float*>(biases),
-            reinterpret_cast<block_q4_K*>(bfile), N, K);
-      }
-      if (hipGetLastError() != hipSuccess) {
-        fprintf(stderr, "[kqfg-ab] bfile fill rc=%d M=%d N=%d K=%d\n",
-                (int)hipGetLastError(), M, N, K);
-        return;
-      }
-      // KQFG-AB-DUMP (v4/TRIO): one-time bfile byte dump per 6-class
-      // representative (S2 input) for CPU verification of the
-      // transpose-requant kernel.
-      // Curation (persona scrub): the dump dir is env-var-driven - the
-      // KQFG_AB_DUMP value is the dir when path-like ("/" or "."-relative),
-      // the CWD otherwise (value = 1 or any bare token arms it).
-      const char* kqdump_env = std::getenv("KQFG_AB_DUMP");
-      if (kqdump_env != nullptr && mmq_ab_class(N, K)) {
-        static bool bfdumped[6] = {false, false, false, false, false, false};
-        int ci = mmq_ab_class_idx(N, K);
-        if (ci >= 0 && !bfdumped[ci]) {
-          bfdumped[ci] = true;
-          void* hd = nullptr;
-          if (hipMallocHost(&hd, need_bf) == hipSuccess && hd) {
-            hipMemcpyAsync(hd, bfile, need_bf, hipMemcpyDeviceToHost, stream);
-            if (hipStreamSynchronize(stream) == hipSuccess) {
-              char fn[256];
-              const char* dump_dir = (kqdump_env[0] == '/' || kqdump_env[0] == '.') ? kqdump_env : ".";
-              snprintf(fn, sizeof(fn), "%s/bfiledump-N%dk%d.bin", dump_dir, N, K);
-              FILE* f = fopen(fn, "wb");
-              if (f) {
-                fwrite(hd, 1, need_bf, f);
-                fclose(f);
-              }
-              fprintf(stderr, "[kqfg-ab] bfile dumped %zu bytes N=%d K=%d\n",
-                      need_bf, N, K);
-            }
-            hipFreeHost(hd);
-          }
-        }
-      }
-    }
-    const bool ok = kqfg_ab_gemm(x, x_bf16, (const uint8_t*)bfile, out,
-                                  dst_f32, M, K, (int)(N / 256), stream);
-    if (!ok) {
-      fprintf(stderr, "[kqfg-ab] launch fail M=%d N=%d K=%d\n", M, N, K);
-    }
-    return;
-  }
-
-
   // P1B4-SCRATCH-FIX (2026-11-17, RCA t3116 accepted 05:53Z/05:56Z, op
   // order 06:1xZ): route the per-dispatch scratch through the hardened
   // rocm allocator pool. Raw hipMalloc/hipFree per call bypassed the pool
@@ -1269,36 +1047,6 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
     }
   }
   stage4k("repack", hipGetLastError());
-  // GEMM-1 3b-2' TRIO: one-time wq4 byte dump per 6-class representative
-  // (MMQ_AB_DUMP=1) = S1 input for the standalone trio. Dump after the
-  // repack stage: the buffer is content-valid (fresh or cache-hit).
-  // Curation (persona scrub): the dump dir is env-var-driven (see the
-  // KQFG_AB_DUMP block above for the value semantics).
-  const char* wdump_env = std::getenv("MMQ_AB_DUMP");
-  if (wdump_env != nullptr && mmq_ab_class(N, K)) {
-    static bool wdumped[6] = {false, false, false, false, false, false};
-    int ci = mmq_ab_class_idx(N, K);
-    if (ci >= 0 && !wdumped[ci]) {
-      wdumped[ci] = true;
-      void* hd = nullptr;
-      if (hipMallocHost(&hd, need_wq4) == hipSuccess && hd) {
-        hipMemcpyAsync(hd, wq4, need_wq4, hipMemcpyDeviceToHost, stream);
-        if (hipStreamSynchronize(stream) == hipSuccess) {
-          char fn[256];
-          const char* dump_dir = (wdump_env[0] == '/' || wdump_env[0] == '.') ? wdump_env : ".";
-          snprintf(fn, sizeof(fn), "%s/wq4dump-N%dk%d.bin", dump_dir, N, K);
-          FILE* f = fopen(fn, "wb");
-          if (f) {
-            fwrite(hd, 1, need_wq4, f);
-            fclose(f);
-          }
-          fprintf(stderr, "[mmq-ab] wq4 dumped %zu bytes N=%d K=%d\n",
-                  need_wq4, N, K);
-        }
-        hipFreeHost(hd);
-      }
-    }
-  }
   if (x_bf16) {
     mmq_quant_in_q8_1_mmq<hip_bfloat16><<<(x_tiles + tb - 1) / tb, tb, 0, stream>>>(
         reinterpret_cast<const hip_bfloat16*>(x),
@@ -1360,75 +1108,6 @@ void mmq_q4k_g64(const void* x, bool x_bf16, const void* w,
   // P1B20: cached scratch persists across dispatches (no free)
 }
 
-// GEMM-1 3b-2' STANDALONE TRIO entry (jimmy, cloudy RULING v3 2026-11-18
-// 17:4xZ): raw GEMM on caller-provided weight bytes (wq4 = S1 our
-// orientation, bfile = S2 file orientation) through the RECORD launcher
-// (J128 / CFG path) + the xq81 quant. The host orientation (ne0, ne1, nb0)
-// is the only variable: S1 (ne0=K, ne1=N, nb0=K/256) vs S2 (ne0=N, ne1=K,
-// nb0=N/256) on the same weight bytes. No repack, no weight cache; xq81
-// staged via the persistent g_xq81_cache (record behavior: first dispatch
-// per (M,K,stream) fills, the rest hit). [abq4k] log under MLX_MMQ_CFG.
-// Returns false on the config fallback or a launch error.
-static volatile char MMQ_AB_TRIO_CANARY[] = "MMQ-ABTRIO-20261119";
-extern "C" const volatile char* mlx_rocm_mmq_abtrio_canary() {
-  return MMQ_AB_TRIO_CANARY;
-}
-extern "C" bool mmq_ab_gemm(const void* x, bool x_bf16, const void* wbuf,
-                            void* out, bool dst_f32, int M, int N, int K,
-                            int ne0, int ne1, int nb0, hipStream_t stream) {
-  ggml_backend_cuda_context ctx(0);
-  const int cc = GGML_CUDA_CC_OFFSET_AMD + 0x1201;
-  const size_t smpbo = ggml_cuda_info().devices[0].smpbo;
-  const int64_t x_tiles = (int64_t)M * (K / 128);
-  mlx::core::allocator::Buffer xq81_b{nullptr};
-  void* xq81 = nullptr;
-  const bool from_cache =
-      mmq_scratch_try(g_xq81_cache, mmq_key3(M, K, stream),
-                      (size_t)x_tiles * 144, &xq81) &&
-      xq81 != nullptr;
-  if (!from_cache) {
-    xq81_b = mlx::core::rocm::allocator().malloc_async(
-        (size_t)x_tiles * 144, 0, (void*)stream);
-    xq81 = xq81_b.raw_ptr();
-  }
-  const int tb = 256;
-  if (x_bf16) {
-    mmq_quant_in_q8_1_mmq<hip_bfloat16><<<(x_tiles + tb - 1) / tb, tb, 0,
-                                       stream>>>(
-        reinterpret_cast<const hip_bfloat16*>(x),
-        reinterpret_cast<char*>(xq81), M, K, x_tiles, /*ds4=*/true);
-  } else {
-    mmq_quant_in_q8_1_mmq<float><<<(x_tiles + tb - 1) / tb, tb, 0, stream>>>(
-        reinterpret_cast<const float*>(x),
-        reinterpret_cast<char*>(xq81), M, K, x_tiles, /*ds4=*/true);
-  }
-  if (hipGetLastError() != hipSuccess) return false;
-  int nthreads_best = 0;
-  int J_best = ggml_cuda_mmq_get_J_best(GGML_TYPE_Q4_K, M, false, cc, smpbo,
-                                        GGML_PREC_Q8, &nthreads_best);
-  if (const char* je = std::getenv("MLX_MMQ_J")) {
-    int jf = std::atoi(je);
-    if (jf >= 8 && jf <= 128 && jf % 8 == 0) J_best = jf;
-  }
-  const int I_val = ggml_cuda_mmq_get_I(GGML_TYPE_Q4_K, J_best, false, cc,
-                                        GGML_PREC_Q8);
-  if (J_best < 8 || N % I_val != 0) return false;
-  if (const char* cje = std::getenv("MLX_MMQ_CFG")) {
-    fprintf(stderr, "[abq4k] M=%d N=%d K=%d ne0=%d ne1=%d nb0=%d J=%d I=%d\n",
-            M, N, K, ne0, ne1, nb0, J_best, I_val);
-  }
-  float* dst = reinterpret_cast<float*>(out);
-  mmq_args args = {reinterpret_cast<const char*>(wbuf), GGML_TYPE_Q4_K,
-                   reinterpret_cast<const int*>(xq81), nullptr, nullptr,
-                   dst, nullptr, ne0, ne1, M, nb0, M, N,
-                   1, 1, 0, 0, 0,
-                   1, 1, 0, 0, 0,
-                   M, J_best, {}};
-  args.dst_bf16 = !dst_f32;
-  mul_mat_q_case<GGML_TYPE_Q4_K, GGML_PREC_Q8>(ctx, args, stream);
-  return hipGetLastError() == hipSuccess;
-}
-
 // P1 plan-B build-hygiene canary (host odr-use in mmq-host.hip: volatile
 // array, non-foldable load - the pattern of the B97T2FIX / G1 probes).
 static volatile char P1B_MMQ_PORT_CANARY[] = "P1B4-STDQS-20261117";
@@ -1440,12 +1119,6 @@ extern "C" const volatile char* mlx_rocm_mmq_p1b_canary() {
 static volatile char P1B23_REPACK_CANARY[] = "P1B23-REPACK-20261117";
 extern "C" const volatile char* mlx_rocm_mmq_p1b23_canary() {
   return P1B23_REPACK_CANARY;
-}
-// Plan-D (2026-11-18, 3.7K lane): per-shape repack cap canary - verify by
-// strings|grep on the built lib (harness-readable gate presence proof).
-static volatile char PLAN_D_REPACKCAP_CANARY[] = "PLAND-REPACKCAP-20261118";
-extern "C" const volatile char* mlx_rocm_plan_d_repackcap_canary() {
-  return PLAN_D_REPACKCAP_CANARY;
 }
 
 }  // namespace rocm

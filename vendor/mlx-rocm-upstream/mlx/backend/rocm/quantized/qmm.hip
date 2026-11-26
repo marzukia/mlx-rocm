@@ -63,9 +63,108 @@ __device__ inline float load_scale_value(ScaleT raw);
 #include <unordered_map>
 #include <set>
 
+namespace rocm {
+// W1 Q2_K file path (2026-11-26, wave-13 P1): the Q2_K decode mmq launcher.
+// The weights are RAW file bytes (canonical block_q2_K, 84B/256, zero-gap;
+// mode=0 identity - the wave-13 census found 0/410 mode-1 tensors), so there
+// is no repack: the raw w pointer feeds the x slot directly into the in-tree
+// Q2_K dp4a path (tile-x mmq.cuh:392/409, type cases 694/864, vecdot
+// mmq-vec-dot.cuh:613+, load-tiles 601, explicit instantiation
+// mmq-host.hip:124). x (M x K) is pre-quantized to the q8_1 mmq layout with
+// mmq_quant_in_q8_1_mmq (the Q4_K launcher's x path). Returns false when the
+// shape cannot be served - the caller (KQuantFileGemm::eval_gpu) falls back
+// to the kqfg path. Forward-declared in kquant_file_gemm.hip.
+bool mmq_q2k_file(const void* x, bool x_bf16, const void* w, void* out,
+                  bool dst_f32, int M, int N, int K, hipStream_t stream) {
+  ggml_backend_cuda_context ctx(0);
+  const int cc = GGML_CUDA_CC_OFFSET_AMD + 0x1201;  // gfx1201
+  const size_t smpbo = ggml_cuda_info().devices[0].smpbo;
+  const bool fallback = ggml_cuda_mmq_needs_fallback(M);
+  const int64_t x_tiles = (int64_t)M * (K / 128);
+  // J_best for the pad computation (the tile window reads J blocks per tile;
+  // M < J leaves rows J..M padded - the raw load is a flat J*36-int copy, so
+  // the buffer must carry (J-1) tail blocks or the last K window faults).
+  int J_best_pre = ggml_cuda_mmq_get_J_best(GGML_TYPE_Q2_K, M, fallback, cc,
+                                            smpbo, GGML_PREC_Q8, nullptr);
+  if (const char* je = std::getenv("MLX_MMQ_J")) {
+    const int jf = std::atoi(je);
+    if (jf >= 8 && jf <= 128 && jf % 8 == 0) J_best_pre = jf;
+  }
+  const int64_t x_tiles_pad = x_tiles + (J_best_pre > 0 ? J_best_pre - 1 : 15);
+  mlx::core::allocator::Buffer xq81_b{nullptr};
+  void* xq81 = nullptr;
+  xq81_b = mlx::core::rocm::allocator().malloc_async((size_t)x_tiles_pad * 144, 0,
+                                               (void*)stream);
+  xq81 = xq81_b.raw_ptr();
+  if (xq81 == nullptr) {
+    return false;
+  }
+  if (x_tiles_pad > x_tiles) {
+    hipMemsetAsync((char*)xq81 + x_tiles * 144, 0,
+                   (size_t)(x_tiles_pad - x_tiles) * 144, stream);
+  }
+  const int tb = 256;
+  if (x_bf16) {
+    mmq_quant_in_q8_1_mmq<hip_bfloat16>
+        <<<((unsigned)((x_tiles + tb - 1) / tb)), tb, 0, stream>>>(
+            reinterpret_cast<const hip_bfloat16*>(x),
+            reinterpret_cast<char*>(xq81), M, K, x_tiles, /*ds4=*/false,
+            /*d2s6=*/true);
+  } else {
+    mmq_quant_in_q8_1_mmq<float>
+        <<<((unsigned)((x_tiles + tb - 1) / tb)), tb, 0, stream>>>(
+            reinterpret_cast<const float*>(x),
+            reinterpret_cast<char*>(xq81), M, K, x_tiles, /*ds4=*/false,
+            /*d2s6=*/true);
+  }
+  if (hipGetLastError() != hipSuccess) {
+    return false;
+  }
+  int nthreads_best = 0;
+  int J_best = ggml_cuda_mmq_get_J_best(GGML_TYPE_Q2_K, M, fallback, cc,
+                                       smpbo, GGML_PREC_Q8, &nthreads_best);
+  if (const char* je = std::getenv("MLX_MMQ_J")) {
+    const int jf = std::atoi(je);
+    if (jf >= 8 && jf <= 128 && jf % 8 == 0) J_best = jf;
+  }
+  const int I_val = ggml_cuda_mmq_get_I(GGML_TYPE_Q2_K, J_best, fallback, cc,
+                                        GGML_PREC_Q8);
+  {
+    static std::atomic<bool> q2k_cfg_done{false};
+    if (q2k_cfg_done.exchange(true) == false) {
+      const ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config(GGML_TYPE_Q2_K, J_best, fallback, cc, GGML_PREC_Q8);
+      fprintf(stderr, "[cfgq2k] M=%d N=%d K=%d cc=%d fallback=%d J_best=%d nthreads_best=%d cfg.I=%d cfg.nthreads=%d nbytes=%zu I_dst=%d ntx=%d nty=%d\n",
+              M, N, K, cc, (int)fallback, J_best, nthreads_best, c.I, c.nthreads,
+              mmq_get_nbytes_shared(c, cc), c.I / 2,
+              (int)(( (size_t)M + c.J - 1) / c.J), (int)(( (size_t)N + c.I / 2 - 1) / (c.I / 2)));
+    }
+  }
+  if (J_best < 8 || I_val <= 0 || N % I_val != 0 || K % 256 != 0) {
+    fprintf(stderr, "[cfgq2k-gate] M=%d N=%d K=%d J_best=%d I_val=%d fallback=%d -> kqfg\n", M, N, K, J_best, I_val, (int)fallback);
+    return false;  // fall back to the kqfg path
+  }
+  mmq_args args = {reinterpret_cast<const char*>(w), GGML_TYPE_Q2_K,
+                   reinterpret_cast<const int*>(xq81), nullptr, nullptr,
+                   reinterpret_cast<float*>(out), nullptr, K, N, M, 1,
+                   M, N, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, M, J_best, {}};
+  args.dst_bf16 = !dst_f32;  // the GEMM writes out directly (PATCH81 class)
+  // Wave-13 P1-d (G1 true-base, 2026-11-27): the file weight buffer is
+  // [K/256, N] (K-major blocks); the mmq loader addresses kbx0 + i*stride_row_x
+  // in the upstream [N, K/256] convention. stride_row_x = 1 (N-row stride) and
+  // stride_kbx = N (K-block stride) resolve block (kb0, n) to kb0*N + n.
+  // (K=256 degenerate: 1 == K/256, the old value - the K=256 probes were clean.)
+  args.stride_kbx = N;
+  mul_mat_q_case<GGML_TYPE_Q2_K, GGML_PREC_Q8>(ctx, args, stream);
+  return hipGetLastError() == hipSuccess;
+}
+}  // namespace rocm
+
 namespace mlx::core {
 
 namespace rocm {
+
+
+
 
 // G1 first-error tracking (defined in device.cpp).
 extern void g1_check_hip(const char* call, hipError_t err, const char* phase = nullptr);
