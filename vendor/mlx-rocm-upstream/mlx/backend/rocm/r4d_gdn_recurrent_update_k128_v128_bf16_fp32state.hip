@@ -115,6 +115,12 @@ extern "C" int r4d_gdn_recurrent_update_k128_v128_bf16_fp32state(
 {
   if (K != RU_K || V != RU_V) return -1;
   if (H % Hg) return -2;
+  // T3531 / T34XX step-0 (c): drain the main-thread last-error slot
+  // BEFORE this launch. The flush path's check is record-only
+  // (non-consuming); a stale code left there used to be read here and
+  // thrown as "gate prep launch failed (N)" for a launch that never
+  // failed. The post-launch read below now sees only this launch's error.
+  (void)hipGetLastError();
   // Fill the machine: at one batch the (B, H) grid is 32 workgroups. Split a
   // head's v rows until there are at least 64 workgroups, but never past four
   // (that is 64 threads, two waves).

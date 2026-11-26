@@ -356,6 +356,10 @@ RocmBuffer* SmallSizePool::malloc() {
   b->buf.host_backed = !data_managed_;
   b->buf.host_shadow = nullptr;
   b->buf.host_dirty = false;
+  // T34XX step-0 (i): a recycled block owes no stale shadow tracking
+  // (the :357-358 pattern, extended to the new fields).
+  b->buf.host_flush_fails = 0;
+  b->buf.host_dead = false;
   b->buf.alloc_stream = nullptr;
   return &b->buf;
 }
@@ -474,6 +478,10 @@ RocmAllocator::RocmAllocator()
 
 // CUDA free_async
 void RocmAllocator::free_async(RocmBuffer& buf, void* stream_v) {
+  // T34XX step-0 (i): drop from tracking before the struct/memory dies.
+  // Caller holds mutex_ (buffer_cache release callback + free_rocm_buffer,
+  // both invoked from free()/malloc_async lock scopes).
+  untrack_shadow(&buf);
   if (buf.host_shadow) {
     (void)hipHostFree(buf.host_shadow);
     buf.host_shadow = nullptr;
@@ -621,8 +629,19 @@ Buffer RocmAllocator::malloc_async(size_t size, int device, void* stream_v) {
   // Find available buffer from cache.
   std::unique_lock lock(mutex_);
   RocmBuffer* buf = buffer_cache_.reuse_from_cache(size);
-  if (buf)
+  if (buf) {
     w1probe::note_reuse(size, buf->data);
+    // T34XX step-0 (ii): a recycled buffer never carries a stale shadow.
+    // The free() recycle path releases the shadow + resets these; this is
+    // the defense-in-depth re-check at handout (lock held).
+    if (buf->host_shadow) {
+      (void)hipHostFree(buf->host_shadow);
+    }
+    buf->host_shadow = nullptr;
+    buf->host_dirty = false;
+    buf->host_flush_fails = 0;
+    buf->host_dead = false;
+  }
   if (!buf) {
     // Scalar pool first (CUDA).
     if (size <= static_cast<size_t>(small_block_size)) {
@@ -892,6 +911,9 @@ void RocmAllocator::free(Buffer buffer, bool force) {
     return;
   }
   if (buf->size == 0) {
+    std::lock_guard lock(mutex_);
+    // T34XX step-0 (i): the struct dies: it owes no tracking entry.
+    untrack_shadow(buf);
     delete buf;
     return;
   }
@@ -908,6 +930,8 @@ void RocmAllocator::free(Buffer buffer, bool force) {
   // Alien sentinel (make_buffer): shell only.
   if (buf->alloc_stream == reinterpret_cast<void*>(static_cast<uintptr_t>(1))) {
     std::lock_guard lock(mutex_);
+    // T34XX step-0 (i): the struct dies: it owes no tracking entry.
+    untrack_shadow(buf);
     if (active_memory_ >= buf->size) {
       active_memory_ -= buf->size;
       dbg_live_add(buf->size, -1);
@@ -927,6 +951,18 @@ void RocmAllocator::free(Buffer buffer, bool force) {
   std::unique_lock lock(mutex_);
   active_memory_ -= buf->size;
   dbg_live_add(buf->size, -1);
+  // T34XX step-0 (i): a recycled buffer owes no pending H2D. Release the
+  // shadow, reset the tracking fields, and drop it from the dirty set in
+  // the same statement that recycles it. The reuse path re-checks the
+  // fields as defense in depth.
+  if (buf->host_shadow) {
+    (void)hipHostFree(buf->host_shadow);
+    buf->host_shadow = nullptr;
+  }
+  buf->host_dirty = false;
+  buf->host_flush_fails = 0;
+  buf->host_dead = false;
+  untrack_shadow(buf);
   // Always recycle; never hipFree on the free() path.
   //
   // rocprof: 90–500 ms GPU idle gaps right before fused_adamw were almost
@@ -985,6 +1021,9 @@ void RocmAllocator::release(Buffer buffer) {
   const bool alien =
       buf->alloc_stream == reinterpret_cast<void*>(static_cast<uintptr_t>(1));
   if (alien) {
+    std::lock_guard lock(mutex_);
+    // T34XX step-0 (i): the struct dies: it owes no tracking entry.
+    untrack_shadow(buf);
     delete buf;
     return;
   }
@@ -1503,6 +1542,9 @@ static bool g_release_shadow = [] {
   return e != nullptr && e[0] == '1';
 }();
 
+// T34XX step-0 (a): bounded flush-failure retry before mark-dead.
+static const int kShadowFlushMaxRetries = 3;
+
 // run-515 (k3): chunked host-shadow staging copy. Each chunk is issued on its own freshly created stream (hipMemcpyAsync + hipStreamSynchronize) so no chunk inherits a queue with a pending un-retired KFD completion event — the per-chunk queue reset is the hang-avoidance property (run-460).
 // run-461-class segfault fix: the run-460 design also DESTROYED the per-chunk stream (hipStreamDestroy). On gfx1201 the KFD completion event of an async copy is not retired promptly; destroying the per-chunk stream while that event is still pending races the runtime stream/event bookkeeping and segfaults in this function (run-506: core x4 in the GDN bf16 D2H, backtrace at the chunked-copy region). The stream is therefore intentionally NOT destroyed: one small bounded leak per chunk per shadow copy (a 1.2 GB copy leaks 12 streams; negligible for a server process) in exchange for no stream-lifecycle race.
 static hipError_t shadow_chunked_copy(void* dst, const void* src, size_t size,
@@ -1603,6 +1645,7 @@ void RocmAllocator::flush_host_shadow(RocmBuffer& buf) {
     return;
   }
   hipStream_t cs = rocm::capture_stream();
+  hipError_t mc;
   if (g_decode_capturing.load(std::memory_order_relaxed) && cs) {
     // In-capture: the blocking legacy hipMemcpy 906s (the legacy stream
     // cannot depend on a capturing stream) and a failed flush is silent -
@@ -1610,7 +1653,7 @@ void RocmAllocator::flush_host_shadow(RocmBuffer& buf) {
     // stream instead: the node is captured, neutralized at end_record, and
     // re-delivered from the pinned shadow before every launch (the slot
     // re-delivery pattern) - the value reaches VRAM at launch time.
-    hipError_t mc = hipMemcpyAsync(buf.data, buf.host_shadow, buf.size,
+    mc = hipMemcpyAsync(buf.data, buf.host_shadow, buf.size,
                                   hipMemcpyHostToDevice, cs);
     g1_check_hip("hipMemcpyAsync H2D (flush_host_shadow in-capture)", mc);
     if (g_release_shadow) {
@@ -1619,7 +1662,7 @@ void RocmAllocator::flush_host_shadow(RocmBuffer& buf) {
                               // pass frees it
     }
   } else {
-    hipError_t mc = shadow_chunked_copy(buf.data, buf.host_shadow, buf.size,
+    mc = shadow_chunked_copy(buf.data, buf.host_shadow, buf.size,
                                        hipMemcpyHostToDevice);
     g1_check_hip("shadow_chunked_copy H2D (flush_host_shadow)", mc);
     // T3434: release-on-completion. The H2D copy above is synced; the pinned
@@ -1632,12 +1675,38 @@ void RocmAllocator::flush_host_shadow(RocmBuffer& buf) {
       g1_check_hip("hipFreeHost (shadow release-on-completion)", fr);
     }
   }
-  buf.host_dirty = false;
+  // T34XX step-0 (a): dead code (0 call sites) — patched for the floor's
+  // consistency; not exercised in this leg.
+  if (mc == hipSuccess) {
+    buf.host_flush_fails = 0;
+    buf.host_dirty = false;
+  } else {
+    buf.host_flush_fails++;
+    if (buf.host_flush_fails >= kShadowFlushMaxRetries) {
+      (void)hipHostFree(buf.host_shadow);
+      buf.host_shadow = nullptr;
+      buf.host_dirty = false;
+      buf.host_dead = true;
+    }
+    // else: keep host_dirty — retried at the next flush.
+  }
 }
 
 void RocmAllocator::mark_dirty_shadow(RocmBuffer* buf) {
   std::lock_guard lock(mutex_);
   dirty_shadows_.insert(buf);
+}
+
+// T34XX step-0 (i): remove a buffer from the shadow-tracking set. The
+// caller holds mutex_ (verified per site: free() zero-size takes it, the
+// alien/deferred/recycle paths and the buffer_cache release callbacks run
+// inside free()/malloc_async lock scopes; free_async documents it). A
+// buffer whose struct dies or whose device memory is released must never
+// stay in dirty_shadows_ — a later flush_all_dirty_shadows walk must only
+// see live, correctly tracked buffers (the SF6 1881-entry dirty set
+// carried a corrupted data+shadow pointer pair; the T3538 pin).
+void RocmAllocator::untrack_shadow(RocmBuffer* buf) {
+  dirty_shadows_.erase(buf);
 }
 
 void RocmAllocator::flush_all_dirty_shadows() {
@@ -1651,7 +1720,28 @@ void RocmAllocator::flush_all_dirty_shadows() {
       if (buf->host_dirty) {
         hipError_t mc = shadow_chunked_copy(buf->data, buf->host_shadow,
                                             buf->size, hipMemcpyHostToDevice);
+        // T34XX step-0 (b): the check stays record-only (diagnostic; see
+        // section 4.2).
         g1_check_hip("shadow_chunked_copy H2D (flush_all_dirty_shadows)", mc);
+        if (mc != hipSuccess) {
+          // T34XX step-0 (a): no-mark-clean integrity floor. A failed
+          // flush keeps the flag + the entry (retried at the next
+          // get_command_encoder); bounded, then mark-dead (drop tracking,
+          // free the shadow, surface on the next CPU read).
+          buf->host_flush_fails++;
+          if (buf->host_flush_fails >= kShadowFlushMaxRetries) {
+            (void)hipHostFree(buf->host_shadow);
+            buf->host_shadow = nullptr;
+            buf->host_dirty = false;
+            buf->shadow_release_pending = false;
+            buf->host_dead = true;
+            it = dirty_shadows_.erase(it);
+            continue;
+          }
+          ++it; // host_dirty stays true: retried next pass
+          continue;
+        }
+        buf->host_flush_fails = 0;
         buf->host_dirty = false;
         if (capturing && g_release_shadow)
           buf->shadow_release_pending = true; // T3435: node recorded
@@ -1665,6 +1755,19 @@ void RocmAllocator::flush_all_dirty_shadows() {
         it = dirty_shadows_.erase(it);
         continue;
       }
+      // T34XX step-0 (i): a flushed buffer with nothing pending owes
+      // nothing — drop it from tracking (the SF6 S7 dirty=1881 no-op
+      // FLUSHALL loop is the observable defect this closes). T3435
+      // pending entries stay.
+      if (!buf->shadow_release_pending) {
+        it = dirty_shadows_.erase(it);
+        continue;
+      }
+    } else if (buf && !buf->shadow_release_pending) {
+      // T34XX step-0 (i): inert entry (null shadow / not dirty): dead or
+      // already-flushed bookkeeping; drop it.
+      it = dirty_shadows_.erase(it);
+      continue;
     }
     ++it;
   }
@@ -1736,6 +1839,17 @@ void* Buffer::raw_ptr() {
     return nullptr;
   }
   auto& cbuf = *static_cast<rocm::RocmBuffer*>(ptr_);
+
+  // T34XX step-0 (a): a mark-dead buffer surfaces on the next CPU read —
+  // its flush failed kShadowFlushMaxRetries times and it was dropped from
+  // tracking; the device data may be stale and must never be silently
+  // consumed.
+  if (cbuf.host_dead) {
+    std::ostringstream oss;
+    oss << "host shadow flush failed " << rocm::kShadowFlushMaxRetries
+        << " times; buffer dropped; data may be stale.";
+    throw std::runtime_error(oss.str());
+  }
 
   // Alien buffer: make_buffer() wrapping an external host pointer.
   // Identified by the alien sentinel alloc_stream == (void*)1.

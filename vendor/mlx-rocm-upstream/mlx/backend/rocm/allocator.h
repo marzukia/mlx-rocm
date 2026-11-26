@@ -45,6 +45,10 @@ struct RocmBuffer {
   // T3435: flushed in-capture, free on the next non-capture
   // pass. LAST member: positional brace-init sites (allocator.cpp 597/652/668/766/966/1385) keep their layout.
   bool shadow_release_pending;
+  // T34XX step-0 (a): bounded flush-failure counter + mark-dead. LAST two
+  // members: the positional brace-init sites keep their layout.
+  int host_flush_fails;
+  bool host_dead;
 };
 
 // ---------------------------------------------------------------------------
@@ -142,6 +146,7 @@ class RocmAllocator : public allocator::Allocator {
   // Called before GPU kernel execution to ensure device buffers are current.
   void flush_all_dirty_shadows();
   void mark_dirty_shadow(RocmBuffer* buf);
+  void untrack_shadow(RocmBuffer* buf); // caller holds mutex_
 
   void* decode_arena_base_ptr() const {
     return decode_arena_.base;
