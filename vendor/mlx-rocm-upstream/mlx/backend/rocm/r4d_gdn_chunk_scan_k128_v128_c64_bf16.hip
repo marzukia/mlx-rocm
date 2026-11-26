@@ -897,6 +897,12 @@ extern "C" int r4d_gdn_gate_prep_c64_bf16(
     const void* g, const void* beta, void* g_cum, void* beta_f32,
     int B, int T, int H, void* stream)
 {
+  // T3531 / T34XX step-0 (c): drain the main-thread last-error slot
+  // BEFORE this launch. The flush path's check is record-only
+  // (non-consuming); a stale code left there used to be read here and
+  // thrown as "gate prep launch failed (N)" for a launch that never
+  // failed. The post-launch read below now sees only this launch's error.
+  (void)hipGetLastError();
   const int nc = (T + BT - 1) / BT;
   dim3 grid(nc, H, B), blk(32);
   hipLaunchKernelGGL(
@@ -996,6 +1002,12 @@ extern "C" int r4d_gdn_chunk_scan_k128_v128_c64_bf16(
     int Hg, int K, int V, int bt, float scale, void* stream)
 {
   if (K != KD || V != VD || bt != BT) return -1;
+  // T3531 / T34XX step-0 (c): drain the main-thread last-error slot
+  // BEFORE this launch. The flush path's check is record-only
+  // (non-consuming); a stale code left there used to be read here and
+  // thrown as "gate prep launch failed (N)" for a launch that never
+  // failed. The post-launch read below now sees only this launch's error.
+  (void)hipGetLastError();
   dim3 grid(V / BV, H, B), blk(NTHR);
   r4d_gdn_chunk_scan_kernel<<<grid, blk, 0, (hipStream_t)stream>>>(
       (const unsigned short*)q, (const unsigned short*)k, (const unsigned short*)v,
