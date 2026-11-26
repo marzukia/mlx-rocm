@@ -7,6 +7,7 @@ Counts d/dmin halves that parse as NaN or Inf across all 256-element blocks. The
 
 Exit 0 = no NaN/Inf halves found; 1 = issues found; 2 = usage/read error.
 """
+
 import struct
 import sys
 import numpy as np
@@ -64,7 +65,7 @@ def census(f, tens, base0, wants):
     tot_inf = 0
     bad = []
     n_tensors = 0
-    for (name, t, off, nel) in tens:
+    for name, t, off, nel in tens:
         if t != 10:
             continue
         if wants is not None and name not in wants:
@@ -98,7 +99,10 @@ def main(argv):
         return 2
     base0 = DS + (-DS) % 32
     n_tensors, tot_blocks, tot_nan, tot_inf, bad = census(f, tens, base0, wants)
-    print("base=%d Q2_K tensors=%d blocks=%d nan-halves=%d inf-halves=%d" % (base0, n_tensors, tot_blocks, tot_nan, tot_inf))
+    print(
+        "base=%d Q2_K tensors=%d blocks=%d nan-halves=%d inf-halves=%d"
+        % (base0, n_tensors, tot_blocks, tot_nan, tot_inf)
+    )
     for x in bad[:10]:
         print("BAD: %s nan=%d inf=%d" % x)
     return 1 if (tot_nan or tot_inf) else 0
