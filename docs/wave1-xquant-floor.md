@@ -145,3 +145,44 @@ kqfg-class-calibrated and unattainable on any mmq path.
   and header info (dims [5120, 1024], t=10) read-only from the box
   (neon, RX 9070 XT / gfx1201); wheel md5 re-verified = the record.
 - No GPU work, no builds, no kernel launches in this run.
+
+## 6b CONFABULATION INTERROGATION (orchestrator addendum, 2026-11-27 09:3xZ)
+
+Per the wave-16 ruling obligation (cloudy, 08:5xZ): the absurd-resource-number
+frame - a 22.9% rel floor = interrogate the metric. The x~N(0,0.1)
+near-cancellation battery inflates the relative metric; is the floor real for
+SERVE-QUALITY = token flips under greedy near-ties, or a metric artifact of
+the test battery? This section was appended by the orchestrator (the worker
+card landed without it; the wave-1 brief addendum was posted after the
+worker's brief-read phase).
+
+1. METRIC MECHANICS (DERIVED, labeled): the battery's max|d|/max|ref| is a
+   MAX-BASED relative metric on near-cancelling zero-mean inputs: outputs
+   |y[n]| cluster small (sum of K=5120 cancelling terms), so the relative
+   error's extreme tail is inflated where |y| ~ 0. The per-element q8_1 d2s6
+   RMS quantization noise is step/12 with step = 2*amax/127 per 64-group: for
+   x ~ N(0,0.1), per-64 amax ~ 0.1*2.65 ~ 0.265 -> RMS dx ~ 1.2e-3 ~ 1.2% of
+   sigma(x); the output RMS relative error is the same ~1e-2 class (dy =
+   sum(dx*W) scales with the same sqrt(K) as y). So: 2.29e-1 is REAL for the
+   stated metric (item 1 confirms it to 4 digits) but is the worst-case
+   relative number on adversarial near-cancellation inputs, not a typical
+   error. The typical class is ~1e-2 relative.
+2. SERVE-QUALITY READING: a greedy token flip requires |delta logit| > the
+   top-2 logit gap at a near-tie; at the ~1e-2 RMS class, flips are confined
+   to gaps below ~1e-2 relative - a small fraction of the softmax mass.
+   Record evidence: (a) the 41.2 t/s llama.cpp control (the reference-quality
+   lane control on the same file) runs the mmq q8_1 x-quantization class
+   (GGML_HIP + MMQ_MFMA) - the same architectural floor, same file, same box;
+   (b) the vehicle 2.5-bit run (mmq path active for M>1) produced coherent
+   output (5gram-dup-rate 0.000 on the adversarial d500x prompt). No
+   incoherence at this floor is on the record.
+3. NAMED CPU-SIDE SETTLING MEASUREMENT (zero-GPU, runnable pre-P1-e):
+   argmax-flip + near-tie-margin comparison from the record artifacts (numpy
+   W ref + numpy d2s6 replica): exact kqfg logits (x@W f32) vs mmq-floor
+   logits (d2s6-quantized x @ W) on (i) the g1v2 battery x and (ii) a
+   non-cancelling control (constant-positive x of the same scale). Report:
+   top-1 flip count, the top-2 gap distribution of the flipped items, and the
+   fraction of outputs with |delta| > gap. Expected: flips only at sub-delta
+   gaps; the max-relative number contracts on the non-cancelling control.
+   The serve-quality ruling then rides on this CPU number + the P1-e flip
+   A/B (token-agreement rate on real 27B decode), not on the literal metric.
