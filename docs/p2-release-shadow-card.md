@@ -97,8 +97,7 @@ shadow mode).** MLX_ROCM_RELEASE_SHADOW=1 does not reduce HBM — it is a host-s
 it frees the pinned host shadow at H2D completion, and that release is confirmed here
 (Shmem 10.12→1.15 GB, vRSS 9.67→1.21 GB, **−88%** steady; O_TMPFILE map channel read 0 in
 both arms, Shmem is the effective indicator). The HBM footprint (~15.9–16.6 GB = weights
-8.99 GB + KV + kqfg HBM staging + allocator overhead) exceeds the 14 G gate in both arms,
-and the shadow arm actually read +1.4–1.5 GB HBM over the stock arm phase-aligned
+8.99 GB + KV + kqfg HBM staging + allocator overhead) exceeds the 14 G gate in both arms, and the shadow arm actually read +1.4–1.5 GB HBM over the stock arm phase-aligned
 (unexplained; flagged for follow-up). Side findings: 1384 SharedSignalPool leak reproduced
 in the stock arm (== C7 SMOKE, load/prefill-dominated, not step-proportional); shadow
 decode 1.71× faster (0.631 vs 0.368 t/s, one run each); shadow arm segfaulted in the
