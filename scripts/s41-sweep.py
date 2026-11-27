@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 # S4(1) step-1: pre-loaded per-tensor kquant_file_gemm M=1 sweep with
-# per-call GPU event timing (mx events around each call; the rocprof tool of
-# record 1.3.2 is NO-TRACE on this box per fleet memory 255, so events are
-# the method). Weights are PRE-LOADED in HBM (one mx.load + one mx.eval =
-# single file read + one H2D pass, resident), then each tensor is timed
-# standalone at M=1 (x = zeros((1, K))). Two consecutive passes: pass 1 =
-# first-touch, pass 2 = steady (the lever-finding method). Primary = pass 2.
+# per-call GPU timing. GPU time = per-kernel durations from the
+# memory-255 SDK-injected rocprof kernel trace (this wheel has NO mx.Event
+# API; the 1.3.2 tool of record is NO-TRACE per fleet memory 255; the 1.1.0
+# build at /home/andryo/rcp/new724 traced in the two-call smoke). The trace
+# is written at process exit, so this script logs per-call wall-ns windows
+# (t0 before submit, t1 after mx.eval) to JSON; the host-side attributor
+# (s41-attribute.py) joins kernel rows to call windows by start timestamp.
+# Weights are PRE-LOADED in HBM (one mx.load + one mx.eval = single file
+# read + one H2D pass, resident), then each tensor is timed standalone at
+# M=1 (x = zeros((1, K))). Two consecutive passes: pass 1 = first-touch,
+# pass 2 = steady (the lever-finding method). Primary = pass 2.
 #
 # Arm C = wheel default (mr_gate=1 -> M=1 routes to mmq, the leg-4 wheel);
 # arm B = MLX_KQUANT_FILE_MR=0 (kqfg single-row). Arms are separate process
@@ -21,8 +26,8 @@
 #            is a bound figure for the embed leg, not the in-model op)
 #   small    the N=48 class (ssm_alpha/ssm_beta; dequant-once + tiny bf16
 #            matmul in-model; recorded, excluded from the gemm sweep)
-# SPLIT (primary) = pass-2 GPU-event sum of (lin + lmhead) vs the in-context
-# step wall (1566ms SMOKE / 2639ms SC-C p50).
+# SPLIT (primary) = pass-2 trace-attributed GPU sum of (lin + lmhead) vs the
+# in-context step wall (1566ms SMOKE / 2639ms SC-C p50).
 import argparse
 import hashlib
 import json
@@ -72,7 +77,7 @@ def main():
     a = ap.parse_args()
     t0 = time.time()
     mr = os.environ.get("MLX_KQUANT_FILE_MR")
-    log(f"SWEEP-START t0={t0:.2f} tag={a.tag} env_mr={mr}")
+    log(f"SWEEP-START t0={t0:.2f} tag={a.tag} env_mr={mr} pid={os.getpid()}")
     log(f"WHEEL {mx.__version__}")
     libmd5 = hashlib.md5()
     with open(LIB, "rb") as f:
@@ -120,17 +125,17 @@ def main():
                 continue
             tensors[b].append((name, v))
 
-    # one shared M=1 x row reused across tensors where K matches is NOT safe
-    # (K differs per tensor); allocate per tensor.
     res = {
         "tag": a.tag,
         "wheel": mx.__version__,
         "lib_md5": libmd5s,
         "env_mr": mr,
+        "pid": os.getpid(),
         "load_wall_s": t_load - t0,
         "n_raw": n_raw,
         "census": {b: census[b]["n"] for b in sorted(census)},
         "buckets": {},
+        "calls": [],  # (bucket, pass, tensor, t0_ns, t1_ns) windows for the attributor
     }
     for b in sweep_buckets:
         per = tensors[b]
@@ -148,38 +153,31 @@ def main():
                     K = v.shape[0]
                     w3 = v.reshape(K, v.shape[1] // 84, 84)
                     x = mx.zeros((1, K))
-                e0 = mx.Event()
-                e1 = mx.Event()
-                e0.record()
+                mx.eval(x)
+                t0c = time.perf_counter_ns()
                 y = mx.kquant_file.kquant_file_gemm(x, w3, KTYPE, MODE, AXIS, GROUP, KE, PR)
-                e1.record()
-                mx.eval(e1)
-                evs.append(e0.time(e1) * 1000.0)
+                mx.eval(y)
+                t1c = time.perf_counter_ns()
+                evs.append((t1c - t0c) / 1e6)
+                res["calls"].append([b, p, _n, t0c, t1c])
                 del y
             ar = np.array(evs)
             stat["passes"][f"p{p + 1}"] = {
-                "p50_ms": float(np.percentile(ar, 50)),
-                "mean_ms": float(ar.mean()),
-                "sum_ms": float(ar.sum()),
-                "min_ms": float(ar.min()),
-                "max_ms": float(ar.max()),
+                "wall_p50_ms": float(np.percentile(ar, 50)),
+                "wall_mean_ms": float(ar.mean()),
+                "wall_sum_ms": float(ar.sum()),
                 "wall_s": time.time() - t_p,
             }
         res["buckets"][b] = stat
-        log(f"BUCKET {b} n={len(per)} p2={json.dumps(stat['passes']['p2'])}")
+        log(f"BUCKET-WALL {b} n={len(per)} p2={json.dumps(stat['passes']['p2'])}")
 
-    # SPLIT vs the in-context step wall (primary = in-model gemm family,
-    # pass 2 / steady)
-    g2 = sum(res["buckets"][b]["passes"]["p2"]["sum_ms"] for b in ("lin", "lmhead"))
-    g1 = sum(res["buckets"][b]["passes"]["p1"]["sum_ms"] for b in ("lin", "lmhead"))
-    res["split"] = {
-        "gemm_family_pass2_sum_ms": g2,
-        "gemm_family_pass1_sum_ms": g1,
-        "vs_wall_smoke_1566ms": g2 / WALL_SMOKE_MS,
-        "vs_wall_scc_p50_2639ms": g2 / WALL_SCC_P50_MS,
-        "all_buckets_pass2_sum_ms": sum(res["buckets"][b]["passes"]["p2"]["sum_ms"] for b in sweep_buckets),
+    g2w = sum(res["buckets"][b]["passes"]["p2"]["wall_sum_ms"] for b in ("lin", "lmhead"))
+    res["split_wall"] = {
+        "gemm_family_pass2_wall_sum_ms": g2w,
+        "vs_wall_smoke_1566ms": g2w / WALL_SMOKE_MS,
+        "vs_wall_scc_p50_2639ms": g2w / WALL_SCC_P50_MS,
     }
-    log("SPLIT {}".format(json.dumps(res["split"])))
+    log("SPLIT-WALL {}".format(json.dumps(res["split_wall"])))
     os.makedirs(a.outdir, exist_ok=True)
     with open(os.path.join(a.outdir, a.tag + ".sweep.json"), "w") as f:
         json.dump(res, f, indent=1)

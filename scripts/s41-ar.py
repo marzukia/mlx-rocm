@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # S4(1) step-2: 64-token AR, both arms, the C7 harness class (vehicle model
-# glue byte-identical to c7run.py; CH=256 prefill, greedy, maxtok=64,
-# warmup-excl class = all 64 steps at this length). Adds per-step GPU event
-# timing (mx events around each decode step's forward + eval) on top of the
-# harness wall times, so the per-step GPU-time share is the step-1 SPLIT
-# analog in-context.
+# glue identical to c7run.py; CH=256 prefill, greedy, maxtok=64,
+# warmup-excl class = all 64 steps at this length). Per-step GPU time =
+# trace-attributed per-kernel sum (the memory-255 SDK-injected rocprof;
+# this wheel has NO mx.Event API); the host/sync split (submit wall vs
+# eval wall) is logged as the in-process cross-check, so the per-step
+# GPU-time share is the step-1 SPLIT analog in-context.
 #
 # Arm C = wheel default (mr_gate=1 -> M=1 routes to mmq); arm B =
 # MLX_KQUANT_FILE_MR=0 (kqfg single-row). Separate process runs; the sampler
@@ -249,8 +250,8 @@ def main():
     log(f"PREFILL-OK prefill_wall={t_pref - t_build:.1f}s")
 
     toks = list(ids)
-    step_times = []
-    step_gpu = []
+    step_times = []  # wall ms per step
+    steps_win = []  # [t0_ns, t_submit_ns, t1_ns] for the attributor
     margins = []
     maxlogs = []
     eos_at = None
@@ -258,7 +259,6 @@ def main():
         lrow = logits if logits.ndim == 1 else logits[0, -1]
         mx.eval(lrow)
         ln = np.asarray(mx.astype(lrow, mx.float32))
-        s0 = time.perf_counter()
         nt = int(np.argmax(ln))
         toks.append(nt)
         part = np.partition(ln, -2)
@@ -268,24 +268,20 @@ def main():
             eos_at = i
             log(f"EOS at step {i}")
             break
-        # per-step GPU event timing (forward + eval, same event class as
-        # the step-1 sweep)
-        g0 = mx.Event()
-        g1 = mx.Event()
-        g0.record()
+        # per-step timing: wall-ns windows (the trace attributor joins the
+        # kernel rows; the wheel has no event API) + host/sync split
+        t0c = time.perf_counter_ns()
         t = mx.array([[nt]])
         logits = model(t, cache=cache)
+        ts_c = time.perf_counter_ns()
         mx.eval(logits)
-        g1.record()
-        mx.eval(g1)
-        step_gpu.append(g0.time(g1) * 1000.0)
-        step_times.append(time.perf_counter() - s0)
+        t1c = time.perf_counter_ns()
+        step_times.append((t1c - t0c) / 1e6)
+        steps_win.append([t0c, ts_c, t1c])
     wall = float(sum(step_times))
     n_out = len(toks) - len(ids)
     st = np.array(step_times) if step_times else np.array([0.0])
-    sg = np.array(step_gpu) if step_gpu else np.array([0.0])
     st_w = st[WARMUP:] if len(st) > WARMUP else st
-    sg_w = sg[WARMUP:] if len(sg) > WARMUP else sg
     log(
         f"AR-OK out_tokens={n_out} decode_wall={wall:.2f}s "
         f"tok/s(all)={n_out / wall if wall > 0 else 0.0:.4f} "
@@ -296,13 +292,6 @@ def main():
         f"p95={1000 * float(np.percentile(st_w, 95)):.3f} "
         f"min={1000 * float(st_w.min()):.3f} max={1000 * float(st_w.max()):.3f}"
     )
-    log(
-        f"GPU-STEP ms p50={float(np.percentile(sg_w, 50)):.3f} "
-        f"mean={float(sg_w.mean()):.3f} sum={float(sg_w.sum()):.1f} "
-        f"min={float(sg_w.min()):.3f} max={float(sg_w.max()):.3f}"
-    )
-    gshare = float(sg_w.sum()) / (1000.0 * float(sum(st_w))) if sum(st_w) > 0 else 0.0
-    log(f"GPU-SHARE step_gpu_sum/step_wall={gshare:.4f}")
     outt = toks[len(ids) :]
     first20 = tok.decode(outt[:20])
     log("FIRST20: " + first20.replace("\n", " "))
@@ -320,7 +309,7 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     with open(os.path.join(OUT, a.tag + ".ids.txt"), "w") as f:
         f.write(" ".join(str(t) for t in outt))
-    np.save(os.path.join(OUT, a.tag + ".steppgpu.npy"), sg)
+    np.save(os.path.join(OUT, a.tag + ".steppwall.npy"), st)
     res = {
         "tag": a.tag,
         "env": env,
@@ -335,14 +324,12 @@ def main():
         "tps_all": n_out / wall if wall > 0 else 0.0,
         "ms_step_p50": 1000 * float(np.percentile(st_w, 50)),
         "ms_step_p95": 1000 * float(np.percentile(st_w, 95)),
-        "gpu_step_p50_ms": float(np.percentile(sg_w, 50)),
-        "gpu_step_mean_ms": float(sg_w.mean()),
-        "gpu_step_sum_ms": float(sg_w.sum()),
-        "gpu_share": (float(sg_w.sum()) / (1000.0 * float(sum(st_w))) if sum(st_w) > 0 else 0.0),
         "first20": first20,
         "margin_median": float(np.median(m)) if len(m) else None,
         "md5_first100": first100,
         "md5_full": full,
+        "pid": os.getpid(),
+        "steps": steps_win,
         "load_wall_s": t_load - t0,
         "build_wall_s": t_build - t_load,
         "prefill_wall_s": t_pref - t_build,

@@ -13,6 +13,10 @@ SMI=/opt/rocm/bin/rocm-smi
 LIB=/home/andryo/venv-ar/lib/python3.14/site-packages/mlx/lib/libmlx.so
 D=$R  # scripts live alongside the results
 ENVBASE="env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/home/andryo TMPDIR=/var/tmp/s41 HCC_AMDGPU_TARGET=gfx1201 HIP_VISIBLE_DEVICES=0"
+# memory-255 SDK-injected rocprof (1.1.0 build; the 1.3.2 tool of record is
+# NO-TRACE on this box): per-kernel trace CSV at process exit, written to
+# /home/andryo/marzuki-neon/<pid>_kernel_trace.csv
+PROF_ENV="LD_LIBRARY_PATH=/home/andryo/rcp/new724/tree/opt/rocm-7.2.4/lib:/home/andryo/t2246/libs LD_PRELOAD=/home/andryo/rcp/new724/tree/opt/rocm-7.2.4/lib/rocprofiler-sdk/librocprofiler-sdk-tool.so ROCPROFILER_LIBRARY_CTOR=1 ROCPROF_KERNEL_TRACE=1 ROCPROF_OUTPUT_FORMAT=csv"
 log() { echo "$(date -u +%FT%TZ) $*" | tee -a "$S"; }
 vram_b() { "$SMI" --showmeminfo vram 2>/dev/null | grep "Used Memory (B)" | sed -n 's/.*Used Memory (B): \([0-9]*\).*/\1/p' | head -1; }
 state() {
@@ -29,13 +33,22 @@ runpy() {  # runpy <tag> <script> <mr-env:0|1> [extra-args...]
   ( sleep 30; clocks "$TAG-mid" ) &
   local MID=$!
   if [ "$MR" = "0" ]; then
-    timeout -k 60 1800 $ENVBASE env MLX_KQUANT_FILE_MR=0 $PY "$D/$SC" --tag "$TAG" "$@" > "$R/$TAG.out" 2> "$R/$TAG.err"
+    timeout -k 60 1800 $ENVBASE env $PROF_ENV env MLX_KQUANT_FILE_MR=0 $PY "$D/$SC" --tag "$TAG" "$@" > "$R/$TAG.out" 2> "$R/$TAG.err"
   else
-    timeout -k 60 1800 $ENVBASE $PY "$D/$SC" --tag "$TAG" "$@" > "$R/$TAG.out" 2> "$R/$TAG.err"
+    timeout -k 60 1800 $ENVBASE env $PROF_ENV $PY "$D/$SC" --tag "$TAG" "$@" > "$R/$TAG.out" 2> "$R/$TAG.err"
   fi
   local rc=$?
   kill "$MID" 2>/dev/null
   log "RUN-DONE $TAG rc=$rc $(date -u +%FT%TZ)"
+  # collect the per-pid trace CSV (written at process exit)
+  local PID
+  PID=$(grep -a "pid=" "$R/$TAG.out" 2>/dev/null | head -1 | grep -oE "pid=[0-9]+" | cut -d= -f2)
+  if [ -n "$PID" ] && [ -f "/home/andryo/marzuki-neon/${PID}_kernel_trace.csv" ]; then
+    mv "/home/andryo/marzuki-neon/${PID}_kernel_trace.csv" "$R/trace-$TAG.csv"
+    log "TRACE-$TAG rows=$(wc -l < "$R/trace-$TAG.csv")"
+  else
+    log "TRACE-$TAG MISSING pid=$PID"
+  fi
   grep -aE "cfgq2k|Error|error|fault" "$R/$TAG.out" "$R/$TAG.err" 2>/dev/null | tail -6 | tee -a "$S"
   log "SSPOOL-WARN-$TAG count=$(grep -ac SharedSignalPool "$R/$TAG.err" 2>/dev/null || true)"
   state
@@ -46,7 +59,7 @@ flock -w 10800 9 || { log "S41-LOCK-TIMEOUT"; exit 1; }
 log "S41-START $(date -u +%FT%TZ) pid=$$ (lock held)"
 state
 log "PRE-LIB-MD5 $(md5sum "$LIB" | cut -d' ' -f1)"
-log "PRE-WHEEL $("$ENVBASE" $PY -c 'import mlx.core as mx; print(mx.__version__)' 2>&1 | grep -v AMDCUID | tail -1)"
+log "PRE-WHEEL $($ENVBASE $PY -c 'import mlx.core as mx; print(mx.__version__)' 2>&1 | grep -v AMDCUID | tail -1)"
 clocks pre
 # pre-state: the vehicle file
 md5sum /home/andryo/models/Qwen3.8-27B-Q2_K-plain.gguf > "$R/gguf.md5" 2>&1 || true
@@ -67,7 +80,7 @@ mx.eval(x)
 print("SVAL-ALIVE pid-ok", flush=True)
 time.sleep(45)
 PYEOF
-"$ENVBASE" $PY "$R/s41-samval.py" > "$R/samval.out" 2> "$R/samval.err" &
+env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/home/andryo TMPDIR=/var/tmp/s41 HCC_AMDGPU_TARGET=gfx1201 $PY "$R/s41-samval.py" > "$R/samval.out" 2> "$R/samval.err" &
 VPID=$!
 sleep 6
 bash "$D/s41-hostsample.sh" "$R/pat-val.txt" "$R/samp-val.log" 9 &
@@ -93,10 +106,17 @@ bash "$D/s41-hostsample.sh" "$R/pat-C.txt" "$R/samp-C.log" 80 &
 SPC=$!
 ( sleep 30; clocks "ar-C-mid" ) &
 MID=$!
-timeout -k 60 1800 $ENVBASE $PY "$D/s41-ar.py" --tag ar-C > "$R/ar-C.out" 2> "$R/ar-C.err"
+timeout -k 60 1800 $ENVBASE env $PROF_ENV $PY "$D/s41-ar.py" --tag ar-C > "$R/ar-C.out" 2> "$R/ar-C.err"
 echo "ar-C rc=$?" >> "$R/session.log"
 kill "$MID" "$SPC" 2>/dev/null
 log "RUN-DONE ar-C $(date -u +%FT%TZ)"
+PID=$(grep -a "pid=" "$R/ar-C.out" 2>/dev/null | head -1 | grep -oE "pid=[0-9]+" | cut -d= -f2)
+if [ -n "$PID" ] && [ -f "/home/andryo/marzuki-neon/${PID}_kernel_trace.csv" ]; then
+  mv "/home/andryo/marzuki-neon/${PID}_kernel_trace.csv" "$R/trace-ar-C.csv"
+  log "TRACE-ar-C rows=$(wc -l < "$R/trace-ar-C.csv")"
+else
+  log "TRACE-ar-C MISSING pid=$PID"
+fi
 grep -aE "cfgq2k|Error|error|fault" "$R/ar-C.out" "$R/ar-C.err" 2>/dev/null | tail -6 | tee -a "$S"
 log "SSPOOL-WARN-ar-C count=$(grep -ac SharedSignalPool "$R/ar-C.err" 2>/dev/null || true)"
 state
@@ -108,10 +128,17 @@ bash "$D/s41-hostsample.sh" "$R/pat-B.txt" "$R/samp-B.log" 80 &
 SPB=$!
 ( sleep 30; clocks "ar-B-mid" ) &
 MID=$!
-timeout -k 60 1800 $ENVBASE env MLX_KQUANT_FILE_MR=0 $PY "$D/s41-ar.py" --tag ar-B > "$R/ar-B.out" 2> "$R/ar-B.err"
+timeout -k 60 1800 $ENVBASE env $PROF_ENV env MLX_KQUANT_FILE_MR=0 $PY "$D/s41-ar.py" --tag ar-B > "$R/ar-B.out" 2> "$R/ar-B.err"
 echo "ar-B rc=$?" >> "$R/session.log"
 kill "$MID" "$SPB" 2>/dev/null
 log "RUN-DONE ar-B $(date -u +%FT%TZ)"
+PID=$(grep -a "pid=" "$R/ar-B.out" 2>/dev/null | head -1 | grep -oE "pid=[0-9]+" | cut -d= -f2)
+if [ -n "$PID" ] && [ -f "/home/andryo/marzuki-neon/${PID}_kernel_trace.csv" ]; then
+  mv "/home/andryo/marzuki-neon/${PID}_kernel_trace.csv" "$R/trace-ar-B.csv"
+  log "TRACE-ar-B rows=$(wc -l < "$R/trace-ar-B.csv")"
+else
+  log "TRACE-ar-B MISSING pid=$PID"
+fi
 grep -aE "cfgq2k|Error|error|fault" "$R/ar-B.out" "$R/ar-B.err" 2>/dev/null | tail -6 | tee -a "$S"
 log "SSPOOL-WARN-ar-B count=$(grep -ac SharedSignalPool "$R/ar-B.err" 2>/dev/null || true)"
 state
@@ -119,7 +146,7 @@ clocks post
 
 # --- post-state: venv SoT untouched
 log "POST-LIB-MD5 $(md5sum "$LIB" | cut -d' ' -f1)"
-log "POST-WHEEL $("$ENVBASE" $PY -c 'import mlx.core as mx; print(mx.__version__)' 2>&1 | grep -v AMDCUID | tail -1)"
+log "POST-WHEEL $($ENVBASE $PY -c 'import mlx.core as mx; print(mx.__version__)' 2>&1 | grep -v AMDCUID | tail -1)"
 state
 log "S41-END $(date -u +%FT%TZ)"
 flock -u 9

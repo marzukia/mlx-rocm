@@ -23,8 +23,8 @@ while [ "$n" -lt "$MAX" ]; do
   shmem=$(awk '/^Shmem:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)
   # 11-27 fix: extract the number after "Memory (B):" (do not grep the
   # device-index column).
-  vram=$("$SMI" --showmeminfo vram 2>/dev/null | grep "Memory (B)" \
-    | sed -n 's/.*Memory (B): \([0-9][0-9]*\).*/\1/p' | head -1)
+  vram=$("$SMI" --showmeminfo vram 2>/dev/null | grep "Used Memory (B)" \
+    | sed -n 's/.*Used Memory (B): \([0-9][0-9]*\).*/\1/p' | head -1)
   echo "$t vRSS_KB=${rsskb:-0} otmpfile_maps=${maps:-0} shmem_KB=${shmem:-0} vram_B=${vram:-0}" >> "$OUT"
   sleep 3
 done
