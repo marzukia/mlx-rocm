@@ -1,0 +1,109 @@
+# A/B lane - P2 six-class result (verbatim session output + derived table)
+#
+# Session: /home/andryo/gemm1-leg2/p2-session.out, 2026-11-27T18:00:10Z - 18:00:38Z
+# lib-ab3.so md5 4738da138f1e0d8613fa90da06a73355 (identity printed in-session);
+# venv SoT lib 070122d8b617093da104a1b5626cadbd saved/swapped/restored, md5-verified.
+# All six runs: hook ok (HOOK-RC 1), hipStreamSynchronize rc=0, no hang anywhere.
+
+## Derived table
+
+| class          | N x K     | sync wall | maxrel | rmsrel | frac_zero | nonzero rows (approx) | verdict |
+|----------------|-----------|-----------|--------|--------|-----------|-----------------------|---------|
+| n1024k4096     | 1024x4096 | 0.001     | 1.198  | 1.226  | 0.5000    | 512                   | CHECK   |
+| n4096k4096     | 4096x4096 | 0.000     | 1.279  | 1.061  | 0.8750    | 512                   | CHECK   |
+| n4096k12288    | 4096x12288| 0.000     | 1.000  | 1.061  | 0.8750    | 512                   | CHECK   |
+| n8192k4096     | 8192x4096 | 0.001     | 1.000  | 1.031  | 0.9375    | 512                   | CHECK   |
+| n12288k4096    | 12288x4096| 0.000     | 1.290  | 1.020  | 0.9583    | 512                   | CHECK   |
+| n248320k4096   | 248320x4096| 0.001    | 1.161  | 1.001  | 0.9979    | ~521                  | CHECK   |
+
+- M=512 for all six (the SoT trio shapes). Every run: J=128 I=128 nb0=2 (hook config line).
+- frac_zero rises with N but the NONZERO count stays ~512 rows (1024*0.5=512; 4096*0.125=512;
+  8192*0.0625=512; 12288*0.04167=512; 248320*0.0021=521). The kernel writes one fixed
+  block of the output regardless of N -> classic single-block-wrote / rest-untouched pattern.
+- n248320k4096 (23s run wall, dominated by the 3.97M-block CPU dequant reference) does NOT
+  hang: launch -> sync 0.001s. Same signature as P1 at the exact hang shape (frac_zero 0.9375
+  deterministic, bit-identical output bytes across runs: P1 and P2 out8/y8 arrays match exactly).
+- maxrel>1 + rmsrel~1 = CHECK verdict on all six (output mostly zero/wrong vs refgen2 reference).
+
+## Verbatim session output
+
+P2-START 2026-11-27T18:00:10Z
+SAVED lib=070122d8b617093da104a1b5626cadbd
+SWAPPED lib=4738da138f1e0d8613fa90da06a73355
+P2-RUN-n1024k4096 2026-11-27T18:00:11Z
+P2-n1024k4096 rc=0 2026-11-27T18:00:12Z
+P2-n1024k4096-DEQUANT-START NB=16384
+P2-n1024k4096-REF-DONE y_absmax=8.251
+P2-n1024k4096-IDENTITY libmlx_md5=4738da138f1e0d8613fa90da06a73355 M=512 N=1024 K=4096
+P2-n1024k4096-LAUNCH t0=1795802411.91
+[abq4k] M=512 N=1024 K=4096 ne0=4096 ne1=512 nb0=2 J=128 I=128
+P2-n1024k4096-HOOK-RC 1
+P2-n1024k4096-SYNC rc=0 wall=0.001
+P2-n1024k4096-CORR maxrel=1.198 rmsrel=1.226
+P2-n1024k4096-OUTSTAT out_absmax=5.379 frac_zero=0.5 out8=[ 1.0976 -1.1712 -0.8933  0.1739  0.4962 -0.4966 -0.0693  0.2432] y8=[-0.8851 -0.204   1.0584  0.2579 -0.7629 -0.0747  2.2471 -0.2636]
+P2-n1024k4096-DONE wall=0.001 verdict=CHECK
+P2-RUN-n4096k4096 2026-11-27T18:00:12Z
+P2-n4096k4096 rc=0 2026-11-27T18:00:12Z
+P2-n4096k4096-DEQUANT-START NB=65536
+P2-n4096k4096-REF-DONE y_absmax=6.296
+P2-n4096k4096-IDENTITY libmlx_md5=4738da138f1e0d8613fa90da06a73355 M=512 N=4096 K=4096
+P2-n4096k4096-LAUNCH t0=1795802412.54
+[abq4k] M=512 N=4096 K=4096 ne0=4096 ne1=512 nb0=2 J=128 I=128
+P2-n4096k4096-HOOK-RC 1
+P2-n4096k4096-SYNC rc=0 wall=0.000
+P2-n4096k4096-CORR maxrel=1.279 rmsrel=1.061
+P2-n4096k4096-OUTSTAT out_absmax=4.821 frac_zero=0.875 out8=[-0.5839 -2.0526 -0.764  -1.8158  1.1291 -0.3282  1.0819  2.3303] y8=[-0.602  -1.6719 -0.9901 -1.5376 -3.6731 -2.4524  0.4923  0.3656]
+P2-n4096k4096-DONE wall=0.000 verdict=CHECK
+P2-RUN-n4096k12288 2026-11-27T18:00:12Z
+P2-n4096k12288 rc=0 2026-11-27T18:00:13Z
+P2-n4096k12288-XGEN K=12288 seed42-refgen2-math
+P2-n4096k12288-DEQUANT-START NB=196608
+P2-n4096k12288-REF-DONE y_absmax=20.03
+P2-n4096k12288-IDENTITY libmlx_md5=4738da138f1e0d8613fa90da06a73355 M=512 N=4096 K=12288
+P2-n4096k12288-LAUNCH t0=1795802413.70
+[abq4k] M=512 N=4096 K=12288 ne0=12288 ne1=512 nb0=2 J=128 I=128
+P2-n4096k12288-HOOK-RC 1
+P2-n4096k12288-SYNC rc=0 wall=0.000
+P2-n4096k12288-CORR maxrel=1 rmsrel=1.061
+P2-n4096k12288-OUTSTAT out_absmax=6.976 frac_zero=0.875 out8=[-1.1238 -0.6669 -2.8081 -0.648   1.0394  1.4659  0.2294  0.2036] y8=[ 0.2334  0.9836  1.9114  0.2643  0.814   1.7822 -0.3636 -0.0848]
+P2-n4096k12288-DONE wall=0.000 verdict=CHECK
+P2-RUN-n8192k4096 2026-11-27T18:00:13Z
+P2-n8192k4096 rc=0 2026-11-27T18:00:14Z
+P2-n8192k4096-DEQUANT-START NB=131072
+P2-n8192k4096-REF-DONE y_absmax=16.65
+P2-n8192k4096-IDENTITY libmlx_md5=4738da138f1e0d8613fa90da06a73355 M=512 N=8192 K=4096
+P2-n8192k4096-LAUNCH t0=1795802414.50
+[abq4k] M=512 N=8192 K=4096 ne0=4096 ne1=512 nb0=2 J=128 I=128
+P2-n8192k4096-HOOK-RC 1
+P2-n8192k4096-SYNC rc=0 wall=0.001
+P2-n8192k4096-CORR maxrel=1 rmsrel=1.031
+P2-n8192k4096-OUTSTAT out_absmax=5.204 frac_zero=0.9375 out8=[-0.3069 -1.4104 -1.3136 -0.5027 -1.2693  1.1578  0.6176 -1.3619] y8=[ 1.7792 -0.196  -0.5723 -0.3802  0.8816  0.3409  1.4536  0.3712]
+P2-n8192k4096-DONE wall=0.001 verdict=CHECK
+P2-RUN-n12288k4096 2026-11-27T18:00:14Z
+P2-n12288k4096 rc=0 2026-11-27T18:00:15Z
+P2-n12288k4096-DEQUANT-START NB=196608
+P2-n12288k4096-REF-DONE y_absmax=3.621
+P2-n12288k4096-IDENTITY libmlx_md5=4738da138f1e0d8613fa90da06a73355 M=512 N=12288 K=4096
+P2-n12288k4096-LAUNCH t0=1795802415.62
+[abq4k] M=512 N=12288 K=4096 ne0=4096 ne1=512 nb0=2 J=128 I=128
+P2-n12288k4096-HOOK-RC 1
+P2-n12288k4096-SYNC rc=0 wall=0.000
+P2-n12288k4096-CORR maxrel=1.29 rmsrel=1.02
+P2-n12288k4096-OUTSTAT out_absmax=3.56 frac_zero=0.9583 out8=[ 0.0043  0.5066  0.5775  0.6755 -0.6736 -0.1966  1.2634 -0.4888] y8=[-0.5357 -0.6134  0.0218  0.5874 -1.6397 -0.2767  0.357   0.233 ]
+P2-n12288k4096-DONE wall=0.000 verdict=CHECK
+P2-RUN-n248320k4096 2026-11-27T18:00:15Z
+P2-n248320k4096 rc=0 2026-11-27T18:00:38Z
+P2-n248320k4096-DEQUANT-START NB=3973120
+P2-n248320k4096-REF-DONE y_absmax=6.787
+P2-n248320k4096-IDENTITY libmlx_md5=4738da138f1e0d8613fa90da06a73355 M=512 N=248320 K=4096
+P2-n248320k4096-LAUNCH t0=1795802437.14
+[abq4k] M=512 N=248320 K=4096 ne0=4096 ne1=512 nb0=2 J=128 I=128
+P2-n248320k4096-HOOK-RC 1
+P2-n248320k4096-SYNC rc=0 wall=0.001
+P2-n248320k4096-CORR maxrel=1.161 rmsrel=1.001
+P2-n248320k4096-OUTSTAT out_absmax=4.342 frac_zero=0.9979 out8=[-1.3553 -0.6707  0.7537 -1.9106  0.5738  0.4251 -2.1204 -0.125 ] y8=[-1.7746 -0.4878 -1.7759 -0.1844  1.1713 -0.3149 -0.6653 -2.3769]
+P2-n248320k4096-DONE wall=0.001 verdict=CHECK
+RESTORED lib=070122d8b617093da104a1b5626cadbd
+P2-END 2026-11-27T18:00:38Z
+
+# Post-session box state: venv import OK (venv-hbmfix mlx.core loads), /dev/kfd present, lock released.
