@@ -1,6 +1,6 @@
 # A/B lane - P2 six-class result (verbatim session output + derived table)
 #
-# Session: /home/andryo/gemm1-leg2/p2-session.out, 2026-11-27T18:00:10Z - 18:00:38Z
+# Session: /home/guest/gemm1-leg2/p2-session.out, 2026-11-27T18:00:10Z - 18:00:38Z
 # lib-ab3.so md5 4738da138f1e0d8613fa90da06a73355 (identity printed in-session);
 # venv SoT lib 070122d8b617093da104a1b5626cadbd saved/swapped/restored, md5-verified.
 # All six runs: hook ok (HOOK-RC 1), hipStreamSynchronize rc=0, no hang anywhere.

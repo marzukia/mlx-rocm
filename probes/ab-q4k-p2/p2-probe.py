@@ -7,8 +7,8 @@ SYNC,CORR,OUTSTAT,DONE}. Class = P2_CLASS env, shape = P2_M/P2_N/P2_K env."""
 import ctypes, os, sys, time
 import numpy as np
 _RTLD_NOLOAD = os.RTLD_NOLOAD
-D = "/home/andryo/gemm1-leg2"
-VP = "/home/andryo/venv-hbmfix"
+D = "/home/guest/gemm1-leg2"
+VP = "/home/guest/venv-hbmfix"
 CLS = os.environ["P2_CLASS"]
 M = int(os.environ["P2_M"])
 N = int(os.environ["P2_N"])
@@ -86,7 +86,7 @@ def md5f(p):
     return h.hexdigest()
 
 site = VP + "/lib/python3.14/site-packages"
-HIBPATH = "/home/andryo/rcp/new724/tree/opt/rocm-7.2.4/lib/libamdhip64.so.7"
+HIBPATH = "/home/guest/rcp/new724/tree/opt/rocm-7.2.4/lib/libamdhip64.so.7"
 lib = ctypes.CDLL(site + "/mlx/lib/libmlx.so", mode=ctypes.RTLD_GLOBAL)
 print("%s-IDENTITY libmlx_md5=%s M=%d N=%d K=%d" % (TAG, md5f(site + "/mlx/lib/libmlx.so"), M, N, K), flush=True)
 try:

@@ -8,10 +8,10 @@ ARM P1 = their Q4_K dp4a dot (lib-ab3, their 3 .cuh + our mma.cuh + zero-init/I_
 
 ## Provenance (binding)
 
-- Box: marzuki-neon dGPU (HIP_VISIBLE_DEVICES=0, gfx1201 16GB), ROCm 7.2.4 (new724 tree), venv /home/andryo/venv-hbmfix.
+- Box: the GPU box dGPU (HIP_VISIBLE_DEVICES=0, gfx1201 16GB), ROCm 7.2.4 (new724 tree), venv /home/guest/venv-hbmfix.
 - lib-ab3.so + core-ab3.so md5 4738da138f1e0d8613fa90da06a73355 (identity printed in-session, P1-IDENTITY line); venv SoT lib 070122d8b617093da104a1b5626cadbd saved/swapped/restored by the session script, md5-verified.
-- GPU lock /home/andryo/gpu.lock held by the session (flock); lock free + /dev/kfd clean after P1-END.
-- Harness: /home/andryo/gemm1-leg2/{p1-probe.py, p1-session.sh, p1-session.out, p1-j128.log, p1-j64.log}.
+- GPU lock /home/guest/gpu.lock held by the session (flock); lock free + /dev/kfd clean after P1-END.
+- Harness: /home/guest/gemm1-leg2/{p1-probe.py, p1-session.sh, p1-session.out, p1-j128.log, p1-j64.log}.
 - Runs: J=128 (natural) and J=64 (MLX_MMQ_J=64), env -i, HCC_AMDGPU_TARGET=gfx1201, MLX_MMQ_CFG=1.
 
 ## P1 result (verbatim, 17:53:23Z run)
@@ -49,8 +49,8 @@ The [abq4k] config lines from the runs: `M=512 N=8192 K=4096 ne0=4096 ne1=512 nb
 - (ii) the 1/16 (or any partial-write) pattern on all six classes -> the standalone context is not faithful (harness or kernel tiling in isolation) -> the hang is PLUMBING (full-GEMM context), the plumbing statement carries the degraded-oracle caveat.
 - (iii) mixed -> per-class locus table.
 
-Either way the terminal card carries: per-class corr + OUTSTAT lines, the plumbing statement (or the locus name), the CPU lines (compile/link flag audit of our mmq TU vs theirs; ISA extract of the dp4a dot from both .so - ab3 vs their harness512 build /home/andryo/perclass-probe/llama-harness512 md5 fbc898cf - VGPR/scratch/spills/instruction count), and the decision-tree outcome (i)/(ii)/(iii) named.
+Either way the terminal card carries: per-class corr + OUTSTAT lines, the plumbing statement (or the locus name), the CPU lines (compile/link flag audit of our mmq TU vs theirs; ISA extract of the dp4a dot from both .so - ab3 vs their harness512 build /home/guest/perclass-probe/llama-harness512 md5 fbc898cf - VGPR/scratch/spills/instruction count), and the decision-tree outcome (i)/(ii)/(iii) named.
 
 ## Box hygiene
 
-After the 17:53:23Z run: LOCK-FREE, /dev/kfd empty, venv restored to SoT 070122d8. The probe's P3 pieces are located for reference: /home/andryo/perclass-probe/llama-harness512 (their M=512 harness binary) + /home/andryo/perclass-probe/Qwen3.5-9B-xfeed-wq4.gguf (transposed GGUF, our-orientation bytes) - P3 dropped per the tree, pieces banked in case a re-fire is ruled.
+After the 17:53:23Z run: LOCK-FREE, /dev/kfd empty, venv restored to SoT 070122d8. The probe's P3 pieces are located for reference: /home/guest/perclass-probe/llama-harness512 (their M=512 harness binary) + /home/guest/perclass-probe/Qwen3.5-9B-xfeed-wq4.gguf (transposed GGUF, our-orientation bytes) - P3 dropped per the tree, pieces banked in case a re-fire is ruled.

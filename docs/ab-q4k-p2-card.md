@@ -1,11 +1,11 @@
 # A/B lane - P2 deliverable card (their Q4_K dp4a dot standalone at the six trio classes + CPU lines)
 
-Record: the P2 continuation of the Q4_K A/B lane per the 14:29Z ruling (P1 banked at e589d3a). P2 GPU session 2026-11-27T18:00:10Z-18:00:38Z on marzuki-neon dGPU (HIP_VISIBLE_DEVICES=0, gfx1201 16GB), flock on /home/andryo/gpu.lock. CPU lines (flag audit + ISA extract) from the box build trees, no GPU.
+Record: the P2 continuation of the Q4_K A/B lane per the 14:29Z ruling (P1 banked at e589d3a). P2 GPU session 2026-11-27T18:00:10Z-18:00:38Z on the GPU box dGPU (HIP_VISIBLE_DEVICES=0, gfx1201 16GB), flock on /home/guest/gpu.lock. CPU lines (flag audit + ISA extract) from the box build trees, no GPU.
 
 ## Provenance (binding)
 
 - lib-ab3.so md5 4738da138f1e0d8613fa90da06a73355 (identity printed in-session on every class, P2-IDENTITY lines); venv SoT lib 070122d8b617093da104a1b5626cadbd saved/swapped/restored, md5-verified (SAVED/RESTORED lines).
-- Their build of record: /home/andryo/perclass-probe/llama.cpp, libggml-hip.so.0 -> .0.28.0 md5 a2f1e90e7a9e41ed34025643280155bb (built Nov 26 14:59, clang-23/rocm-7.14, dual-arch gfx1201+gfx1036). This is the exact .so the P1-named "harness512 build" loads: llama-harness512 (md5 fbc898cfb6367c3944eff62dfee3e867) is a dynamically-linked executable with no embedded AMDGPU code; `ldd` resolves libggml-hip.so.0 -> /home/andryo/perclass-probe/llama.cpp/build/bin/libggml-hip.so.0.
+- Their build of record: /home/guest/perclass-probe/llama.cpp, libggml-hip.so.0 -> .0.28.0 md5 a2f1e90e7a9e41ed34025643280155bb (built Nov 26 14:59, clang-23/rocm-7.14, dual-arch gfx1201+gfx1036). This is the exact .so the P1-named "harness512 build" loads: llama-harness512 (md5 fbc898cfb6367c3944eff62dfee3e867) is a dynamically-linked executable with no embedded AMDGPU code; `ldd` resolves libggml-hip.so.0 -> /home/guest/perclass-probe/llama.cpp/build/bin/libggml-hip.so.0.
 - ISA tools: /usr/lib/rocm/llvm/bin/llvm-{objdump,readobj,nm} = clang 23.0.0 / ROCm 7.14 = the SAME toolchain as their build. Our object was built by ROCm 7.2.0 hipcc (CMAKE_PREFIX_PATH=/opt/rocm-7.2.0); disassembled with the 7.14 tools (caveat noted in the extract).
 - Box state after P2-END: venv imports mlx.core OK, /dev/kfd present (no leftover contexts), lock released.
 - Artifacts: probes/ab-q4k-p2/{p2-probe.py, p2-session.sh, p2-results.txt, p2-flag-audit.md, p2-isa-extract.md}.
