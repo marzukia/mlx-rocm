@@ -1,6 +1,6 @@
 # S5-2 RUN 2 — STEP 2: the C2 fix build (venv-s52c2)
 
-**Box tree:** `/home/andryo/build-p2seq` @ `b9cb137` + leg-4 + C1 applied (unchanged, the standing
+**Box tree:** `/home/guest/build-p2seq` @ `b9cb137` + leg-4 + C1 applied (unchanged, the standing
 S5 state) + the **C2 fix** (this step). Box tree state ledger: C1 present (`mmq.hip` `real_total`
 count=2), the fix scratch present (`rocm::malloc_async((int64_t)M * NBS * 256 * sizeof(float), encoder)`
 count=1), the `set_data` reallocation KEPT (count=1).
