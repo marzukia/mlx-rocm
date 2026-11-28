@@ -27,8 +27,7 @@ wall → host-side fix class)?
   start timestamp (bisect; same monotonic clock domain, verified in the smoke).
 - **Arms:** C = wheel default (mmq); B = `MLX_KQUANT_FILE_MR=0` (kqfg).
   Separate process runs; same file, same load path, same box state,
-  back-to-back under one lock. No lib swap (venv SoT md5 cdb74a57… pre/post
-  ledgered — the brief's 070122d8 is the venv-hbmfix / p2 save-lib.so, NOT
+  back-to-back under one lock. No lib swap (venv SoT md5 cdb74a57… pre/post ledgered — the brief's 070122d8 is the venv-hbmfix / p2 save-lib.so, NOT
   the venv-ar leg-4 lib; recorded discrepancy, no action).
 - **Vehicle:** Qwen3.8-27B-Q2_K-plain.gguf (8985410528 B; md5
   487b5c9d…c94a… ledgered), C7 harness class (CH=256 prefill, greedy,
