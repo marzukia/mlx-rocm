@@ -1,6 +1,6 @@
 # S5-2 RUN 1 — STEP 1: the matched-clock M64 re-run (data of record)
 
-**Date:** 2026-11-28 (06:40:50Z–07:26:29Z, ONE lock session, 45m39s) · **Box:** marzuki-neon (RX 9070 XT / gfx1201, dGPU HIP_VISIBLE_DEVICES=0) · **Script:** /home/andryo/s52/s52f.sh (s51-final.sh reference pattern + the S4(2) clock pattern RESTORED + order INVERTED)
+**Date:** 2026-11-28 (06:40:50Z–07:26:29Z, ONE lock session, 45m39s) · **Box:** the GPU box (RX 9070 XT / gfx1201, dGPU HIP_VISIBLE_DEVICES=0) · **Script:** /home/guest/s52/s52f.sh (s51-final.sh reference pattern + the S4(2) clock pattern RESTORED + order INVERTED)
 
 ## The protocol
 

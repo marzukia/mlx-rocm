@@ -1,6 +1,6 @@
 # S5-2 RUN 1 — the matched-clock M64 re-run + the profiled dispatch cross-check (card)
 
-**Date:** 2026-11-28 (06:40:46Z–08:1xZ; step-1 session 06:40:50Z–07:26:29Z 45m39s, step-2 re-fired session 07:59:10Z–08:07:48Z 8m38s) · **Box:** marzuki-neon (RX 9070 XT / gfx1201, ROCm guest userland, dGPU HIP_VISIBLE_DEVICES=0) · **Two lock sessions** (both detached flock-held; the s51-final.sh pattern held) · **Scope:** the S5-2 ruling item (1) only — the matched-clock M64 re-run (TEST-FIRST order swap, full 6-leg ladder, per-arm sclk/mclk + perf-state at 15 s RESTORED = closes the S5-1 named sclk gap) + the profiled dispatch cross-check (S4(1) trace method). Items (2)–(5) are later runs. · **No build, no re-spec, no re-implement** (C1-only wheel venv-s51b1 e377b26f + control venv-ar cdb74a5794 reused byte-identical, ledgered pre/post both sessions).
+**Date:** 2026-11-28 (06:40:46Z–08:1xZ; step-1 session 06:40:50Z–07:26:29Z 45m39s, step-2 re-fired session 07:59:10Z–08:07:48Z 8m38s) · **Box:** the GPU box (RX 9070 XT / gfx1201, ROCm guest userland, dGPU HIP_VISIBLE_DEVICES=0) · **Two lock sessions** (both detached flock-held; the s51-final.sh pattern held) · **Scope:** the S5-2 ruling item (1) only — the matched-clock M64 re-run (TEST-FIRST order swap, full 6-leg ladder, per-arm sclk/mclk + perf-state at 15 s RESTORED = closes the S5-1 named sclk gap) + the profiled dispatch cross-check (S4(1) trace method). Items (2)–(5) are later runs. · **No build, no re-spec, no re-implement** (C1-only wheel venv-s51b1 e377b26f + control venv-ar cdb74a5794 reused byte-identical, ledgered pre/post both sessions).
 
 ## Step 1 — the matched-clock M64 re-run (GATE: the citation-grade same-clock delta)
 
@@ -21,7 +21,7 @@ Full data: docs/s5-2-run1-step1.md. Protocol: one flock session, order INVERTED 
 
 ## Step 2 — the profiled dispatch cross-check (GATE: mechanism verified / reclassified)
 
-Full data: docs/s5-2-run1-step2.md. The S4(1) SDK-injected rocprof (1.1.0 new724 build; the 1.3.2 tool of record remains NO-TRACE), one measured in-decode step per arm (c7run glue byte-identical, 10 warmup steps, monotonic window — the SDK CSV `Start_Timestamp` is the CLOCK_MONOTONIC domain, verified by smoke; the CSV at CWD-relative `marzuki-neon/<pid>_kernel_trace.csv`, NOT `$ROCPROF_OUTPUT`), same C1 config env, 15 s clock reads kept, samval-first PASS. Two first-fires on the record (rc=127 missing `LD_LIBRARY_PATH` — the SDK needs `libhsa-amd-aqlprofile64.so.1` from `/home/andryo/t2246/libs` + the 7.2.4 lib dir; the second fire ran clean but the SDK had defaulted to `results.db` (missing `ROCPROF_OUTPUT_FORMAT=csv`) AND the window was wall-clock against the monotonic domain → 0 count).
+Full data: docs/s5-2-run1-step2.md. The S4(1) SDK-injected rocprof (1.1.0 new724 build; the 1.3.2 tool of record remains NO-TRACE), one measured in-decode step per arm (c7run glue byte-identical, 10 warmup steps, monotonic window — the SDK CSV `Start_Timestamp` is the CLOCK_MONOTONIC domain, verified by smoke; the CSV at CWD-relative `<hostname>/<pid>_kernel_trace.csv`, NOT `$ROCPROF_OUTPUT`), same C1 config env, 15 s clock reads kept, samval-first PASS. Two first-fires on the record (rc=127 missing `LD_LIBRARY_PATH` — the SDK needs `libhsa-amd-aqlprofile64.so.1` from `/home/guest/t2246/libs` + the 7.2.4 lib dir; the second fire ran clean but the SDK had defaulted to `results.db` (missing `ROCPROF_OUTPUT_FORMAT=csv`) AND the window was wall-clock against the monotonic domain → 0 count).
 
 | arm | wheel | dispatches/step | the shape |
 |---|---|---|---|
@@ -40,7 +40,7 @@ Source-NAME the exact lifetime/deleter line for the 1.1–1.4 GB prefill HBM exc
 
 ## Box hygiene (final)
 
-Both sessions detached flock-held, self-cleaned. Final state verified: LOCK-FREE, /dev/kfd empty, VRAM 59.9 MB (GPU0) / 16.6 MB (GPU1 idle), no orphans. venv-ar untouched (cdb74a5794 pre/post); venv-s51b1 untouched (e377b26f pre/post); venv-s51 (cf6bc664) remains quarantined, not used. Session data on the box: /home/andryo/s52/ (s52f ladder, trace2/trace3, s52f.sh, s52trace.sh, trace1step.py), /home/andryo/s52f.nohup, /home/andryo/s52trace3.nohup.
+Both sessions detached flock-held, self-cleaned. Final state verified: LOCK-FREE, /dev/kfd empty, VRAM 59.9 MB (GPU0) / 16.6 MB (GPU1 idle), no orphans. venv-ar untouched (cdb74a5794 pre/post); venv-s51b1 untouched (e377b26f pre/post); venv-s51 (cf6bc664) remains quarantined, not used. Session data on the box: /home/guest/s52/ (s52f ladder, trace2/trace3, s52f.sh, s52trace.sh, trace1step.py), /home/guest/s52f.nohup, /home/guest/s52trace3.nohup.
 
 ## Budget record
 
