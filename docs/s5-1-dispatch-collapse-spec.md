@@ -27,11 +27,8 @@ tensors pass the 84 remainder check per S4(1)):**
 + `kqfg_cast` (bf16 out) = **3 dispatches/call**.
 
 C-B = +1/call = +404/step by this model; measured gap 3656-2514 = 1142.
-The residual ~738 is not attributable to the per-call source (attention/sdpav,
-copy, reduce buckets are profiled-cost-inflated in the C arm: 34% inter-kernel
-gap vs 0.9% in B, per-dispatch cost 118-270us vs 9us — S4(1) flags the C
-profiled wall +12.5% vs unprofiled). The GATE is the unprofiled tps, which
-is what decides.
+The residual ~738 is not attributable to the per-call source (attention/sdpav, copy, reduce buckets are profiled-cost-inflated in the C arm: 34% inter-kernel gap vs 0.9% in B, per-dispatch cost 118-270us vs 9us — S4(1) flags the C
+profiled wall +12.5% vs unprofiled). The GATE is the unprofiled tps, which is what decides.
 
 ## Change set (minimal, in-family — NO new kernel, NO new kernel family)
 
