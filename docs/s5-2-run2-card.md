@@ -54,8 +54,7 @@ safety argument. Expected: −1 dispatch/gemm (the −404) + the restored 2-allo
 ## OOM gate line (prefill census, `MLX_WORKER_DEBUG`)
 
 **GATE PASSES.** Fixed-wheel prefill: **rc=0, active 9.63 GB (≈ C1-only 9.62 GB / control
-10.4 GB class, NOT the 11.84 GB quarantined class), cache 4.9 GB, peak 14.49 GB** — reclaim
-fires (over oscillates ±0) but frees cached buffers and **completes**. The 1.1–1.4 GB excess
+10.4 GB class, NOT the 11.84 GB quarantined class), cache 4.9 GB, peak 14.49 GB** — reclaim fires (over oscillates ±0) but frees cached buffers and **completes**. The 1.1–1.4 GB excess
 is **released**. Quarantined wheel (same census): rc=134, active 11.84 GB, OOM.
 
 ## the decode crash (why the fix is rejected)

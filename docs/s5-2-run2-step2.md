@@ -33,8 +33,7 @@ Effect vs the control: −1 dispatch per gemm call (the removed fill) = the C2 �
 cadence (scratch + `set_data` reallocation) is preserved → the OLD HBM profile (cache headroom,
 lower active envelope) → no prefill OOM. This is an **allocation-only change** (no semantics
 change): the scratch is uninitialized but the `set_data` reallocation discards it (recycled to the
-cache) and the kept buffer is written fully by the kqfg kernels (the S5-1 spec's C2 safety
-argument, unchanged).
+cache) and the kept buffer is written fully by the kqfg kernels (the S5-1 spec's C2 safety argument, unchanged).
 
 ## Build ledger (venv-s52c2)
 

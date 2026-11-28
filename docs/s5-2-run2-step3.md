@@ -95,8 +95,7 @@ RCA; the fix simply cannot remove the fill without breaking decode.)
 ## run-3 next-lane
 
 **mmq M=1 depth-growth** (the next lane, since C2 is quarantined). The C2 lane is closed: the
-fill is load-bearing for decode, and removing it (the whole point of C2's −404) is not
-allocation-safe.
+fill is load-bearing for decode, and removing it (the whole point of C2's −404) is not allocation-safe.
 
 ## box hygiene
 

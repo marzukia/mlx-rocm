@@ -4,8 +4,7 @@
 scratch replacing the dead `zeros()` temp in `KQuantFileGemm::eval_gpu`, including the
 removed `set_data` reallocation) OOM-crashed at prefill (99.6–99.8% HBM, +1.1–1.4 GB over
 control at the same phase; 3 failure modes across retries). C1 is inactive at prefill M=256,
-so the excess is 100% C2. This doc source-names the exact divergence, names the mechanism,
-and states the fix. No invented mechanism.
+so the excess is 100% C2. This doc source-names the exact divergence, names the mechanism, and states the fix. No invented mechanism.
 
 ## Box-tree verification (ledger, before the read)
 
@@ -52,8 +51,7 @@ one live f32 temp + the out buffer.
   `allocator::free` in the OLD path (A, via `zeros`) and in the NEW path (C, via `malloc_async`).
   `zeros()` and `malloc` route to the same pool (`RocmAllocator::malloc` = `malloc_async(size,-1,nullptr)`).
   **There is no deleter/temporary bookkeeping line where the NEW path retains what the OLD path
-  drops.** The S5-1 partial-diagnosis hypothesis ("the new path's array ownership/lifetime keeps
-  something resident the old path dropped") does not hold under this allocator (see next section).
+  drops.** The S5-1 partial-diagnosis hypothesis ("the new path's array ownership/lifetime keeps something resident the old path dropped") does not hold under this allocator (see next section).
 
 ## `free()` ALWAYS recycles — it NEVER hipFree. This refutes the "set_data freed the buffer" premise
 
@@ -76,8 +74,7 @@ place cached HBM is actually released (`buffer_cache_.release_cached_buffers` �
 Consequence: in the OLD path, the `:1181` `set_data` reallocation does **not** release buffer A's
 HBM — it **recycles** A into the freelist (HBM held). The OLD path therefore holds an **extra
 cached size-S slab (A)** that the NEW path never has. A naive read of the array/deleter path
-predicts **OLD ≥ NEW** resident HBM — the **opposite** of the observed C2 excess. So the excess
-is NOT a cached-slab/deleter-residency effect.
+predicts **OLD ≥ NEW** resident HBM — the **opposite** of the observed C2 excess. So the excess is NOT a cached-slab/deleter-residency effect.
 
 ## The probe (cheap, prefill-only, no full AR) — the decisive disambiguation
 
