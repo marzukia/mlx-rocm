@@ -1,4 +1,4 @@
-# S5-1 implementation patch (box tree /home/andryo/build-p2seq, b9cb137 + leg-4)
+# S5-1 implementation patch (box tree /home/guest/build-p2seq, b9cb137 + leg-4)
 # Three changes; each a single unique region.
 # Build-trap protocol: no .cuh edits (all .hip), CMake mtime tracking applies.
 
