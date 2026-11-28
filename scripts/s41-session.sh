@@ -40,13 +40,18 @@ runpy() {  # runpy <tag> <script> <mr-env:0|1> [extra-args...]
   local rc=$?
   kill "$MID" 2>/dev/null
   log "RUN-DONE $TAG rc=$rc $(date -u +%FT%TZ)"
-  # collect the per-pid trace CSV (written at process exit)
-  local PID
+  # collect the per-pid trace CSV (written at process exit, CWD-relative
+  # marzuki-neon/ dir, or $HOME/marzuki-neon/)
+  local PID TP
   PID=$(grep -a "pid=" "$R/$TAG.out" 2>/dev/null | head -1 | grep -oE "pid=[0-9]+" | cut -d= -f2)
-  if [ -n "$PID" ] && [ -f "/home/andryo/marzuki-neon/${PID}_kernel_trace.csv" ]; then
-    mv "/home/andryo/marzuki-neon/${PID}_kernel_trace.csv" "$R/trace-$TAG.csv"
-    log "TRACE-$TAG rows=$(wc -l < "$R/trace-$TAG.csv")"
-  else
+  for TP in "$R/marzuki-neon/${PID}_kernel_trace.csv" "/home/andryo/marzuki-neon/${PID}_kernel_trace.csv"; do
+    if [ -n "$PID" ] && [ -f "$TP" ]; then
+      mv "$TP" "$R/trace-$TAG.csv"
+      log "TRACE-$TAG rows=$(wc -l < "$R/trace-$TAG.csv")"
+      break
+    fi
+  done
+  if [ ! -f "$R/trace-$TAG.csv" ]; then
     log "TRACE-$TAG MISSING pid=$PID"
   fi
   grep -aE "cfgq2k|Error|error|fault" "$R/$TAG.out" "$R/$TAG.err" 2>/dev/null | tail -6 | tee -a "$S"
@@ -111,12 +116,14 @@ echo "ar-C rc=$?" >> "$R/session.log"
 kill "$MID" "$SPC" 2>/dev/null
 log "RUN-DONE ar-C $(date -u +%FT%TZ)"
 PID=$(grep -a "pid=" "$R/ar-C.out" 2>/dev/null | head -1 | grep -oE "pid=[0-9]+" | cut -d= -f2)
-if [ -n "$PID" ] && [ -f "/home/andryo/marzuki-neon/${PID}_kernel_trace.csv" ]; then
-  mv "/home/andryo/marzuki-neon/${PID}_kernel_trace.csv" "$R/trace-ar-C.csv"
-  log "TRACE-ar-C rows=$(wc -l < "$R/trace-ar-C.csv")"
-else
-  log "TRACE-ar-C MISSING pid=$PID"
-fi
+for TP in "$R/marzuki-neon/${PID}_kernel_trace.csv" "/home/andryo/marzuki-neon/${PID}_kernel_trace.csv"; do
+  if [ -n "$PID" ] && [ -f "$TP" ]; then
+    mv "$TP" "$R/trace-ar-C.csv"
+    log "TRACE-ar-C rows=$(wc -l < "$R/trace-ar-C.csv")"
+    break
+  fi
+done
+[ -f "$R/trace-ar-C.csv" ] || log "TRACE-ar-C MISSING pid=$PID"
 grep -aE "cfgq2k|Error|error|fault" "$R/ar-C.out" "$R/ar-C.err" 2>/dev/null | tail -6 | tee -a "$S"
 log "SSPOOL-WARN-ar-C count=$(grep -ac SharedSignalPool "$R/ar-C.err" 2>/dev/null || true)"
 state
@@ -133,12 +140,14 @@ echo "ar-B rc=$?" >> "$R/session.log"
 kill "$MID" "$SPB" 2>/dev/null
 log "RUN-DONE ar-B $(date -u +%FT%TZ)"
 PID=$(grep -a "pid=" "$R/ar-B.out" 2>/dev/null | head -1 | grep -oE "pid=[0-9]+" | cut -d= -f2)
-if [ -n "$PID" ] && [ -f "/home/andryo/marzuki-neon/${PID}_kernel_trace.csv" ]; then
-  mv "/home/andryo/marzuki-neon/${PID}_kernel_trace.csv" "$R/trace-ar-B.csv"
-  log "TRACE-ar-B rows=$(wc -l < "$R/trace-ar-B.csv")"
-else
-  log "TRACE-ar-B MISSING pid=$PID"
-fi
+for TP in "$R/marzuki-neon/${PID}_kernel_trace.csv" "/home/andryo/marzuki-neon/${PID}_kernel_trace.csv"; do
+  if [ -n "$PID" ] && [ -f "$TP" ]; then
+    mv "$TP" "$R/trace-ar-B.csv"
+    log "TRACE-ar-B rows=$(wc -l < "$R/trace-ar-B.csv")"
+    break
+  fi
+done
+[ -f "$R/trace-ar-B.csv" ] || log "TRACE-ar-B MISSING pid=$PID"
 grep -aE "cfgq2k|Error|error|fault" "$R/ar-B.out" "$R/ar-B.err" 2>/dev/null | tail -6 | tee -a "$S"
 log "SSPOOL-WARN-ar-B count=$(grep -ac SharedSignalPool "$R/ar-B.err" 2>/dev/null || true)"
 state

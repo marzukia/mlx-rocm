@@ -7,7 +7,8 @@
 # Usage: s41-hostsample.sh <pgrep-pattern> <outlog> <max-samples>
 # Runs while the target process is alive (and up to <max-samples> samples).
 set -u
-PAT=$1; OUT=$2; MAX=${3:-90}
+PAT=$(cat "$1")
+OUT=$2; MAX=${3:-90}
 SMI=/opt/rocm/bin/rocm-smi
 echo "SAMPLE-START $(date -u +%FT%TZ) pat=$PAT max=$MAX" > "$OUT"
 n=0
