@@ -1,0 +1,80 @@
+# S5-1 implementation patch (box tree /home/andryo/build-p2seq, b9cb137 + leg-4)
+# Three changes; each a single unique region.
+# Build-trap protocol: no .cuh edits (all .hip), CMake mtime tracking applies.
+
+--- a/mlx/backend/rocm/quantized/mmq/mmq.hip
++++ b/mlx/backend/rocm/quantized/mmq/mmq.hip
+@@ mmq_quant_in_q8_1_mmq (kernel, ~line 314)
+ template <typename InT>
+ __global__ void mmq_quant_in_q8_1_mmq(const InT* __restrict__ x,
+                                      char* __restrict__ y, int M, int K,
+                                      int64_t total, bool ds4,
+-                                     bool d2s6 = false) {
++                                     bool d2s6 = false,
++                                     int64_t real_total = -1) {
+   int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+   if (idx >= total) return;
++  if (real_total >= 0 && idx >= real_total) {
++    // S5-1: pad block - zero 144B (replaces the per-call hipMemsetAsync
++    // dispatch that zeroed the same [x_tiles*144, x_tiles_pad*144) region).
++    char* yb = y + idx * 144;
++    const uint4 z = make_uint4(0u, 0u, 0u, 0u);
++    for (int b = 0; b < 9; ++b) *reinterpret_cast<uint4*>(yb + b * 16) = z;
++    return;
++  }
+   const int kb128 = K / 128;
+
+--- a/mlx/backend/rocm/quantized/qmm.hip
++++ b/mlx/backend/rocm/quantized/qmm.hip
+@@ mmq_q2k_file (~line 100)
+-  if (x_tiles_pad > x_tiles) {
+-    hipMemsetAsync((char*)xq81 + x_tiles * 144, 0,
+-                   (size_t)(x_tiles_pad - x_tiles) * 144, stream);
+-  }
++  // S5-1: the pad region is zeroed INSIDE the quant launch (pad blocks
++  // write 144B of zeros) - the per-call hipMemsetAsync dispatch is gone.
+   const int tb = 256;
+   if (x_bf16) {
+     mmq_quant_in_q8_1_mmq<hip_bfloat16>
+-        <<<((unsigned)((x_tiles + tb - 1) / tb)), tb, 0, stream>>>(
++        <<<((unsigned)((x_tiles_pad + tb - 1) / tb)), tb, 0, stream>>>(
+             reinterpret_cast<const hip_bfloat16*>(x),
+-            reinterpret_cast<char*>(xq81), M, K, x_tiles, /*ds4=*/false,
+-            /*d2s6=*/true);
++            reinterpret_cast<char*>(xq81), M, K, x_tiles_pad, /*ds4=*/false,
++            /*d2s6=*/true, x_tiles);
+   } else {
+     mmq_quant_in_q8_1_mmq<float>
+-        <<<((unsigned)((x_tiles + tb - 1) / tb)), tb, 0, stream>>>(
++        <<<((unsigned)((x_tiles_pad + tb - 1) / tb)), tb, 0, stream>>>(
+             reinterpret_cast<const float*>(x),
+-            reinterpret_cast<char*>(xq81), M, K, x_tiles, /*ds4=*/false,
+-            /*d2s6=*/true);
++            reinterpret_cast<char*>(xq81), M, K, x_tiles_pad, /*ds4=*/false,
++            /*d2s6=*/true, x_tiles);
+   }
+
+--- a/mlx/backend/rocm/quantized/kquant_file_gemm.hip
++++ b/mlx/backend/rocm/quantized/kquant_file_gemm.hip
+@@ KQuantFileGemm::eval_gpu (f32 temp, ~line 1174)
+   std::unique_ptr<array> tmpf32;
+   if (!f32_target) {
++    // S5-1: uninitialized f32 scratch (no zeros() fill dispatch). The kqfg
++    // kernel writes ALL op elements (direct store, in-register acc from 0)
++    // before the cast reads them; on the mmq path this temp is unused.
+     tmpf32 = std::make_unique<array>(
+-        mlx::core::zeros(Shape{(int)x.shape()[0], (int)((int64_t)NBS * 256)}, float32, s));
++        rocm::malloc_async((int64_t)M * NBS * 256 * sizeof(float), encoder),
++        Shape{(int)x.shape()[0], (int)((int64_t)NBS * 256)},
++        float32);
+     encoder.add_temporary(*tmpf32);
+     f32_target = tmpf32.get();
+   }
+   out.set_data(rocm::malloc_async(out.nbytes(), encoder));
+-  if (f32_target != &out) {
+-    f32_target->set_data(rocm::malloc_async(f32_target->nbytes(), encoder));
+-  }
+
+# Effect: -1 dispatch per gemm-family call (C1, pad memset) and -1 dispatch
+# per gemm-family call (C2, dead zero-fill) => -2 per call => -808/step
+# (404 calls). Predicted 3656 -> 2848 per step (profiled class).
